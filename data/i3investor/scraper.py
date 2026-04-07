@@ -25,6 +25,17 @@ _HEADERS = {
 
 _BASE = "https://klse.i3investor.com"
 
+# Trusted analyst/brokerage sources — only ingest research from these publishers
+TRUSTED_BROKERAGES = {
+    "rhbinvest", "rhb", "kenanga", "cimb", "maybank",
+    "publicbank", "public bank", "aminvest", "ambank", "phillipCapital",
+    "phillip capital", "hlinvest", "hlbank", "hong leong", "affin", "midf", "ta",
+    "malaccasecurities", "malacca securities", "mplus", "apex", "rakuten",
+    "sectoranalyst", "edgeinvest", "theedge", "the edge",
+    "stocktipratings", "bursamalaysia", "bursa malaysia",
+    "uob", "alliance", "bimb", "bimb securities",
+}
+
 # Known KLCI bursa codes → ticker mapping for mention detection
 _KLCI_CODES = {
     "1155", "1295", "1023", "5347", "5183", "5225", "8869", "6947",
@@ -49,6 +60,12 @@ def _safe_date(raw: str) -> str:
         except ValueError:
             pass
     return raw
+
+
+def _is_trusted_source(author: str, brokerage: str) -> bool:
+    """Return True if the author/brokerage matches a trusted publisher."""
+    combined = f"{author} {brokerage}".lower()
+    return any(b in combined for b in TRUSTED_BROKERAGES)
 
 
 def _extract_ticker_mentions(text: str) -> list:
@@ -172,8 +189,18 @@ class I3investorScraper:
             except Exception as e:
                 logger.debug(f"Article parse error: {e}")
 
-        logger.info(f"i3investor: scraped {len(articles)} research articles")
-        return articles
+        # Apply trusted-source filter
+        trusted = []
+        for a in articles:
+            if _is_trusted_source(a.get("author", ""), a.get("brokerage", "")):
+                trusted.append(a)
+            else:
+                logger.debug(
+                    f"i3investor: skipped '{a['title'][:60]}' "
+                    f"(untrusted source: {a.get('author', 'unknown')})"
+                )
+        logger.info(f"i3investor: scraped {len(articles)} articles, {len(trusted)} from trusted sources")
+        return trusted
 
     # ------------------------------------------------------------------
     # 2. News headlines

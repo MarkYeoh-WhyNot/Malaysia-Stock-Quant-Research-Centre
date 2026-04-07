@@ -22,7 +22,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 import requests
 
 from agents.risk_monitor.risk_monitor import RiskMonitor
-from data.i3investor.scraper import I3investorScraper
+from data.i3investor.scraper import I3investorScraper, TRUSTED_BROKERAGES, _is_trusted_source
 from data.klse.fundamental_scanner import FundamentalScanner
 from data.database import db_session, init_db
 from knowledge.ingestion.diversity_engine import DiversityEngine
@@ -33,11 +33,8 @@ logger = logging.getLogger("openclaw.morning_briefing")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Major brokerages whose research we auto-ingest
-MAJOR_BROKERAGES = {
-    "RHB", "Kenanga", "Maybank", "CIMB", "PublicBank",
-    "AmInvest", "PhillipCapital", "Hong Leong", "UOB", "Affin",
-}
+# Minimum word count for auto-ingested articles (stubs/forum posts have < 200 words)
+_MIN_CONTENT_WORDS = 200
 
 # KL is UTC+8
 _KL_TZ = timezone(timedelta(hours=8))
@@ -177,36 +174,46 @@ class MorningBriefing:
         ingested = 0
         for article in articles:
             brokerage = article.get("brokerage", "")
-            if not brokerage or brokerage not in MAJOR_BROKERAGES:
+            author    = article.get("author", "")
+            # Apply trusted-source whitelist (shared with scraper)
+            if not _is_trusted_source(author, brokerage):
+                logger.debug(
+                    f"Morning briefing: skipped '{article.get('title', '')[:60]}' "
+                    f"(untrusted source: {author or brokerage or 'unknown'})"
+                )
                 continue
             url = article.get("url", "")
             if not url:
                 continue
             try:
-                # Fetch full content using the scraper
+                # Fetch full content
                 content = self.scraper.get_article_content(url)
-                if not content or len(content) < 100:
+                if not content:
                     continue
 
-                # Build tags
+                # Minimum content length filter (skip stubs and forum posts)
+                word_count = len(content.split())
+                if word_count < _MIN_CONTENT_WORDS:
+                    logger.info(
+                        f"Morning briefing: skipped '{article.get('title', '')[:60]}' "
+                        f"(too short: {word_count} words < {_MIN_CONTENT_WORDS} minimum)"
+                    )
+                    continue
+
                 tickers = article.get("tickers", [])
-                tags    = [brokerage] + tickers
+                tags    = ([brokerage] if brokerage else []) + tickers
                 title   = article.get("title", url[:60])
 
-                # Ingest synchronously (kb_ingester has async ingest_url, use ingest_text)
-                import asyncio
-                result = asyncio.run(
-                    self.kb.ingest_text(
-                        content,
-                        title=title,
-                        domain="fundamental",
-                        tags=tags,
-                    )
-                ) if hasattr(self.kb, "ingest_text") else None
+                result = self.kb.ingest_text(
+                    content,
+                    title=title,
+                    domain="fundamental",
+                    source_url=url,
+                )
 
                 if result:
                     ingested += 1
-                    logger.info(f"Auto-ingested: {title[:50]} [{brokerage}]")
+                    logger.info(f"Auto-ingested: {title[:50]} [{brokerage or author}]")
 
             except Exception as e:
                 logger.debug(f"Auto-ingest failed for {article.get('title', url)}: {e}")

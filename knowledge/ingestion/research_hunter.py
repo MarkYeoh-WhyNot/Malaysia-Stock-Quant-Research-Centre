@@ -141,9 +141,46 @@ Return a JSON array of short query strings (6-10 words each). Example:
             logger.warning(f"arXiv search failed for '{query}': {e}")
             return []
 
+    # ── Relevance pre-filter ──────────────────────────────────────────────────
+
+    def _is_relevant(self, title: str, abstract: str) -> dict:
+        """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0-1.0).
+
+        Returns {'relevance': float, 'reason': str}.
+        Defaults to {'relevance': 1.0, 'reason': 'check_failed'} on any error
+        so that ingest is never blocked by a transient API issue.
+        """
+        prompt = (
+            f"Rate relevance to Bursa Malaysia equity trading: 0.0-1.0\n\n"
+            f"Title: {title}\n"
+            f"Abstract: {abstract[:300]}\n\n"
+            f"0.0-0.3 = not relevant (wrong market, not equities, cybersecurity, "
+            f"general theory unrelated to trading)\n"
+            f"0.3-0.6 = partially relevant (general EM/Asian equity)\n"
+            f"0.6-1.0 = highly relevant (Bursa, KLSE, Malaysian stocks, ASEAN equity "
+            f"markets, palm oil, EPF, emerging market factors applicable to Malaysia)\n\n"
+            f'Return JSON: {{"relevance": 0.0, "reason": "..."}}'
+        )
+        try:
+            result = self.call_claude_json(
+                "You are a relevance classifier for a Bursa Malaysia equity research system. "
+                "Return only the requested JSON — no other text.",
+                [{"role": "user", "content": prompt}],
+                model=MODEL_FAST,
+                max_tokens=80,
+                task_label="paper_relevance_check",
+            )
+            return {
+                "relevance": float(result.get("relevance", 1.0)),
+                "reason":    str(result.get("reason", "")),
+            }
+        except Exception as e:
+            logger.debug(f"Relevance check failed for '{title}': {e}")
+            return {"relevance": 1.0, "reason": "check_failed"}
+
     # ── Main hunt ─────────────────────────────────────────────────────────────
 
-    def hunt(self, topic: str, context: str, angle_tag: str = "") -> dict:
+    def hunt(self, topic: str, context: str, angle_tag: str = "", domain: str = "price_action") -> dict:
         """
         Fetch up to MAX_PAPERS relevant papers and ingest them into the KB.
 
@@ -152,6 +189,7 @@ Return a JSON array of short query strings (6-10 words each). Example:
             context:   Hypothesis or additional context for query generation.
             angle_tag: Optional diversity-engine angle name (e.g. 'price_action').
                        When set, source_url is prefixed with 'diversity_hunt:<angle_tag>'.
+            domain:    Unified angle domain to store in kb_documents.domain.
 
         Returns:
             {"papers_found": int, "papers_ingested": int, "titles": [...], "queries": [...]}
@@ -193,16 +231,30 @@ Return a JSON array of short query strings (6-10 words each). Example:
             if not paper.get("abstract"):
                 continue
             try:
+                # Relevance pre-filter — skip papers below threshold before
+                # paying for an expensive Sonnet summarise call
+                rel = self._is_relevant(paper["title"], paper["abstract"])
+                if rel["relevance"] < 0.40:
+                    self.log_daemon(
+                        "INFO",
+                        f"ResearchHunter: skipped '{paper['title'][:60]}' "
+                        f"(relevance={rel['relevance']:.2f}, reason={rel['reason']})",
+                    )
+                    continue
+
                 lines = [f"Title: {paper['title']}"]
                 if paper.get("year"):
                     lines.append(f"Year: {paper['year']}")
                 lines.append(f"\nAbstract:\n{paper['abstract']}")
                 content = "\n".join(lines)
 
+                # Include relevance score in tags for traceability
+                extra_tags = [f"relevance:{rel['relevance']:.2f}"]
+
                 kb.ingest_text(
                     content=content,
                     title=paper["title"],
-                    domain="research",
+                    domain=domain,
                     source_url=f"{source_prefix}:{paper['source']}",
                 )
                 ingested += 1

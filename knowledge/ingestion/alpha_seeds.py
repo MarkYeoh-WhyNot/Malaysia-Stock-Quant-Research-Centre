@@ -14,6 +14,47 @@ SYSTEM = (
     "Bursa Malaysia equity markets."
 )
 
+# Layer 2: phrases that indicate strategies not feasible on Bursa Malaysia
+_INFEASIBLE_PHRASES = [
+    "pairs trade", "pair trade", "long/short", "long short",
+    "short sell", "short selling", "shorting", "short the",
+    "futures spread", "arbitrage between two stocks",
+    "put option", "call option", "covered call", "options strategy",
+    "options spread", "collar strategy",
+]
+
+# Regex to detect non-Bursa tickers (NYSE/NASDAQ style: letters only, no .KL suffix)
+# Catches things like AAPL, MSFT, SPY, ^GSPC — but NOT "1155.KL" or sector labels
+_NON_KL_TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b(?!\s*\.KL)", re.UNICODE)
+_KL_TICKER_RE     = re.compile(r"\b\d{4}\.KL\b")
+
+
+def is_bursa_feasible(h: dict) -> tuple[bool, str]:
+    """Return (feasible: bool, reason: str) for a hypothesis dict.
+
+    Layer 2 quality gate — rejects strategies that cannot be executed on
+    Bursa Malaysia: short-selling, pairs trades, options, non-KL tickers.
+    """
+    text      = " ".join([
+        str(h.get("title", "")),
+        str(h.get("hypothesis", "")),
+        str(h.get("factor_formula", "")),
+    ]).lower()
+    ticker    = str(h.get("ticker", "")).strip()
+
+    # Check for infeasible phrases in combined text
+    for phrase in _INFEASIBLE_PHRASES:
+        if phrase in text:
+            return False, f"contains infeasible phrase: '{phrase}'"
+
+    # Check ticker field: if it looks like a pure uppercase ticker (no .KL, not a sector)
+    # and is not empty, flag it
+    if ticker and not ticker.lower().startswith("sector") and not ticker.lower() == "klci":
+        if not re.search(r"\d", ticker) and ticker.isupper() and len(ticker) <= 5 and "." not in ticker:
+            return False, f"ticker '{ticker}' appears to be a non-Bursa (non-.KL) symbol"
+
+    return True, "ok"
+
 
 class AlphaSeedGenerator(BaseAgent):
     name = "AlphaSeedGenerator"
@@ -122,12 +163,39 @@ Return JSON:
                 continue
 
             h_title    = str(h["title"])[:80]
-            slug_body  = self._slugify(h_title)[:60]
-            slug       = f"seed-{today}-{slug_body}"
             hypothesis = h.get("hypothesis", "")
             ticker     = h.get("ticker", "")
-            timeframe  = h.get("timeframe", "1d")
             formula    = h.get("factor_formula", "")
+            confidence = float(h.get("confidence") or 0.0)
+
+            # Layer 3: minimum quality threshold
+            if confidence < 0.5:
+                self.log_daemon(
+                    "INFO",
+                    f"AlphaSeed: skipped low-confidence hypothesis '{h_title[:50]}' "
+                    f"(confidence={confidence:.2f})",
+                )
+                continue
+            if not ticker or not formula or len(hypothesis) < 50:
+                self.log_daemon(
+                    "INFO",
+                    f"AlphaSeed: skipped incomplete hypothesis '{h_title[:50]}' "
+                    f"(missing ticker/formula or hypothesis too short)",
+                )
+                continue
+
+            # Layer 2: Bursa feasibility filter
+            feasible, reason = is_bursa_feasible(h)
+            if not feasible:
+                self.log_daemon(
+                    "INFO",
+                    f"AlphaSeed: rejected non-feasible hypothesis '{h_title[:50]}' — {reason}",
+                )
+                continue
+
+            slug_body  = self._slugify(h_title)[:60]
+            slug       = f"seed-{today}-{slug_body}"
+            timeframe  = h.get("timeframe", "1d")
             sources    = json.dumps(h.get("data_sources", []))
             novelty    = float(h.get("novelty_score") or 0.0)
             logic      = float(h.get("logic_score") or 0.0)

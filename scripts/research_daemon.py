@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import signal
 import time
@@ -88,6 +89,14 @@ class ResearchDaemon:
                 logger.info(
                     f"[Gate0] {'PASS' if result.get('pass') else 'FAIL'}: {row['title'][:50]}"
                 )
+                if not result.get("pass"):
+                    try:
+                        from knowledge.ingestion.rejection_memory import RejectionMemory
+                        RejectionMemory().record_rejection(
+                            row["id"], result.get("rationale", ""), "gate0"
+                        )
+                    except Exception as re:
+                        logger.warning(f"[Gate0] RejectionMemory failed: {re}")
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"[Gate0] Error {row['id']}: {e}")
@@ -116,13 +125,16 @@ class ResearchDaemon:
         """Run BacktestEngineer on stage2/active ideas that have no backtest run yet.
 
         DataEngineer pre-caches the price data; BacktestEngineer reads from that cache.
-        On pass: idea advances to stage3. On fail: idea is rejected.
+        After a single-stock backtest pass (Gates 2+3), cross_sectional_test() validates
+        that the factor generalises across the full KLCI universe.  Only ideas that pass
+        BOTH gates advance to stage3.
+        On fail at either gate: idea is rejected.
         Ideas are set to status='processing' before the backtest starts to prevent
         re-queueing if the daemon cycles while a long backtest is running.
         """
         with db_session() as conn:
             pending = conn.execute(
-                "SELECT id, title, pair FROM alpha_ideas "
+                "SELECT id, title, pair, factor_formula FROM alpha_ideas "
                 "WHERE stage='stage2' AND status='active' "
                 "AND id NOT IN (SELECT DISTINCT idea_id FROM backtest_runs) "
                 "LIMIT 3"
@@ -146,6 +158,89 @@ class ResearchDaemon:
                     f"train={result.get('train', {}).get('sharpe', 0):.2f} "
                     f"test={result.get('test', {}).get('sharpe', 0):.2f}"
                 )
+                if not result.get("gate3_pass") and not result.get("error"):
+                    try:
+                        from knowledge.ingestion.rejection_memory import RejectionMemory
+                        reason = (
+                            f"Backtest failed G2/G3 — "
+                            f"train_sharpe={result.get('train', {}).get('sharpe', 0):.2f} "
+                            f"val_sharpe={result.get('val', {}).get('sharpe', 0):.2f} "
+                            f"test_sharpe={result.get('test', {}).get('sharpe', 0):.2f}"
+                        )
+                        RejectionMemory().record_rejection(row["id"], reason, "stage2")
+                    except Exception as re:
+                        logger.warning(f"[Stage2] RejectionMemory failed: {re}")
+
+                # ── Cross-sectional validation gate ───────────────────────────
+                if result.get("gate3_pass"):
+                    await asyncio.sleep(1)
+                    cs = self.backtest_engineer.cross_sectional_test(
+                        result.get("factor_formula", ""), row["id"]
+                    )
+                    logger.info(
+                        f"[Stage2-CS] idea={row['id']} "
+                        f"mean_IC={cs.get('mean_ic', 0):.3f} "
+                        f"t={cs.get('ic_tstat', 0):.2f} "
+                        f"pos_stocks={cs.get('stocks_positive_ic', 0)}/{cs.get('stocks_tested', 0)} "
+                        f"real={cs.get('factor_is_real')}"
+                    )
+                    if not cs.get("factor_is_real"):
+                        # Factor fails cross-sectional breadth — reverse stage3 promotion
+                        best = cs.get("best_stocks", [])
+                        best_names = ", ".join(s["symbol"] for s in best[:3]) if best else "none"
+                        reason = (
+                            f"Factor does not generalise across KLCI universe — "
+                            f"mean_IC={cs.get('mean_ic', 0):.3f} "
+                            f"t-stat={cs.get('ic_tstat', 0):.2f} "
+                            f"positive_stocks={cs.get('stocks_positive_ic', 0)}/30"
+                        )
+                        with db_session() as conn:
+                            conn.execute(
+                                "UPDATE alpha_ideas SET stage='stage2', status='rejected', "
+                                "updated_at=datetime('now') WHERE id=?",
+                                (row["id"],),
+                            )
+                            conn.execute(
+                                "INSERT INTO pipeline_events "
+                                "(idea_id, stage, event_type, agent, notes) "
+                                "VALUES (?, 'stage2', 'rejected', 'BacktestEngineer', ?)",
+                                (row["id"], reason),
+                            )
+                            conn.execute(
+                                "INSERT INTO gate_decisions "
+                                "(idea_id, gate, decision, decided_by, rationale) "
+                                "VALUES (?, 'gate_cs', 'reject', 'BacktestEngineer', ?)",
+                                (row["id"], reason),
+                            )
+                        logger.warning(
+                            f"[Stage2-CS] REJECTED [{row['id']}] {row['title'][:50]} — {reason}"
+                        )
+                        try:
+                            from knowledge.ingestion.rejection_memory import RejectionMemory
+                            RejectionMemory().record_rejection(row["id"], reason, "stage2_cs")
+                        except Exception as re:
+                            logger.warning(f"[Stage2-CS] RejectionMemory failed: {re}")
+                    else:
+                        # Factor is real — save best_stocks in pipeline event and confirm stage3
+                        best = cs.get("best_stocks", [])
+                        best_names = ", ".join(
+                            f"{s['symbol']}({s['ic']:.3f})" for s in best[:5]
+                        )
+                        with db_session() as conn:
+                            conn.execute(
+                                "INSERT INTO pipeline_events "
+                                "(idea_id, stage, event_type, agent, notes) "
+                                "VALUES (?, 'stage2', 'cs_passed', 'BacktestEngineer', ?)",
+                                (row["id"],
+                                 f"CS PASS mean_IC={cs.get('mean_ic', 0):.3f} "
+                                 f"t={cs.get('ic_tstat', 0):.2f} "
+                                 f"best_stocks=[{best_names}]"),
+                            )
+                        logger.info(
+                            f"[Stage2-CS] ADVANCED [{row['id']}] to stage3 "
+                            f"best_stocks=[{best_names}]"
+                        )
+
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"[Stage2] Error {row['id']}: {e}")

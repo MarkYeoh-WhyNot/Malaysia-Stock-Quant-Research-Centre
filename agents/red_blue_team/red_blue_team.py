@@ -6,19 +6,65 @@ from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
-RED_SYSTEM = """You are the Red Team — a skeptical, adversarial quant analyst whose job is to find
-every possible flaw, failure mode, and hidden risk in a proposed FX trading strategy. Be rigorous,
-specific, and ruthless. Think about: overfitting, data snooping, regime dependency, liquidity,
-transaction costs, crowding, correlation with existing factors, tail risks, and implementation gaps."""
+BURSA_MARKET_BRIEF = """
+BURSA MALAYSIA MARKET STRUCTURE — MUST KNOW:
+- Settlement: T+3 (3 business days). Affects short-term strategies.
+- Short-selling: Restricted to ~150 approved securities only.
+  Retail traders cannot short most stocks. LONG-ONLY strategies only.
+- Trading hours: 9:00-12:30 and 14:30-17:00 MYT. No after-hours.
+- Lot size: 100 shares minimum. Affects small-cap liquidity.
+- Foreign ownership: EPF owns ~15% of market. KWAP, PNB also large.
+  Institutional flows are predictable around rebalancing periods.
+- OPR sensitivity: Malaysian banking stocks are highly sensitive
+  to BNM Overnight Policy Rate decisions.
+- CPO correlation: Plantation stocks (Sime Darby, IOI, KLK) move
+  strongly with Crude Palm Oil futures prices.
+- Penny stocks: High retail speculation, pump-and-dump risk,
+  very wide spreads. Strategies on stocks below RM0.50 are high risk.
+- Circuit breakers: Stocks halt if they move >30% in a day.
+- Stamp duty: 0.15% on buy side, capped at RM200. Real cost.
+- GLC dynamics: Government-linked companies (Maybank, Tenaga,
+  Petronas subsidiaries) have different dynamics — policy-driven.
+"""
 
-BLUE_SYSTEM = """You are the Blue Team — a constructive quant analyst defending a proposed FX strategy
-against adversarial critique. For each red-team finding, provide a concrete mitigation, counter-argument,
-or robustness check. Be intellectually honest: acknowledge valid concerns, but fight for viable strategies
-with specific evidence and fixes."""
+RED_SYSTEM = f"""You are the Red Team — a skeptical, adversarial quant analyst whose job is to find
+every possible flaw, failure mode, and hidden risk in a proposed Bursa Malaysia equity strategy.
+Be rigorous, specific, and ruthless. Think about: overfitting, data snooping, regime dependency,
+liquidity, transaction costs, crowding, correlation with existing factors, tail risks, and
+implementation gaps.
 
-JUDGE_SYSTEM = """You are the Chief Risk Officer judging a red-team vs blue-team strategy debate.
-Weigh the arguments and give a final verdict on whether this strategy should advance to paper trading.
-Be balanced but err on the side of caution. Return structured JSON."""
+{BURSA_MARKET_BRIEF}
+
+You MUST specifically attack:
+- T+3 settlement risk: does the strategy's holding period interact badly with T+3?
+- Liquidity risk: can this be executed in 100-share lots without moving the price?
+- EPF flow reversal risk: if EPF rebalances away, does the thesis collapse?
+- OPR change risk: for banking strategies, how does a 25bp BNM rate change affect the thesis?
+- Penny stock risk: is the ticker a low-liquidity or low-price stock with wide spreads?
+- Feasibility: can a real retail or institutional investor in Malaysia actually execute this?"""
+
+BLUE_SYSTEM = f"""You are the Blue Team — a constructive quant analyst defending a proposed
+Bursa Malaysia equity strategy against adversarial critique. For each red-team finding, provide
+a concrete mitigation, counter-argument, or robustness check. Be intellectually honest:
+acknowledge valid concerns, but fight for viable strategies with specific evidence and fixes.
+
+{BURSA_MARKET_BRIEF}
+
+When defending, always address Bursa-specific mechanics directly:
+- If T+3 is raised: explain how the holding period accommodates settlement.
+- If liquidity is raised: cite the stock's average daily volume or lot-size adequacy.
+- If EPF flows are raised: explain whether the thesis is EPF-dependent or independent.
+- If OPR is raised: quantify the sensitivity and whether the strategy hedges rate risk."""
+
+JUDGE_SYSTEM = f"""You are the Chief Risk Officer judging a red-team vs blue-team debate about
+a Bursa Malaysia equity strategy. Weigh the arguments and give a final verdict on whether this
+strategy should advance to paper trading. Be balanced but err on the side of caution.
+Return structured JSON.
+
+{BURSA_MARKET_BRIEF}
+
+Apply Bursa-specific judgment: reject any strategy that requires short-selling unrestricted
+securities, relies on intraday execution, or ignores T+3 settlement constraints."""
 
 
 class RedBlueTeam(BaseAgent):
@@ -31,11 +77,11 @@ class RedBlueTeam(BaseAgent):
     # ------------------------------------------------------------------
 
     def red_team_attack(self, idea: dict, backtest_results: dict) -> dict:
-        prompt = f"""Stress-test this FX strategy as a hostile adversary.
+        prompt = f"""Stress-test this Bursa Malaysia equity strategy as a hostile adversary.
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
-Pair: {idea.get('pair')} | Timeframe: {idea.get('timeframe')}
+Ticker: {idea.get('pair')} | Timeframe: {idea.get('timeframe')}
 Factor: {idea.get('factor_formula')}
 Research score: {idea.get('research_score')}
 
@@ -67,11 +113,11 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def blue_team_defend(self, idea: dict, red_findings: dict) -> dict:
-        prompt = f"""Defend this FX strategy against the following red-team critique.
+        prompt = f"""Defend this Bursa Malaysia equity strategy against the following red-team critique.
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
-Pair: {idea.get('pair')} | Factor: {idea.get('factor_formula')}
+Ticker: {idea.get('pair')} | Factor: {idea.get('factor_formula')}
 
 Red team findings:
 {json.dumps(red_findings, indent=2)}
@@ -101,9 +147,9 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def _judge(self, idea: dict, red: dict, blue: dict, backtest_results: dict) -> dict:
-        prompt = f"""Judge this strategy debate and give a final verdict.
+        prompt = f"""Judge this Bursa Malaysia equity strategy debate and give a final verdict.
 
-Strategy: {idea.get('title')} | Pair: {idea.get('pair')}
+Strategy: {idea.get('title')} | Ticker: {idea.get('pair')}
 Backtest: {json.dumps(backtest_results, indent=2)}
 
 Red team (attack_score={red.get('overall_attack_score')}, kill={red.get('kill_recommendation')}):

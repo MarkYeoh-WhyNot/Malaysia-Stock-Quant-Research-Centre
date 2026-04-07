@@ -205,13 +205,26 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tags    = result.get("tags", [])
     domain_label = f"`{domain}`" + (" _(auto-classified)_" if domain_inferred else "")
 
+    relevance_score  = result.get("relevance_score")
+    relevance_reason = result.get("relevance_reason", "")
+    low_relevance    = result.get("low_relevance", False)
+
+    if relevance_score is not None:
+        rel_bar   = "🟥" if relevance_score < 0.4 else ("🟨" if relevance_score < 0.6 else "🟩")
+        rel_label = f"{rel_bar} `{relevance_score:.2f}` — _{relevance_reason[:80]}_"
+        if low_relevance:
+            rel_label += "\n⚠️ _Low relevance: saved but NOT seeded_"
+    else:
+        rel_label = "`n/a`"
+
     lines = [
         "✅ *KB Ingestion Complete*\n",
-        f"Doc ID:   `{result['doc_id']}`",
-        f"Title:    *{result['title'][:60]}*",
-        f"Domain:   {domain_label}",
-        f"Concepts: `{result['concepts_extracted']}`",
-        f"Tags:     `{', '.join(tags[:6]) or 'none'}`",
+        f"Doc ID:     `{result['doc_id']}`",
+        f"Title:      *{result['title'][:60]}*",
+        f"Domain:     {domain_label}",
+        f"Relevance:  {rel_label}",
+        f"Concepts:   `{result['concepts_extracted']}`",
+        f"Tags:       `{', '.join(tags[:6]) or 'none'}`",
     ]
     if snippet:
         lines.append(f"\n_{snippet}_")

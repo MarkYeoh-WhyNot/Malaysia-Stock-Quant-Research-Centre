@@ -14,29 +14,69 @@ logger = logging.getLogger(__name__)
 SYSTEM = """You are a quantitative finance knowledge engineer. Extract structured information
 from research documents to build a searchable knowledge base for Bursa Malaysia equity research."""
 
+# Single unified taxonomy — matches DiversityEngine's 8 research angles exactly.
+# The domain field in kb_documents now uses these values so check_balance() can
+# query by domain directly instead of using keyword/source_url heuristics.
 VALID_DOMAINS = {
-    "fx", "macro", "technical", "fundamental", "risk", "execution", "research", "other",
-    # Extended inference domains (used by classify_domain)
-    "alpha-ideas", "market-structure", "analysis-methods", "quant-philosophy",
-    "mental-models", "factor-data", "infrastructure", "portfolio-management",
-    "risk-management", "behavioural",
+    "price_action",    # Technical analysis, price momentum, chart patterns
+    "fundamental",     # Value investing, earnings quality, fundamental factors
+    "event_driven",    # Post-earnings drift, dividend capture, corporate events
+    "institutional",   # EPF flows, GLC ownership, institutional trading patterns
+    "macro",           # OPR cycle, MYR macro impacts on sector returns
+    "commodity",       # CPO price impact on plantation stocks
+    "sector_rotation", # KLSE sector rotation, defensive vs cyclical
+    "behavioural",     # Investor behaviour biases, market anomalies
+}
+
+# Map legacy / internal domain names → unified angle names
+DOMAIN_TO_ANGLE = {
+    "price_action":      "price_action",
+    "fundamental":       "fundamental",
+    "event_driven":      "event_driven",
+    "institutional":     "institutional",
+    "macro":             "macro",
+    "commodity":         "commodity",
+    "sector_rotation":   "sector_rotation",
+    "behavioural":       "behavioural",
+    # Legacy domain names (pre-unification)
+    "research":          "price_action",
+    "analysis-methods":  "fundamental",
+    "quant-philosophy":  "price_action",
+    "mental-models":     "behavioural",
+    "factor-data":       "fundamental",
+    "infrastructure":    "price_action",
+    "portfolio-management": "fundamental",
+    "risk-management":   "macro",
+    "alpha-ideas":       "event_driven",
+    "market-structure":  "price_action",
+    "technical":         "price_action",
+    "fx":                "price_action",
+    "risk":              "macro",
+    "execution":         "price_action",
+    "other":             None,   # triggers auto-classification
 }
 
 # Ordered list used for domain classification prompts
 INFER_DOMAINS = [
-    "alpha-ideas",       # Specific trading strategies, signals, or alpha hypotheses
-    "market-structure",  # Exchange mechanics, microstructure, liquidity, order flow
-    "analysis-methods",  # Technical or fundamental analytical frameworks
-    "quant-philosophy",  # Quant finance theory, research methodology
-    "mental-models",     # Decision-making frameworks, cognitive models
-    "factor-data",       # Factor definitions, data sources, feature engineering
-    "infrastructure",    # Execution systems, pipelines, tooling
-    "portfolio-management", # Position sizing, portfolio construction, rebalancing
-    "macro",             # Macroeconomic context, rates, policy, global flows
-    "risk-management",   # Drawdown, hedging, risk controls, tail risk
-    "behavioural",       # Behavioural finance, investor psychology, anomalies
-    "research",          # Academic papers, practitioner research, empirical studies
+    "price_action",    # Technical analysis, price momentum, moving averages, RSI, MACD
+    "fundamental",     # Value investing, earnings quality, P/E, ROE, dividend yield
+    "event_driven",    # Post-earnings drift, dividend capture, corporate events
+    "institutional",   # EPF/GLC ownership, pension fund flows, index rebalancing
+    "macro",           # OPR cycle, BNM policy, macroeconomic sector impacts
+    "commodity",       # CPO/plantation stocks, aluminium/Press Metal, energy sector
+    "sector_rotation", # Sector momentum, cyclical/defensive rotation, industry trends
+    "behavioural",     # Investor sentiment, anomalies, behavioural biases
 ]
+
+
+def _normalise_domain(domain: str) -> str:
+    """Map any domain string to a valid unified angle name. Returns 'price_action' as default."""
+    if domain in VALID_DOMAINS:
+        return domain
+    mapped = DOMAIN_TO_ANGLE.get(domain)
+    if mapped is not None:
+        return mapped
+    return "price_action"   # safe default for unknown domains
 
 
 class KBIngester(BaseAgent):
@@ -111,15 +151,15 @@ Return JSON:
 
     def _upsert_document(self, slug: str, title: str, domain: str,
                          content: str, summary: str, source_url: str,
-                         tags: list) -> int:
+                         tags: list, status: str = "indexed") -> int:
         with db_session() as conn:
             conn.execute("""
                 INSERT INTO kb_documents (slug, title, domain, content, summary, source_url, tags, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'indexed')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     summary=excluded.summary, tags=excluded.tags,
-                    updated_at=datetime('now'), status='indexed'
-            """, (slug, title, domain, content[:50000], summary, source_url, json.dumps(tags)))
+                    updated_at=datetime('now'), status=excluded.status
+            """, (slug, title, domain, content[:50000], summary, source_url, json.dumps(tags), status))
             row = conn.execute("SELECT id FROM kb_documents WHERE slug=?", (slug,)).fetchone()
         return row["id"]
 
@@ -206,13 +246,58 @@ Return JSON:
             pass  # link creation is supplementary — never fail ingest over it
 
     # ------------------------------------------------------------------
+    # Relevance check (Layer 1 quality gate)
+    # ------------------------------------------------------------------
+
+    def relevance_check(self, title: str, content_preview: str) -> dict:
+        """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0–1.0).
+
+        Returns {'relevance': float, 'reason': str}.
+        Defaults to {'relevance': 1.0, 'reason': 'check_failed'} on any error
+        so that ingest is never blocked by a transient API issue.
+        """
+        prompt = (
+            f"Rate this content's relevance to Bursa Malaysia equity trading on a scale 0.0-1.0.\n\n"
+            f"Title: {title}\n"
+            f"Summary first 500 chars: {content_preview[:500]}\n\n"
+            f"Score 0.0-0.3: Not relevant (generic theory, wrong market, non-equity, "
+            f"cybersecurity, banking infrastructure etc.)\n"
+            f"Score 0.3-0.6: Partially relevant (general EM equity, Asian markets, "
+            f"applicable techniques)\n"
+            f"Score 0.6-1.0: Highly relevant (specifically Bursa, Malaysian stocks, "
+            f"KLCI, CPO, EPF etc.)\n\n"
+            f'Return JSON: {{"relevance": 0.0, "reason": "..."}}'
+        )
+        try:
+            result = self.call_claude_json(
+                "You are a relevance classifier for a Bursa Malaysia equity research system. "
+                "Return only the requested JSON — no other text.",
+                [{"role": "user", "content": prompt}],
+                model=MODEL_FAST,
+                max_tokens=80,
+                task_label="kb_relevance_check",
+            )
+            relevance = float(result.get("relevance", 1.0))
+            reason = str(result.get("reason", ""))
+            return {"relevance": relevance, "reason": reason}
+        except Exception as e:
+            self.log_daemon("WARN", f"KB relevance check failed: {e}")
+            return {"relevance": 1.0, "reason": "check_failed"}
+
+    # ------------------------------------------------------------------
     # Public ingest methods
     # ------------------------------------------------------------------
 
     def ingest_text(self, content: str, title: str, domain: str = "other",
                     source_url: str = "") -> dict:
-        domain = domain if domain in VALID_DOMAINS else "other"
+        domain = _normalise_domain(domain)
         slug = self._slug(title)
+
+        # Layer 1: relevance gate — cheap Haiku call before the expensive Sonnet summarise
+        rel = self.relevance_check(title, content)
+        relevance_score = rel["relevance"]
+        relevance_reason = rel["reason"]
+        is_low_relevance = relevance_score < 0.4
 
         meta = self._summarise(content, title, domain)
         if "error" in meta:
@@ -223,7 +308,8 @@ Return JSON:
         tags = meta.get("tags", [])
         concepts = meta.get("key_concepts", [])
 
-        doc_id = self._upsert_document(slug, title, domain, content, summary, source_url, tags)
+        doc_status = "low_relevance" if is_low_relevance else "indexed"
+        doc_id = self._upsert_document(slug, title, domain, content, summary, source_url, tags, doc_status)
 
         concept_ids = []
         for c in concepts:
@@ -236,19 +322,30 @@ Return JSON:
         # Tag-based doc-to-doc linking (broader than concept-phrase matching)
         self._link_by_tags(doc_id, tags)
 
-        self.log_daemon("INFO", f"Ingested doc [{doc_id}] '{title}' ({len(concepts)} concepts, {len(tags)} tags)")
+        self.log_daemon(
+            "INFO",
+            f"Ingested doc [{doc_id}] '{title}' ({len(concepts)} concepts, {len(tags)} tags) "
+            f"relevance={relevance_score:.2f} ({doc_status})",
+        )
 
-        # Auto-seed alpha ideas from every ingested document
-        try:
-            from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
-            seed_result = AlphaSeedGenerator().digest(doc_id)
-            if not seed_result.get("skipped"):
-                self.log_daemon(
-                    "INFO",
-                    f"AlphaSeed: {seed_result['hypotheses_generated']} hypotheses from '{title[:50]}'",
-                )
-        except Exception as e:
-            self.log_daemon("WARN", f"AlphaSeed failed for doc {doc_id}: {e}")
+        # Auto-seed alpha ideas — only for sufficiently relevant documents
+        if is_low_relevance:
+            self.log_daemon(
+                "INFO",
+                f"KB: skipped seeding low-relevance doc [{doc_id}] "
+                f"(score={relevance_score:.2f}: {relevance_reason})",
+            )
+        else:
+            try:
+                from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
+                seed_result = AlphaSeedGenerator().digest(doc_id)
+                if not seed_result.get("skipped"):
+                    self.log_daemon(
+                        "INFO",
+                        f"AlphaSeed: {seed_result['hypotheses_generated']} hypotheses from '{title[:50]}'",
+                    )
+            except Exception as e:
+                self.log_daemon("WARN", f"AlphaSeed failed for doc {doc_id}: {e}")
 
         return {
             "doc_id": doc_id,
@@ -259,6 +356,9 @@ Return JSON:
             "tags": tags,
             "concepts_extracted": len(concepts),
             "trading_relevance": meta.get("trading_relevance", 0.0),
+            "relevance_score": relevance_score,
+            "relevance_reason": relevance_reason,
+            "low_relevance": is_low_relevance,
         }
 
     async def ingest_url(self, url: str, title: str = "", domain: str = "other") -> dict:
@@ -281,44 +381,44 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def classify_domain(self, doc_id: int, title: str, summary: str) -> str:
-        """Call Claude (Haiku) to infer the best domain for a document and persist it.
+        """Call Claude (Haiku) to infer the best unified angle domain for a document.
 
-        Returns the inferred domain string. Falls back to 'other' on any error.
-        Only updates the DB record if a non-'other' domain is confidently inferred.
+        Returns one of the 8 unified angle names. Falls back to 'price_action' on error.
+        Always updates the DB record with the classified domain.
         """
-        domain_list = "\n".join(f"  {d}" for d in INFER_DOMAINS)
+        domain_list = "\n".join(
+            f"  {d}" for d in INFER_DOMAINS
+        )
         prompt = (
-            f"Classify this knowledge base document into exactly one domain.\n\n"
+            f"Classify this Bursa Malaysia equity research document into exactly one research angle.\n\n"
             f"Title: {title}\n"
             f"Summary: {summary[:600]}\n\n"
-            f"Available domains:\n{domain_list}\n\n"
-            f'Return JSON only: {{"domain": "<domain-name>", "confidence": 0.0, '
+            f"Available angles:\n{domain_list}\n\n"
+            f'Return JSON only: {{"domain": "<angle-name>", "confidence": 0.0, '
             f'"reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
-                "You are a knowledge base classifier for a quantitative finance system. "
+                "You are a knowledge base classifier for a Bursa Malaysia equity research system. "
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
                 max_tokens=120,
                 task_label="kb_classify_domain",
             )
-            domain = result.get("domain", "other")
-            if domain not in VALID_DOMAINS:
-                domain = "other"
-            if domain != "other":
-                with db_session() as conn:
-                    conn.execute(
-                        "UPDATE kb_documents SET domain=?, updated_at=datetime('now') WHERE id=?",
-                        (domain, doc_id),
-                    )
-                self.log_daemon("INFO", f"KB domain classified [{doc_id}] → '{domain}' "
-                                        f"(confidence={result.get('confidence', 0):.2f})")
+            raw_domain = result.get("domain", "price_action")
+            domain = _normalise_domain(raw_domain)
+            with db_session() as conn:
+                conn.execute(
+                    "UPDATE kb_documents SET domain=?, updated_at=datetime('now') WHERE id=?",
+                    (domain, doc_id),
+                )
+            self.log_daemon("INFO", f"KB domain classified [{doc_id}] → '{domain}' "
+                                    f"(confidence={result.get('confidence', 0):.2f})")
             return domain
         except Exception as e:
             self.log_daemon("WARN", f"Domain classification failed for doc {doc_id}: {e}")
-            return "other"
+            return "price_action"
 
     # ------------------------------------------------------------------
     # Search

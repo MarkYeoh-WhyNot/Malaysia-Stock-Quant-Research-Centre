@@ -136,12 +136,97 @@ class StrategyResearcher(BaseAgent):
                 return True
         return False
 
+    # ── Pre-save infeasibility filter ─────────────────────────────────────────
+
+    def _filter_infeasible(self, ideas: list) -> list:
+        """Filter out structurally infeasible ideas before saving to DB.
+
+        Applied after generate_ideas() and before save_idea() to prevent
+        garbage from entering the pipeline regardless of the generation path
+        (/generate command, /screen command, or daemon auto-generation).
+
+        Checks:
+          1. ticker is valid .KL format or a plausible sector name
+          2. hypothesis does not contain infeasible trading modes
+          3. factor_formula is non-trivial (> 20 chars)
+          4. novelty_score >= 0.5 AND logic_score >= 0.6
+
+        Returns the filtered list and logs every rejection.
+        """
+        _INFEASIBLE_PHRASES = [
+            "short sell", "short-sell", "pairs trade", "pairs trading",
+            "long/short", "long-short", "options contract", "futures spread",
+            "arbitrage between", "delta neutral", "market neutral", "spread trade",
+        ]
+        valid = []
+        for idea in ideas:
+            title   = idea.get("title", "")
+            ticker  = idea.get("ticker", "")
+            hypo    = (idea.get("hypothesis", "") or "").lower()
+            formula = (idea.get("factor_formula", "") or "")
+
+            # Check 1: valid .KL ticker or plausible sector
+            if not self._is_equity_ticker(ticker):
+                sector = (idea.get("sector", "") or "").strip()
+                if not sector:
+                    self.log_daemon(
+                        "INFO",
+                        f"generate_ideas: filtered '{title[:50]}' (invalid ticker: {ticker})",
+                    )
+                    continue
+
+            # Check 2: no infeasible trading modes
+            infeasible = next((p for p in _INFEASIBLE_PHRASES if p in hypo), None)
+            if infeasible:
+                self.log_daemon(
+                    "INFO",
+                    f"generate_ideas: filtered '{title[:50]}' (infeasible: '{infeasible}' in hypothesis)",
+                )
+                continue
+
+            # Check 3: non-trivial formula
+            if len(formula.strip()) < 20:
+                self.log_daemon(
+                    "INFO",
+                    f"generate_ideas: filtered '{title[:50]}' (trivial factor_formula: '{formula[:30]}')",
+                )
+                continue
+
+            # Check 4: scores
+            novelty = float(idea.get("novelty_score", 0) or 0)
+            logic   = float(idea.get("logic_score", 0) or 0)
+            if novelty < 0.5 or logic < 0.6:
+                self.log_daemon(
+                    "INFO",
+                    f"generate_ideas: filtered '{title[:50]}' "
+                    f"(low scores: novelty={novelty:.2f} logic={logic:.2f})",
+                )
+                continue
+
+            valid.append(idea)
+
+        filtered_count = len(ideas) - len(valid)
+        if filtered_count > 0:
+            self.log_daemon(
+                "INFO",
+                f"generate_ideas: filtered {filtered_count}/{len(ideas)} infeasible ideas",
+            )
+        return valid
+
     # ── Idea generation ────────────────────────────────────────────────────────
 
     def generate_ideas(self, topic: str = None, count: int = 5) -> list:
         # ── KB context injection ──────────────────────────────────────────────
         # Search the knowledge base for relevant documents before calling Claude.
         # Failure here is non-blocking — generation continues without KB context.
+        # ── Rejection avoidance injection ────────────────────────────────────
+        avoidance_context = ""
+        try:
+            from knowledge.ingestion.rejection_memory import RejectionMemory
+            avoidance_context = RejectionMemory().inject_into_prompt()
+        except Exception as e:
+            self.log_daemon("WARN", f"RejectionMemory unavailable (non-blocking): {e}")
+
         kb_context = ""
         try:
             from knowledge.ingestion.kb_ingester import KBIngester
@@ -170,6 +255,7 @@ class StrategyResearcher(BaseAgent):
         )
         prompt = f"""Generate exactly {count} quantitative equity alpha ideas for Bursa Malaysia stocks.
 {kb_context}
+{avoidance_context}
 
 {topic_line}
 
@@ -229,7 +315,9 @@ Return a valid JSON array of exactly {count} objects. Each object:
                     continue
             clean.append(idea)
 
-        self.log_daemon("INFO", f"Generated {len(clean)}/{len(raw_ideas)} clean KLSE equity ideas")
+        # Apply pre-save infeasibility filter
+        clean = self._filter_infeasible(clean)
+        self.log_daemon("INFO", f"Generated {len(clean)}/{len(raw_ideas)} clean KLSE equity ideas (post-filter)")
         return clean
 
     # ── Persistence ────────────────────────────────────────────────────────────
@@ -271,6 +359,47 @@ Return a valid JSON array of exactly {count} objects. Each object:
 
     # ── Gate 0 — initial screening ─────────────────────────────────────────────
 
+    @staticmethod
+    def _compute_feasibility(idea_row, ticker: str, factor_formula: str) -> float:
+        """Score 0.0-1.0 based on whether the idea is actually executable on Bursa."""
+        score = 0.0
+        formula_lower = (factor_formula or "").lower()
+        hypothesis_lower = (idea_row["hypothesis"] or "").lower()
+        blob = formula_lower + " " + hypothesis_lower
+
+        # +0.3: valid .KL ticker
+        if re.match(r'^\d{4}[A-Z0-9]*\.KL$', ticker.strip()):
+            score += 0.3
+
+        # +0.2: long-only (no short/pairs language)
+        short_keywords = ["short", "pairs", "spread arbitrage", "sell short", "hedge"]
+        if not any(kw in blob for kw in short_keywords):
+            score += 0.2
+
+        # +0.2: data available via Yahoo Finance .KL
+        unavailable_keywords = ["options", "futures contract", "otc", "dark pool",
+                                 "tick data", "level 2", "order book", "forex", "fx rate"]
+        if not any(kw in blob for kw in unavailable_keywords):
+            score += 0.2
+
+        # +0.15: holding period realistic for Bursa T+3
+        intraday_keywords = ["intraday", "scalp", "1 minute", "5 minute", "hourly", "hft"]
+        short_hold_keywords = ["1 day", "2 day", "3 day", "t+1", "t+2"]
+        if any(kw in blob for kw in intraday_keywords):
+            score -= 0.3
+        elif any(kw in blob for kw in short_hold_keywords):
+            score += 0.0   # T+3 makes 1-3 day holds awkward but not impossible
+        else:
+            score += 0.15   # >5 day holding period — safe for T+3
+
+        # +0.15: factor uses available indicators (price/volume/fundamental)
+        exotic_keywords = ["futures price", "options greeks", "cds spread", "credit default",
+                           "bond yield curve", "repo rate"]
+        if not any(kw in blob for kw in exotic_keywords):
+            score += 0.15
+
+        return round(min(max(score, 0.0), 1.0), 3)
+
     def score_gate0(self, idea_id: int) -> dict:
         with db_session() as conn:
             row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
@@ -281,6 +410,9 @@ Return a valid JSON array of exactly {count} objects. Each object:
         stock_info = KLCI_BY_SYMBOL.get(ticker, {})
         company    = stock_info.get("name", ticker)
         sector     = stock_info.get("sector", "Unknown")
+
+        # Compute feasibility before calling Claude
+        feasibility = self._compute_feasibility(row, ticker, row["factor_formula"] or "")
 
         prompt = f"""Score this Bursa Malaysia equity strategy idea at Gate 0 (initial quality screen).
 
@@ -306,7 +438,8 @@ IMPLEMENTABILITY (0–1): Can a retail/institutional investor execute this on Bu
 
 KLSE FIT (0–1): How well does this match Bursa Malaysia's typical alpha sources?
 
-Pass threshold: novelty ≥ 0.55, logic ≥ 0.60, implementability ≥ 0.50
+Pass threshold: novelty ≥ 0.60, logic ≥ 0.70
+  (feasibility is pre-scored at {feasibility:.2f}; must be ≥ 0.60 to pass regardless of other scores)
 
 Return JSON only:
 {{
@@ -328,17 +461,37 @@ Return JSON only:
             model=MODEL_FAST,
             task_label="gate0_score",
         )
-        passed = result.get("pass", False)
+
+        novelty  = result.get("novelty_score", 0)
+        logic    = result.get("logic_score", 0)
+
+        # Gate 0 requires ALL THREE dimensions
+        passed = (
+            novelty    >= 0.60
+            and logic       >= 0.70
+            and feasibility >= 0.60
+        )
+
+        # Build a clear failure message so rejection_memory gets useful context
+        if not passed:
+            failed_dims = []
+            if novelty    < 0.60: failed_dims.append(f"novelty={novelty:.2f}<0.60")
+            if logic      < 0.70: failed_dims.append(f"logic={logic:.2f}<0.70")
+            if feasibility < 0.60: failed_dims.append(f"feasibility={feasibility:.2f}<0.60")
+            rationale = result.get("rationale", "") + f" [FAILED: {', '.join(failed_dims)}]"
+        else:
+            rationale = result.get("rationale", "")
 
         with db_session() as conn:
             conn.execute("""
                 UPDATE alpha_ideas
-                SET novelty_score=?, logic_score=?, stage=?, status=?,
-                    updated_at=datetime('now')
+                SET novelty_score=?, logic_score=?, feasibility_score=?,
+                    stage=?, status=?, updated_at=datetime('now')
                 WHERE id=?
             """, (
-                result.get("novelty_score", 0),
-                result.get("logic_score", 0),
+                novelty,
+                logic,
+                feasibility,
                 "stage1"   if passed else "gate0",
                 "active"   if passed else "rejected",
                 idea_id,
@@ -347,17 +500,21 @@ Return JSON only:
                 INSERT INTO gate_decisions
                   (idea_id, gate, decision, decided_by, rationale)
                 VALUES (?, 'gate0', ?, 'StrategyResearcher', ?)
-            """, (idea_id, "approve" if passed else "reject", result.get("rationale", "")))
+            """, (idea_id, "approve" if passed else "reject", rationale))
             conn.execute("""
                 INSERT INTO pipeline_events
                   (idea_id, stage, event_type, agent, notes)
                 VALUES (?, 'gate0', ?, 'StrategyResearcher', ?)
-            """, (idea_id, "advanced" if passed else "rejected", result.get("rationale", "")))
+            """, (idea_id, "advanced" if passed else "rejected", rationale))
+
+        result["feasibility_score"] = feasibility
+        result["pass"] = passed
+        result["rationale"] = rationale
 
         self.log_daemon(
             "INFO" if passed else "WARN",
             f"Gate 0 {'PASSED' if passed else 'FAILED'}: [{idea_id}] {ticker} — {row['title']}"
-            f" (novelty={result.get('novelty_score',0):.2f} logic={result.get('logic_score',0):.2f})",
+            f" (novelty={novelty:.2f} logic={logic:.2f} feasibility={feasibility:.2f})",
         )
         return result
 
@@ -514,8 +671,9 @@ novelty_score, logic_score, concerns."""
             task_label="screen_generate",
         )
         raw = result if isinstance(result, list) else result.get("ideas", [])
-        return [idea for idea in raw if not self._reject_if_fx(idea)
-                and self._is_equity_ticker(idea.get("ticker", ""))]
+        clean = [idea for idea in raw if not self._reject_if_fx(idea)
+                 and self._is_equity_ticker(idea.get("ticker", ""))]
+        return self._filter_infeasible(clean)
 
     # ── KB seeding ────────────────────────────────────────────────────────────
 

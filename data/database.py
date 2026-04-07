@@ -175,6 +175,60 @@ def init_db(db_path: Path = DB_PATH):
             logger.info("Migration applied: kb_documents.seeded column added")
         except Exception:
             pass  # column already exists — safe to ignore
+
+        # Fix 2: rejection_reason on alpha_ideas
+        try:
+            conn.execute("ALTER TABLE alpha_ideas ADD COLUMN rejection_reason TEXT")
+            logger.info("Migration applied: alpha_ideas.rejection_reason column added")
+        except Exception:
+            pass
+
+        # Fix 2: rejection_patterns table (accumulates per-pattern counts)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS rejection_patterns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            factor_type TEXT,
+            sector TEXT,
+            reason_category TEXT,
+            count INTEGER DEFAULT 1,
+            last_seen TEXT,
+            example_title TEXT,
+            UNIQUE(factor_type, sector, reason_category)
+        )
+        """)
+
+        # Fix 3: feasibility_score on alpha_ideas
+        try:
+            conn.execute("ALTER TABLE alpha_ideas ADD COLUMN feasibility_score REAL")
+            logger.info("Migration applied: alpha_ideas.feasibility_score column added")
+        except Exception:
+            pass
+
+        # Fix 5: needs_review + verification_note on backtest_runs
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN needs_review INTEGER DEFAULT 0")
+            logger.info("Migration applied: backtest_runs.needs_review column added")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN verification_note TEXT")
+            logger.info("Migration applied: backtest_runs.verification_note column added")
+        except Exception:
+            pass
+
+        # Fix 4: holding_period_class on backtest_runs
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN holding_period_class TEXT")
+            logger.info("Migration applied: backtest_runs.holding_period_class column added")
+        except Exception:
+            pass
+
+        # Fix 6: trade_count on backtest_runs
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN trade_count INTEGER")
+            logger.info("Migration applied: backtest_runs.trade_count column added")
+        except Exception:
+            pass
     logger.info(f"Database initialized at {db_path}")
 
 if __name__ == "__main__":

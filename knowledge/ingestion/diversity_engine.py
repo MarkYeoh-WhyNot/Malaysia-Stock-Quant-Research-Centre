@@ -137,51 +137,29 @@ class DiversityEngine:
 
     def check_balance(self) -> dict:
         """
-        Count KB docs per angle and return a coverage report.
-        Counts docs tagged via diversity_hunt source_url AND docs matching
-        angle keywords in title/summary/tags (for legacy untagged documents).
+        Count KB docs per angle using the unified domain field.
+
+        Since Fix 2 (2026-04-07), kb_documents.domain is one of the 8 angle names,
+        making this a simple GROUP BY query — no keyword heuristics needed.
 
         Returns:
             {
-              "coverage":     {"price_action": 3, "fundamental": 1, ...},
+              "coverage":      {"price_action": 3, "fundamental": 1, ...},
               "least_covered": "behavioural",
               "total_docs":    18,
               "all_angles":    list of angle names,
             }
         """
-        coverage = {}
+        # Seed all angles at 0 so even uncovered ones appear in the result
+        coverage = {angle: 0 for angle in ANGLES}
         with db_session() as conn:
-            for angle in ANGLES:
-                # Count docs tagged by diversity_hunt source_url
-                row = conn.execute(
-                    "SELECT COUNT(*) AS n FROM kb_documents WHERE source_url LIKE ?",
-                    (f"diversity_hunt:{angle}%",),
-                ).fetchone()
-                tagged_count = row["n"] if row else 0
-
-                # Also count untagged docs matching angle keywords
-                keywords = ANGLE_KEYWORDS.get(angle, [])
-                keyword_count = 0
-                if keywords:
-                    conditions = " OR ".join([
-                        "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ?)"
-                        for _ in keywords
-                    ])
-                    params = []
-                    for kw in keywords:
-                        like = f"%{kw.lower()}%"
-                        params.extend([like, like, like])
-                    # Exclude already-tagged docs to avoid double-counting
-                    params.append(f"diversity_hunt:{angle}%")
-                    sql = (
-                        f"SELECT COUNT(*) AS n FROM kb_documents "
-                        f"WHERE ({conditions}) "
-                        f"AND (source_url IS NULL OR source_url = '' OR source_url NOT LIKE ?)"
-                    )
-                    kw_row = conn.execute(sql, params).fetchone()
-                    keyword_count = kw_row["n"] if kw_row else 0
-
-                coverage[angle] = tagged_count + keyword_count
+            rows = conn.execute(
+                "SELECT domain, COUNT(*) AS n FROM kb_documents GROUP BY domain"
+            ).fetchall()
+        for row in rows:
+            angle = row["domain"]
+            if angle in coverage:
+                coverage[angle] += row["n"]
 
         least_covered = min(coverage, key=coverage.get)
         return {
@@ -274,6 +252,7 @@ class DiversityEngine:
                 topic=query,
                 context=data["description"],
                 angle_tag=angle_name,
+                domain=angle_name,   # store unified domain directly in kb_documents
             )
             combined["papers_found"]    += result["papers_found"]
             combined["papers_ingested"] += result["papers_ingested"]
