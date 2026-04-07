@@ -167,6 +167,14 @@ def init_db(db_path: Path = DB_PATH):
         CREATE INDEX IF NOT EXISTS idx_ideas_stage ON alpha_ideas(stage);
         CREATE INDEX IF NOT EXISTS idx_logs_level  ON daemon_logs(level);
         """)
+        # ── Safe post-schema migrations ──────────────────────────────────────
+        # seeded=1 means AlphaSeedGenerator has already processed this document.
+        # Guards against re-processing the same KB doc every daemon cycle.
+        try:
+            conn.execute("ALTER TABLE kb_documents ADD COLUMN seeded INTEGER DEFAULT 0")
+            logger.info("Migration applied: kb_documents.seeded column added")
+        except Exception:
+            pass  # column already exists — safe to ignore
     logger.info(f"Database initialized at {db_path}")
 
 if __name__ == "__main__":

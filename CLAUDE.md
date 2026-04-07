@@ -281,3 +281,47 @@ CORS is open (allow all origins).
 - OANDA client exists (`data/oanda/client.py`) but is legacy FX — not used for KLSE
 - Paper trading runs against SQLite, not a real broker
 - `red_blue_team.py` is in `agents/researcher/` (not its own subdirectory)
+
+---
+
+## Architecture Notes (from 2026-04-07 compatibility audit)
+
+### Column naming mismatch
+`alpha_ideas.pair` stores a **stock ticker** (e.g. `1155.KL`), not a currency pair.
+This is a historical naming artifact — do not rename (would break all queries).
+When reading/writing ideas, treat `pair` as the primary ticker field.
+
+### kb_links — doc-to-doc via shared concepts
+`kb_links` has FK constraints on both `source_id` and `target_id` referencing
+`kb_documents(id)`. It cannot store concept IDs directly.
+Links are created as **doc-to-doc relationships** using `relation='shared_concept'`
+when two documents share a concept name (matched via tags/title/summary).
+Concept data lives in `kb_concepts` — `kb_links` is for graph traversal only.
+
+### kb_documents.seeded column
+`seeded INTEGER DEFAULT 0` — set to `1` after AlphaSeedGenerator processes a document.
+**Always filter `WHERE seeded=0`** when selecting documents for seed generation to
+avoid re-processing the same document every daemon cycle (budget waste).
+
+### Slug prefix conventions
+| Source | Slug format | Example |
+|---|---|---|
+| `StrategyResearcher.save_idea()` | `YYYY-MM-DD-{title}` | `2026-04-07-maybank-dividend-capture` |
+| `AlphaSeedGenerator` (planned) | `seed-YYYY-MM-DD-{title}` | `seed-2026-04-07-momentum-klse` |
+| `KBIngester._slug()` | `YYYY-MM-DD-{title}` | `2026-04-07-epf-ownership-dynamics` |
+
+The `seed-` prefix prevents silent `INSERT OR IGNORE` collisions between
+organically-generated ideas and KB-seeded ideas on the same day.
+
+### KB domain classification
+`VALID_DOMAINS` in `kb_ingester.py` includes both legacy domains (`fx`, `macro`,
+`technical`, `fundamental`, `research`) and inference domains used by
+`classify_domain()`: `alpha-ideas`, `market-structure`, `analysis-methods`,
+`quant-philosophy`, `mental-models`, `factor-data`, `infrastructure`,
+`portfolio-management`, `risk-management`, `behavioural`.
+The `/kb` Telegram command auto-classifies documents if domain would be `"other"`.
+
+### KB context injection in idea generation
+`StrategyResearcher.generate_ideas()` searches `kb_documents` before calling
+Claude and injects matching document summaries as context. Failure is non-blocking.
+Logs: `"KB context: N documents found for idea generation"` in `daemon_logs`.

@@ -143,6 +143,20 @@ svg text{font-family:'Courier New',monospace}
 
 /* ── Sharpe color ── */
 .good{color:var(--green)}.bad{color:var(--red)}.neutral{color:var(--muted)}
+
+/* ── Agent Team ── */
+.agent-team-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;margin-bottom:0}
+.agent-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;min-width:200px;flex-shrink:0;position:relative;transition:border-color .15s}
+.agent-card:hover{border-color:var(--cyan)}
+.agent-badge{position:absolute;top:10px;right:10px;background:var(--purple);color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;line-height:1}
+.agent-badge.zero{background:var(--bg3);color:var(--muted)}
+.agent-icon{width:36px;height:36px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:bold;letter-spacing:-.5px;margin-bottom:8px;flex-shrink:0}
+.agent-name{font-size:12px;font-weight:bold;color:var(--text);margin-bottom:2px}
+.agent-subtitle{font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4}
+.agent-status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:9px;font-weight:bold;letter-spacing:.5px;margin-bottom:8px}
+.agent-status-pill.ACTIVE{background:#064e3b;color:var(--green)}
+.agent-status-pill.WAITING{background:#3a2a00;color:var(--yellow)}
+.agent-task{font-size:11px;color:var(--muted2);font-style:italic;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px}
 </style>
 </head>
 <body>
@@ -197,6 +211,19 @@ svg text{font-family:'Courier New',monospace}
       <div class="sub" id="mc-budget-sub"></div>
     </div>
     <div class="stat-card"><div class="val" id="mc-calls" style="color:var(--purple)">—</div><div class="lbl">API Calls Today</div></div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Agent Team</span>
+      <span style="font-size:10px;color:var(--muted2)">
+        <span id="at-active-badge" style="color:var(--green);font-weight:bold">—</span> ACTIVE &nbsp;
+        <span id="at-pending-badge" style="color:var(--purple);font-weight:bold">—</span> PENDING
+      </span>
+    </div>
+    <div class="agent-team-row" id="agent-team-row">
+      <div style="color:var(--muted);font-size:11px;padding:8px">Loading…</div>
+    </div>
   </div>
 
   <div class="panel">
@@ -282,6 +309,32 @@ svg text{font-family:'Courier New',monospace}
         </table></div>
       </div>
     </div>
+  </div>
+
+  <div class="row">
+    <div class="col">
+      <div class="panel">
+        <div class="panel-head"><span class="panel-title">Rejection by Stage</span></div>
+        <div id="chart-rejection"><div style="color:var(--muted);padding:20px;text-align:center;font-size:11px">Loading…</div></div>
+      </div>
+    </div>
+    <div class="col">
+      <div class="panel">
+        <div class="panel-head"><span class="panel-title">Status Distribution</span></div>
+        <div id="chart-donut-wrap" style="display:flex;align-items:center;gap:20px;padding:8px 4px">
+          <canvas id="chart-donut" width="160" height="160" style="flex-shrink:0"></canvas>
+          <div id="chart-donut-legend" style="font-size:10px;line-height:1.8;flex:1;min-width:0"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><span class="panel-title">Coach Performance</span></div>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Coach</th><th>Total Ideas</th><th>Explored</th><th>Gate 0 Pass Rate</th></tr></thead>
+      <tbody id="analytics-coach"></tbody>
+    </table></div>
   </div>
 </div>
 
@@ -873,8 +926,42 @@ function svgLine(data, {width=460, height=100, color='#06b6d4', valueKey='n', la
   </svg></div>`;
 }
 
+// ── Agent Team ───────────────────────────────────────────────────────────────
+const _agentColors = {
+  StrategyResearcher: {bg:'#1e3a5f', fg:'#3b82f6', initials:'SR'},
+  DataEngineer:       {bg:'#0f3d2e', fg:'#10b981', initials:'DE'},
+  BacktestEngineer:   {bg:'#2d1b4e', fg:'#8b5cf6', initials:'BE'},
+  RiskMonitor:        {bg:'#3d1a1a', fg:'#ef4444', initials:'RM'},
+  PortfolioExecutor:  {bg:'#2a1a0a', fg:'#f97316', initials:'PE'},
+};
+
+async function loadAgentTeam() {
+  const d = await apiFetch('/agent-team');
+  const row = document.getElementById('agent-team-row');
+  if (!d || !d.agents) {
+    row.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px">Agent data unavailable</div>';
+    return;
+  }
+  document.getElementById('at-active-badge').textContent  = d.total_active;
+  document.getElementById('at-pending-badge').textContent = d.total_pending;
+
+  row.innerHTML = d.agents.map(a => {
+    const c = _agentColors[a.name] || {bg:'#1a2035', fg:'#64748b', initials:'??'};
+    const pending = a.pending_tasks || 0;
+    return `<div class="agent-card">
+      <div class="agent-badge ${pending === 0 ? 'zero' : ''}">${pending}</div>
+      <div class="agent-icon" style="background:${c.bg};color:${c.fg}">${c.initials}</div>
+      <div class="agent-name">${esc(a.display_name)}</div>
+      <div class="agent-subtitle">${esc(a.subtitle)}</div>
+      <div class="agent-status-pill ${a.status}">${a.status}</div>
+      <div class="agent-task" title="${esc(a.current_task)}">${esc(a.current_task)}</div>
+    </div>`;
+  }).join('');
+}
+
 // ── Mission Control ──────────────────────────────────────────────────────────
 async function loadMC() {
+  loadAgentTeam();
   const d = await apiFetch('/mission-control');
   if (!d) {
     document.getElementById('mc-logs').innerHTML = `<div style="color:var(--red);padding:8px">⚠ Cannot reach API at ${API}</div>`;
@@ -933,21 +1020,28 @@ function renderMCLogs() {
 
 // ── Analytics ────────────────────────────────────────────────────────────────
 async function loadAnalytics() {
-  const d = await apiFetch('/analytics');
+  const [d, det] = await Promise.all([
+    apiFetch('/analytics'),
+    apiFetch('/pipeline/analytics/detailed'),
+  ]);
   if (!d) return;
 
-  // Stats cards
+  // Stats cards — 4 existing + 2 new from detailed endpoint
   const totalIdeas = d.funnel.reduce((a, s) => a + s.active + s.pending + s.rejected, 0);
   const totalPassed = d.gate_acceptance.reduce((a, g) => a + g.approve, 0);
   const totalRejected = d.gate_acceptance.reduce((a, g) => a + g.reject, 0);
   const avgRate = d.gate_acceptance.length
     ? (d.gate_acceptance.reduce((a, g) => a + g.rate, 0) / d.gate_acceptance.length).toFixed(1)
     : 0;
+  const g0PassRate  = det ? det.gate0_pass_rate + '%' : '—';
+  const stage2Plus  = det ? det.stage2_plus_count : '—';
   document.getElementById('analytics-stats').innerHTML = `
     <div class="stat-card"><div class="val">${totalIdeas}</div><div class="lbl">Total Ideas</div></div>
     <div class="stat-card"><div class="val" style="color:var(--green)">${totalPassed}</div><div class="lbl">Gates Passed</div></div>
     <div class="stat-card"><div class="val" style="color:var(--red)">${totalRejected}</div><div class="lbl">Gates Rejected</div></div>
     <div class="stat-card"><div class="val" style="color:var(--cyan)">${avgRate}%</div><div class="lbl">Avg Acceptance Rate</div></div>
+    <div class="stat-card"><div class="val" style="color:var(--yellow)">${g0PassRate}</div><div class="lbl">Gate 0 Pass Rate</div></div>
+    <div class="stat-card"><div class="val" style="color:var(--purple)">${stage2Plus}</div><div class="lbl">Stage 2+ Ideas</div></div>
   `;
 
   // Funnel chart
@@ -986,6 +1080,103 @@ async function loadAnalytics() {
     `<tr><td style="color:var(--cyan)">${p.pair}</td><td>${p.count}</td>
      <td style="${clr(p.avg_sharpe)}">${fmt2(p.avg_sharpe)}</td></tr>`
   ).join('') || '<tr><td colspan="3" style="color:var(--muted);text-align:center">No data</td></tr>';
+
+  // New detailed sections
+  if (det) {
+    renderRejectionChart(det.rejection_by_stage);
+    renderDonutChart(det.status_distribution);
+    renderCoachTable(det.coach_performance);
+  }
+}
+
+function renderRejectionChart(data) {
+  const el = document.getElementById('chart-rejection');
+  if (!el) return;
+  if (!data || !data.length) {
+    el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;font-size:11px">No rejections yet — great sign!</div>';
+    return;
+  }
+  const stageColors = {gate0:'#3b82f6',stage1:'#06b6d4',stage2:'#8b5cf6',stage3:'#f97316',stage4a:'#10b981',stage4b:'#22d3ee',stage5:'#ec4899'};
+  const maxVal = Math.max(...data.map(d => d.count)) || 1;
+  const rowH = 28, padL = 72, padR = 52, padT = 8, padB = 8;
+  const W = 420, H = data.length * rowH + padT + padB;
+  const rows = data.map((d, i) => {
+    const bw  = Math.max(3, (d.count / maxVal) * (W - padL - padR));
+    const by  = padT + i * rowH + (rowH - 14) / 2;
+    const mid = padT + i * rowH + rowH / 2 + 4;
+    const col = stageColors[d.stage] || '#64748b';
+    return `
+      <text x="${padL - 6}" y="${mid}" text-anchor="end" fill="#94a3b8" font-size="10">${d.stage}</text>
+      <rect x="${padL}" y="${by}" width="${bw}" height="14" fill="${col}" rx="2" opacity=".85"/>
+      <text x="${padL + bw + 5}" y="${mid}" fill="${col}" font-size="10" font-weight="bold">${d.count}</text>`;
+  });
+  el.innerHTML = `<div class="chart-wrap"><svg width="100%" viewBox="0 0 ${W} ${H}">${rows.join('')}</svg></div>`;
+}
+
+function renderDonutChart(segments) {
+  const canvas = document.getElementById('chart-donut');
+  const legend = document.getElementById('chart-donut-legend');
+  if (!canvas || !legend) return;
+  if (!segments || !segments.length) {
+    legend.innerHTML = '<div style="color:var(--muted)">No data yet</div>';
+    return;
+  }
+  const total = segments.reduce((a, s) => a + s.value, 0) || 1;
+  const ctx   = canvas.getContext('2d');
+  const cx = 80, cy = 80, outerR = 68, innerR = 40;
+  ctx.clearRect(0, 0, 160, 160);
+  // Draw segments
+  let angle = -Math.PI / 2;
+  segments.forEach(seg => {
+    const sweep = (seg.value / total) * 2 * Math.PI;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, outerR, angle, angle + sweep);
+    ctx.closePath();
+    ctx.fillStyle = seg.color;
+    ctx.fill();
+    // subtle gap
+    ctx.strokeStyle = '#111827';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    angle += sweep;
+  });
+  // Donut hole
+  ctx.beginPath();
+  ctx.arc(cx, cy, innerR, 0, 2 * Math.PI);
+  ctx.fillStyle = '#111827';
+  ctx.fill();
+  // Center labels
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = 'bold 20px Courier New';
+  ctx.fillText(total, cx, cy - 7);
+  ctx.font = '8px Courier New';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('TOTAL', cx, cy + 9);
+  // Legend
+  legend.innerHTML = segments.map(s =>
+    `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+       <span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${s.color};flex-shrink:0"></span>
+       <span style="color:var(--muted2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(s.label)}</span>
+       <span style="color:var(--text);font-weight:bold;margin-left:4px">${s.value}</span>
+       <span style="color:var(--muted);width:34px;text-align:right">${(s.value / total * 100).toFixed(0)}%</span>
+     </div>`
+  ).join('');
+}
+
+function renderCoachTable(data) {
+  const el = document.getElementById('analytics-coach');
+  if (!el) return;
+  el.innerHTML = (data || []).map(c =>
+    `<tr>
+       <td style="color:var(--cyan)">${esc(c.coach)}</td>
+       <td>${c.total_ideas}</td>
+       <td>${c.explored}</td>
+       <td style="color:${c.gate_pass_rate >= 50 ? 'var(--green)' : 'var(--yellow)'}">${c.gate_pass_rate}%</td>
+     </tr>`
+  ).join('') || '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:12px">No coach data</td></tr>';
 }
 
 // ── Gate Queue ────────────────────────────────────────────────────────────────

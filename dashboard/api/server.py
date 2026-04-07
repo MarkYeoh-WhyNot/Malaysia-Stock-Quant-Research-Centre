@@ -198,6 +198,208 @@ def gate_queue():
     }
 
 
+# ─── Detailed Analytics ──────────────────────────────────────────────────────
+
+@app.get("/api/pipeline/analytics/detailed")
+def detailed_analytics():
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        # Rejection by stage
+        rejection_by_stage = conn.execute("""
+            SELECT stage, COUNT(*) as n FROM alpha_ideas
+            WHERE status='rejected' GROUP BY stage ORDER BY stage
+        """).fetchall()
+
+        # Full status × stage matrix for donut
+        status_dist = conn.execute("""
+            SELECT stage, status, COUNT(*) as n FROM alpha_ideas GROUP BY stage, status
+        """).fetchall()
+
+        # Gate 0 pass / fail from gate_decisions
+        g0_decisions = conn.execute("""
+            SELECT decision, COUNT(*) as n FROM gate_decisions
+            WHERE gate='gate0' GROUP BY decision
+        """).fetchall()
+
+        # Stage 2+ active count (ideas that made it past both gates)
+        stage2_plus = conn.execute("""
+            SELECT COUNT(*) as n FROM alpha_ideas
+            WHERE stage IN ('stage2','stage3','stage4a','stage4b','stage5')
+            AND status != 'rejected'
+        """).fetchone()["n"]
+
+        # Today's spend
+        today_spend = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd),0) as total FROM ai_usage WHERE created_at LIKE ?",
+            (f"{today}%",)
+        ).fetchone()["total"]
+
+        # Total ideas (for coach stub)
+        total_ideas = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas").fetchone()["n"]
+
+    # Gate 0 pass rate
+    g0_map = {r["decision"]: r["n"] for r in g0_decisions}
+    g0_approve = g0_map.get("approve", 0)
+    g0_total   = g0_approve + g0_map.get("reject", 0)
+    g0_pass_rate = round(g0_approve / max(g0_total, 1) * 100, 1)
+
+    # Build donut segments from stage × status matrix
+    dist = {}
+    for r in status_dist:
+        dist[f"{r['stage']}:{r['status']}"] = r["n"]
+
+    total_rejected = sum(v for k, v in dist.items() if k.endswith(":rejected"))
+    donut_segments = [
+        {"label": "Gate 0 Pending", "value": dist.get("gate0:pending", 0),  "color": "#3b82f6"},
+        {"label": "Gate 0 Active",  "value": dist.get("gate0:active", 0),   "color": "#60a5fa"},
+        {"label": "Stage 1",        "value": dist.get("stage1:active", 0) + dist.get("stage1:pending", 0), "color": "#06b6d4"},
+        {"label": "Stage 2",        "value": dist.get("stage2:active", 0) + dist.get("stage2:pending", 0), "color": "#8b5cf6"},
+        {"label": "Stage 3",        "value": dist.get("stage3:active", 0) + dist.get("stage3:pending", 0), "color": "#f97316"},
+        {"label": "Stage 4A",       "value": dist.get("stage4a:active", 0) + dist.get("stage4a:pending", 0), "color": "#10b981"},
+        {"label": "Stage 5 Live",   "value": dist.get("stage5:active", 0),  "color": "#ec4899"},
+        {"label": "Rejected",       "value": total_rejected,                 "color": "#ef4444"},
+    ]
+    donut_segments = [s for s in donut_segments if s["value"] > 0]
+
+    # Coach performance — stub until coaching is wired up
+    coach_performance = [
+        {
+            "coach": "Generic (No Coach)",
+            "total_ideas": total_ideas,
+            "explored": total_ideas,
+            "gate_pass_rate": g0_pass_rate,
+        }
+    ]
+
+    return {
+        "rejection_by_stage": [{"stage": r["stage"], "count": r["n"]} for r in rejection_by_stage],
+        "status_distribution": donut_segments,
+        "coach_performance": coach_performance,
+        "gate0_pass_rate": g0_pass_rate,
+        "stage2_plus_count": stage2_plus,
+        "today_spend": round(float(today_spend), 4),
+        "total_ideas": total_ideas,
+    }
+
+
+# ─── Agent Team ───────────────────────────────────────────────────────────────
+
+@app.get("/api/agent-team")
+def agent_team():
+    cutoff_5m = (datetime.utcnow() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_1h = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    with db_session() as conn:
+        # StrategyResearcher
+        sr_pending = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='gate0' AND status='pending'"
+        ).fetchone()["n"]
+        sr_active = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage1' AND status='active'"
+        ).fetchone()["n"]
+        sr_recent = conn.execute(
+            "SELECT title, updated_at FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('pending','active') ORDER BY updated_at DESC LIMIT 1"
+        ).fetchone()
+        sr_is_active = bool(conn.execute(
+            "SELECT 1 FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('pending','active') AND updated_at >= ? LIMIT 1",
+            (cutoff_5m,)
+        ).fetchone())
+
+        # DataEngineer
+        de_pending = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage2' AND status='active'"
+        ).fetchone()["n"]
+        de_is_active = bool(conn.execute(
+            "SELECT 1 FROM backtest_runs WHERE created_at >= ? LIMIT 1", (cutoff_5m,)
+        ).fetchone())
+        de_log = conn.execute(
+            "SELECT message FROM daemon_logs WHERE source LIKE '%data%' OR message LIKE '%Fetch%' OR message LIKE '%fetch%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+        # BacktestEngineer
+        bt_recent = conn.execute(
+            "SELECT br.id, ai.title, ai.pair FROM backtest_runs br JOIN alpha_ideas ai ON ai.id=br.idea_id ORDER BY br.id DESC LIMIT 1"
+        ).fetchone()
+        bt_pending = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas ai WHERE ai.stage='stage2' AND ai.status='active' AND NOT EXISTS (SELECT 1 FROM backtest_runs br WHERE br.idea_id=ai.id)"
+        ).fetchone()["n"]
+        bt_is_active = bool(conn.execute(
+            "SELECT 1 FROM backtest_runs WHERE created_at >= ? LIMIT 1", (cutoff_5m,)
+        ).fetchone())
+
+        # RiskMonitor — always active
+        rm_alerts = conn.execute(
+            "SELECT COUNT(*) as n FROM daemon_logs WHERE level='ERROR' AND created_at >= ?", (cutoff_1h,)
+        ).fetchone()["n"]
+
+        # PortfolioExecutor
+        pe_pending = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'"
+        ).fetchone()["n"]
+        pe_is_active = pe_pending > 0
+        pe_recent = conn.execute(
+            "SELECT ai.title FROM paper_trades pt JOIN alpha_ideas ai ON ai.id=pt.idea_id WHERE pt.status='open' ORDER BY pt.id DESC LIMIT 1"
+        ).fetchone()
+
+    def _task(text, maxlen=40):
+        if not text:
+            return "Idle"
+        return (text[:maxlen] + "…") if len(text) > maxlen else text
+
+    agents = [
+        {
+            "name": "StrategyResearcher",
+            "display_name": "Strategy Researcher",
+            "subtitle": "策略研究、文献分析、因子挖掘",
+            "status": "ACTIVE" if sr_is_active else "WAITING",
+            "pending_tasks": sr_pending + sr_active,
+            "current_task": _task(sr_recent["title"] if sr_recent else "Scanning for alpha ideas"),
+        },
+        {
+            "name": "DataEngineer",
+            "display_name": "Data Engineer",
+            "subtitle": "数据管理、清洗、特征工程",
+            "status": "ACTIVE" if de_is_active else "WAITING",
+            "pending_tasks": de_pending,
+            "current_task": _task(de_log["message"] if de_log else "Monitoring data pipeline"),
+        },
+        {
+            "name": "BacktestEngineer",
+            "display_name": "Backtest Engineer",
+            "subtitle": "回测框架、量化分析、结果评估",
+            "status": "ACTIVE" if bt_is_active else "WAITING",
+            "pending_tasks": bt_pending,
+            "current_task": _task(
+                f"Backtesting {bt_recent['pair']} — {bt_recent['title']}" if bt_recent else "Awaiting factor signals"
+            ),
+        },
+        {
+            "name": "RiskMonitor",
+            "display_name": "Risk Monitor",
+            "subtitle": "风控审查、异常检测、exposure监控",
+            "status": "ACTIVE",
+            "pending_tasks": rm_alerts,
+            "current_task": "Monitoring pipeline health",
+        },
+        {
+            "name": "PortfolioExecutor",
+            "display_name": "Portfolio Executor",
+            "subtitle": "信号执行、仓位管理、交易路由",
+            "status": "ACTIVE" if pe_is_active else "WAITING",
+            "pending_tasks": pe_pending,
+            "current_task": _task(
+                f"Managing position: {pe_recent['title']}" if pe_recent else "Awaiting paper trade signals"
+            ),
+        },
+    ]
+
+    return {
+        "agents": agents,
+        "total_active": sum(1 for a in agents if a["status"] == "ACTIVE"),
+        "total_pending": sum(a["pending_tasks"] for a in agents),
+    }
+
+
 class AdvanceBody(BaseModel):
     action: str = "advance"  # advance | reject
     notes: str = ""

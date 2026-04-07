@@ -139,11 +139,37 @@ class StrategyResearcher(BaseAgent):
     # ── Idea generation ────────────────────────────────────────────────────────
 
     def generate_ideas(self, topic: str = None, count: int = 5) -> list:
+        # ── KB context injection ──────────────────────────────────────────────
+        # Search the knowledge base for relevant documents before calling Claude.
+        # Failure here is non-blocking — generation continues without KB context.
+        kb_context = ""
+        try:
+            from knowledge.ingestion.kb_ingester import KBIngester
+            ingester   = KBIngester()
+            query      = topic if topic else "Bursa Malaysia equity strategy alpha factor"
+            kb_results = ingester.search(query, limit=5)
+            if kb_results:
+                kb_context = "\nRelevant knowledge base context:\n"
+                for doc in kb_results:
+                    snippet = (doc.get("summary") or "")[:150]
+                    kb_context += f"- {doc['title']}: {snippet}\n"
+                kb_context += (
+                    "\nUse the above KB context to generate more specific, "
+                    "locally-grounded ideas referencing real Malaysian market "
+                    "techniques, stocks, and factors described above.\n"
+                )
+                self.log_daemon("INFO", f"KB context: {len(kb_results)} documents found for idea generation")
+            else:
+                self.log_daemon("INFO", "KB context: 0 documents found — generating without KB context")
+        except Exception as e:
+            self.log_daemon("WARN", f"KB context fetch failed (non-blocking): {e}")
+
         topic_line = f"Focus exclusively on: {topic}" if topic else (
             "Cover a diverse mix: at least one technical, one fundamental/value, "
             "one event-driven, and one sector-rotation idea."
         )
         prompt = f"""Generate exactly {count} quantitative equity alpha ideas for Bursa Malaysia stocks.
+{kb_context}
 
 {topic_line}
 

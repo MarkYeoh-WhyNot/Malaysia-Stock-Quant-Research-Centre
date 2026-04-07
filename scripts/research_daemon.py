@@ -12,6 +12,7 @@ from agents.researcher.strategy_researcher import StrategyResearcher
 from agents.risk_monitor.risk_monitor import RiskMonitor
 from data.database import db_session, init_db
 from knowledge.ingestion.diversity_engine import DiversityEngine
+from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
 from scripts.morning_briefing import MorningBriefing
 
 logger = logging.getLogger("openclaw.daemon")
@@ -31,6 +32,7 @@ class ResearchDaemon:
         self.diversity_engine   = DiversityEngine()
         self._last_kb_hunt: datetime | None = None
         self._last_briefing: datetime | None = None
+        self._last_alpha_seeds: datetime | None = None
 
     def start(self):
         logger.info("OpenClaw Research Daemon starting...")
@@ -69,6 +71,7 @@ class ResearchDaemon:
         await self._process_stage3()
         await self._process_paper_trading()
         await self._daily_knowledge_hunt()
+        await self._process_alpha_seeds()
         await self._process_morning_briefing()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
@@ -277,6 +280,38 @@ class ResearchDaemon:
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"[Stage4a] Error {row['id']}: {e}")
+
+    # ── Hourly alpha seed processing ─────────────────────────────────────────
+
+    async def _process_alpha_seeds(self):
+        """Run AlphaSeedGenerator.process_undigested() once per hour.
+
+        Guarded by a 55-minute minimum gap so it fires at most once per daemon hour.
+        Processes up to 5 undigested KB documents per run.
+        """
+        now = datetime.utcnow()
+        if self._last_alpha_seeds and (now - self._last_alpha_seeds) < timedelta(minutes=55):
+            return
+
+        with db_session() as conn:
+            undigested = conn.execute(
+                "SELECT COUNT(*) as n FROM kb_documents WHERE seeded=0"
+            ).fetchone()["n"]
+
+        if undigested == 0:
+            return
+
+        logger.info(f"[AlphaSeeds] {undigested} undigested docs — processing up to 5...")
+        try:
+            result = AlphaSeedGenerator().process_undigested(limit=5)
+            self._last_alpha_seeds = now
+            logger.info(
+                f"[AlphaSeeds] processed={result['processed']} "
+                f"ideas_created={result['total_ideas_created']} "
+                f"skipped={result['skipped']}"
+            )
+        except Exception as e:
+            logger.error(f"[AlphaSeeds] Error: {e}", exc_info=True)
 
     # ── Daily knowledge diversity hunt ────────────────────────────────────────
 

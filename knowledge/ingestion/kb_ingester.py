@@ -14,7 +14,29 @@ logger = logging.getLogger(__name__)
 SYSTEM = """You are a quantitative finance knowledge engineer. Extract structured information
 from research documents to build a searchable knowledge base for Bursa Malaysia equity research."""
 
-VALID_DOMAINS = {"fx", "macro", "technical", "fundamental", "risk", "execution", "research", "other"}
+VALID_DOMAINS = {
+    "fx", "macro", "technical", "fundamental", "risk", "execution", "research", "other",
+    # Extended inference domains (used by classify_domain)
+    "alpha-ideas", "market-structure", "analysis-methods", "quant-philosophy",
+    "mental-models", "factor-data", "infrastructure", "portfolio-management",
+    "risk-management", "behavioural",
+}
+
+# Ordered list used for domain classification prompts
+INFER_DOMAINS = [
+    "alpha-ideas",       # Specific trading strategies, signals, or alpha hypotheses
+    "market-structure",  # Exchange mechanics, microstructure, liquidity, order flow
+    "analysis-methods",  # Technical or fundamental analytical frameworks
+    "quant-philosophy",  # Quant finance theory, research methodology
+    "mental-models",     # Decision-making frameworks, cognitive models
+    "factor-data",       # Factor definitions, data sources, feature engineering
+    "infrastructure",    # Execution systems, pipelines, tooling
+    "portfolio-management", # Position sizing, portfolio construction, rebalancing
+    "macro",             # Macroeconomic context, rates, policy, global flows
+    "risk-management",   # Drawdown, hedging, risk controls, tail risk
+    "behavioural",       # Behavioural finance, investor psychology, anomalies
+    "research",          # Academic papers, practitioner research, empirical studies
+]
 
 
 class KBIngester(BaseAgent):
@@ -112,32 +134,76 @@ Return JSON:
             row = conn.execute("SELECT id FROM kb_concepts WHERE name=?", (name.lower().strip(),)).fetchone()
         return row["id"]
 
-    def _link_document_concept(self, doc_id: int, concept_id: int):
-        # kb_links uses doc-to-doc FKs; we track doc↔concept via a tag-style
-        # entry using source_id=doc_id, target_id=doc_id (self-link) won't work
-        # either, so we store in a separate lightweight approach: annotate the
-        # kb_links row with relation='concept' and target_id=source_id to avoid
-        # FK violation.  The concept lookup is already covered by kb_concepts.
-        # Silently skip if FK would be violated (concept IDs ≠ document IDs).
+    def _link_document_concept(self, doc_id: int, concept_name: str):
+        """Create doc-to-doc links via concept phrase matching in summaries/titles.
+
+        Searches for the full concept phrase in other documents' summaries and titles.
+        For short concepts (≤ 3 words) this works well. For long phrases it may
+        find no matches — that is intentional; tag-based linking (see _link_by_tags)
+        handles broader cross-document connectivity.
+        """
+        try:
+            term = concept_name.lower().strip()
+            with db_session() as conn:
+                related = conn.execute(
+                    "SELECT id FROM kb_documents "
+                    "WHERE id != ? AND ("
+                    "  tags LIKE ? OR LOWER(title) LIKE ? OR LOWER(summary) LIKE ?"
+                    ") LIMIT 10",
+                    (doc_id, f"%{term}%", f"%{term}%", f"%{term}%"),
+                ).fetchall()
+                for rel in related:
+                    existing = conn.execute(
+                        "SELECT id FROM kb_links "
+                        "WHERE source_id=? AND target_id=? AND relation='shared_concept'",
+                        (doc_id, rel["id"]),
+                    ).fetchone()
+                    if not existing:
+                        conn.execute(
+                            "INSERT INTO kb_links (source_id, target_id, relation, weight) "
+                            "VALUES (?, ?, 'shared_concept', 1.0)",
+                            (doc_id, rel["id"]),
+                        )
+        except Exception:
+            pass  # link creation is supplementary — never fail ingest over it
+
+    def _link_by_tags(self, doc_id: int, tags: list):
+        """Create doc-to-doc links for every shared tag between this doc and existing docs.
+
+        Tags are short normalized strings (e.g. ["momentum", "EPF", "Bursa Malaysia"]).
+        For each tag, finds other documents that contain that same tag anywhere in their
+        tags JSON, title, or summary, then creates a 'shared_tag' kb_links row.
+        Called once after a document is fully saved with its tags.
+        """
+        if not tags:
+            return
         try:
             with db_session() as conn:
-                # Only insert if target_id exists as a document
-                target_doc = conn.execute(
-                    "SELECT id FROM kb_documents WHERE id=?", (concept_id,)
-                ).fetchone()
-                if not target_doc:
-                    return  # concept_id is not a doc ID — skip FK link
-                existing = conn.execute(
-                    "SELECT id FROM kb_links WHERE source_id=? AND target_id=? AND relation='contains'",
-                    (doc_id, concept_id)
-                ).fetchone()
-                if not existing:
-                    conn.execute(
-                        "INSERT INTO kb_links (source_id, target_id, relation, weight) VALUES (?, ?, 'contains', 1.0)",
-                        (doc_id, concept_id)
-                    )
+                for tag in tags:
+                    term = str(tag).lower().strip()
+                    if len(term) < 3:
+                        continue  # skip trivial terms
+                    related = conn.execute(
+                        "SELECT id FROM kb_documents "
+                        "WHERE id != ? AND ("
+                        "  LOWER(tags) LIKE ? OR LOWER(title) LIKE ? OR LOWER(summary) LIKE ?"
+                        ") LIMIT 8",
+                        (doc_id, f"%{term}%", f"%{term}%", f"%{term}%"),
+                    ).fetchall()
+                    for rel in related:
+                        existing = conn.execute(
+                            "SELECT id FROM kb_links "
+                            "WHERE source_id=? AND target_id=?",
+                            (doc_id, rel["id"]),
+                        ).fetchone()
+                        if not existing:
+                            conn.execute(
+                                "INSERT INTO kb_links (source_id, target_id, relation, weight) "
+                                "VALUES (?, ?, 'shared_tag', 1.0)",
+                                (doc_id, rel["id"]),
+                            )
         except Exception:
-            pass  # FK link is supplementary — never fail ingest over it
+            pass  # link creation is supplementary — never fail ingest over it
 
     # ------------------------------------------------------------------
     # Public ingest methods
@@ -164,10 +230,26 @@ Return JSON:
             if not isinstance(c, dict) or not c.get("name"):
                 continue
             cid = self._upsert_concept(c["name"], c.get("description", ""), c.get("domain", domain))
-            self._link_document_concept(doc_id, cid)
+            self._link_document_concept(doc_id, c["name"])
             concept_ids.append(cid)
 
+        # Tag-based doc-to-doc linking (broader than concept-phrase matching)
+        self._link_by_tags(doc_id, tags)
+
         self.log_daemon("INFO", f"Ingested doc [{doc_id}] '{title}' ({len(concepts)} concepts, {len(tags)} tags)")
+
+        # Auto-seed alpha ideas from every ingested document
+        try:
+            from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
+            seed_result = AlphaSeedGenerator().digest(doc_id)
+            if not seed_result.get("skipped"):
+                self.log_daemon(
+                    "INFO",
+                    f"AlphaSeed: {seed_result['hypotheses_generated']} hypotheses from '{title[:50]}'",
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"AlphaSeed failed for doc {doc_id}: {e}")
+
         return {
             "doc_id": doc_id,
             "slug": slug,
@@ -193,6 +275,50 @@ Return JSON:
             title = title_match.group(1).strip() if title_match else url.split("/")[-1]
 
         return self.ingest_text(content, title, domain, source_url=url)
+
+    # ------------------------------------------------------------------
+    # Domain classification
+    # ------------------------------------------------------------------
+
+    def classify_domain(self, doc_id: int, title: str, summary: str) -> str:
+        """Call Claude (Haiku) to infer the best domain for a document and persist it.
+
+        Returns the inferred domain string. Falls back to 'other' on any error.
+        Only updates the DB record if a non-'other' domain is confidently inferred.
+        """
+        domain_list = "\n".join(f"  {d}" for d in INFER_DOMAINS)
+        prompt = (
+            f"Classify this knowledge base document into exactly one domain.\n\n"
+            f"Title: {title}\n"
+            f"Summary: {summary[:600]}\n\n"
+            f"Available domains:\n{domain_list}\n\n"
+            f'Return JSON only: {{"domain": "<domain-name>", "confidence": 0.0, '
+            f'"reason": "one sentence"}}'
+        )
+        try:
+            result = self.call_claude_json(
+                "You are a knowledge base classifier for a quantitative finance system. "
+                "Return only the requested JSON — no other text.",
+                [{"role": "user", "content": prompt}],
+                model=MODEL_FAST,
+                max_tokens=120,
+                task_label="kb_classify_domain",
+            )
+            domain = result.get("domain", "other")
+            if domain not in VALID_DOMAINS:
+                domain = "other"
+            if domain != "other":
+                with db_session() as conn:
+                    conn.execute(
+                        "UPDATE kb_documents SET domain=?, updated_at=datetime('now') WHERE id=?",
+                        (domain, doc_id),
+                    )
+                self.log_daemon("INFO", f"KB domain classified [{doc_id}] → '{domain}' "
+                                        f"(confidence={result.get('confidence', 0):.2f})")
+            return domain
+        except Exception as e:
+            self.log_daemon("WARN", f"Domain classification failed for doc {doc_id}: {e}")
+            return "other"
 
     # ------------------------------------------------------------------
     # Search

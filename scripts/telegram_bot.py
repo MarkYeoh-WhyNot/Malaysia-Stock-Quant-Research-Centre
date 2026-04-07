@@ -13,6 +13,7 @@ from agents.risk_monitor.risk_monitor import RiskMonitor
 from knowledge.ingestion.kb_ingester import KBIngester
 from knowledge.ingestion.research_hunter import ResearchHunter
 from knowledge.ingestion.diversity_engine import DiversityEngine
+from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
 from data.i3investor.scraper import I3investorScraper
 from data.klse.fundamental_scanner import FundamentalScanner
 from scripts.morning_briefing import MorningBriefing
@@ -42,8 +43,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/briefing — send morning briefing now\n"
         "/dividends — ex-dividend dates in next 14 days\n\n"
         "*Knowledge Base*\n"
+        "/kb `<url|text>` — ingest a URL or text into knowledge base\n"
         "/search `<query>` — full-text search across KB documents\n"
-        "/diversity — KB coverage by research angle\n\n"
+        "/diversity — KB coverage by research angle\n"
+        "/digest `<doc_id|all>` — generate alpha ideas from KB documents\n\n"
         "/start — show this help",
         parse_mode="Markdown"
     )
@@ -143,6 +146,77 @@ async def cmd_screen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text(
+            "Usage:\n/kb https\\://some-url.com\n/kb Some text to ingest into knowledge base"
+        )
+        return
+
+    arg = " ".join(ctx.args)
+    kb  = KBIngester()
+
+    if arg.startswith("http"):
+        await update.message.reply_text(
+            f"📥 Fetching and ingesting URL...\n`{arg[:80]}`\n_(~20–30 seconds)_",
+            parse_mode="Markdown"
+        )
+        try:
+            result = await kb.ingest_url(arg)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+            return
+    else:
+        await update.message.reply_text(
+            "📥 Ingesting text into knowledge base...\n_(~20 seconds)_",
+            parse_mode="Markdown"
+        )
+        try:
+            result = kb.ingest_text(arg, title="Telegram input")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+            return
+
+    if "error" in result:
+        await update.message.reply_text(f"❌ Ingest failed: {result['error']}")
+        return
+
+    # Auto-infer domain if ingestion defaulted to "other"
+    domain = result.get("domain", "other")
+    domain_inferred = False
+    if domain == "other":
+        try:
+            inferred = kb.classify_domain(
+                result["doc_id"],
+                result["title"],
+                result.get("summary", ""),
+            )
+            if inferred != "other":
+                domain = inferred
+                domain_inferred = True
+        except Exception as e:
+            logger.warning(f"Domain inference failed: {e}")
+
+    summary = result.get("summary", "") or ""
+    snippet = (summary[:200] + "…") if len(summary) > 200 else summary
+    tags    = result.get("tags", [])
+    domain_label = f"`{domain}`" + (" _(auto-classified)_" if domain_inferred else "")
+
+    lines = [
+        "✅ *KB Ingestion Complete*\n",
+        f"Doc ID:   `{result['doc_id']}`",
+        f"Title:    *{result['title'][:60]}*",
+        f"Domain:   {domain_label}",
+        f"Concepts: `{result['concepts_extracted']}`",
+        f"Tags:     `{', '.join(tags[:6]) or 'none'}`",
+    ]
+    if snippet:
+        lines.append(f"\n_{snippet}_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -245,6 +319,90 @@ async def cmd_dividends(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+async def cmd_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text(
+            "Usage:\n/digest <doc_id> — digest a specific document\n/digest all — process all undigested (limit 20)"
+        )
+        return
+
+    arg = ctx.args[0].lower()
+    seeder = AlphaSeedGenerator()
+
+    if arg == "all":
+        await update.message.reply_text(
+            "🌱 Processing all undigested KB documents (limit 20)...\n_(may take a few minutes)_",
+            parse_mode="Markdown"
+        )
+        try:
+            result = seeder.process_undigested(limit=20)
+            await update.message.reply_text(
+                f"✅ *Alpha Seed Batch Complete*\n\n"
+                f"Documents processed: `{result['processed']}`\n"
+                f"Documents skipped:   `{result['skipped']}`\n"
+                f"Ideas created:       `{result['total_ideas_created']}`",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error: {e}")
+        return
+
+    try:
+        doc_id = int(arg)
+    except ValueError:
+        await update.message.reply_text("doc_id must be a number or 'all'")
+        return
+
+    # Look up title for display
+    with db_session() as conn:
+        doc = conn.execute(
+            "SELECT id, title FROM kb_documents WHERE id=?", (doc_id,)
+        ).fetchone()
+    if not doc:
+        await update.message.reply_text(f"Document {doc_id} not found.")
+        return
+
+    await update.message.reply_text(
+        f"🌱 Digesting doc [{doc_id}]: _{doc['title'][:60]}_\n_(~20–30 seconds)_",
+        parse_mode="Markdown"
+    )
+    try:
+        result = seeder.digest(doc_id)
+        if result.get("skipped"):
+            reason = result.get("reason", "unknown")
+            await update.message.reply_text(
+                f"⚠️ Skipped doc [{doc_id}] — reason: `{reason}`",
+                parse_mode="Markdown"
+            )
+            return
+
+        # Fetch the newly created ideas for display
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        with db_session() as conn:
+            ideas = conn.execute(
+                "SELECT id, title, pair FROM alpha_ideas "
+                "WHERE slug LIKE 'seed-%' AND created_at LIKE ? ORDER BY id DESC LIMIT 10",
+                (f"{today}%",),
+            ).fetchall()
+
+        lines = [
+            f"🌱 *Alpha Seeds from:* _{result['title'][:50]}_\n",
+            f"Core insight: _{result['core_insight'][:150]}_\n",
+            f"Hypotheses generated: `{result['hypotheses_generated']}`",
+            f"Ideas created: `{result['ideas_saved']}`",
+        ]
+        if ideas:
+            lines.append("\n*Ideas:*")
+            for idea in ideas[:result['ideas_saved']]:
+                ticker = idea['pair'] or '—'
+                lines.append(f"• [{idea['id']}] {idea['title'][:50]} (`{ticker}`)")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
 async def cmd_diversity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     try:
@@ -277,9 +435,11 @@ def main():
     app.add_handler(CommandHandler("screen",    cmd_screen))
     app.add_handler(CommandHandler("briefing",  cmd_briefing))
     app.add_handler(CommandHandler("dividends", cmd_dividends))
+    app.add_handler(CommandHandler("kb",        cmd_kb))
     app.add_handler(CommandHandler("search",    cmd_search))
     app.add_handler(CommandHandler("research",  cmd_research))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
+    app.add_handler(CommandHandler("digest",    cmd_digest))
     logger.info(f"Telegram bot starting (admin={ADMIN_CHAT})")
     app.run_polling(drop_pending_updates=True)
 
