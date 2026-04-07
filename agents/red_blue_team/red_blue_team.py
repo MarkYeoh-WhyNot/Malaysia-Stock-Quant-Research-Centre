@@ -81,7 +81,7 @@ class RedBlueTeam(BaseAgent):
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
-Ticker: {idea.get('pair')} | Timeframe: {idea.get('timeframe')}
+Ticker: {idea.get('ticker')} | Timeframe: {idea.get('timeframe')}
 Factor: {idea.get('factor_formula')}
 Research score: {idea.get('research_score')}
 
@@ -117,7 +117,7 @@ Return JSON:
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
-Ticker: {idea.get('pair')} | Factor: {idea.get('factor_formula')}
+Ticker: {idea.get('ticker')} | Factor: {idea.get('factor_formula')}
 
 Red team findings:
 {json.dumps(red_findings, indent=2)}
@@ -149,7 +149,7 @@ Return JSON:
     def _judge(self, idea: dict, red: dict, blue: dict, backtest_results: dict) -> dict:
         prompt = f"""Judge this Bursa Malaysia equity strategy debate and give a final verdict.
 
-Strategy: {idea.get('title')} | Ticker: {idea.get('pair')}
+Strategy: {idea.get('title')} | Ticker: {idea.get('ticker')}
 Backtest: {json.dumps(backtest_results, indent=2)}
 
 Red team (attack_score={red.get('overall_attack_score')}, kill={red.get('kill_recommendation')}):

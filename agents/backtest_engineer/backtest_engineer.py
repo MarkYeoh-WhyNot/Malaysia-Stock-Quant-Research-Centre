@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import numpy as np
 import pandas as pd
 from agents.base_agent import BaseAgent
@@ -14,10 +15,40 @@ Parse equity strategy descriptions into structured signal parameters for vectori
 Output only valid JSON."""
 
 
+_PROGRESS_FILE = "/tmp/openclaw_progress.json"
+
+
 class BacktestEngineer(BaseAgent):
     name = "BacktestEngineer"
     description = "Vectorised KLSE equity backtesting, Gate 2/3 evaluation (Stage 2-3)"
     default_model = MODEL_MAIN
+
+    def _log_progress(self, idea_id: int, pct: int, msg: str) -> None:
+        """Write backtest progress to a shared file for the API server to read."""
+        try:
+            data: dict = {}
+            if os.path.exists(_PROGRESS_FILE):
+                with open(_PROGRESS_FILE, "r") as fh:
+                    data = json.load(fh)
+            from datetime import datetime as _dt
+            data[str(idea_id)] = {"pct": pct, "msg": msg, "ts": _dt.utcnow().isoformat()}
+            with open(_PROGRESS_FILE, "w") as fh:
+                json.dump(data, fh)
+        except Exception:
+            pass
+
+    def _clear_progress(self, idea_id: int) -> None:
+        """Remove completed entry from progress file."""
+        try:
+            if not os.path.exists(_PROGRESS_FILE):
+                return
+            with open(_PROGRESS_FILE, "r") as fh:
+                data = json.load(fh)
+            data.pop(str(idea_id), None)
+            with open(_PROGRESS_FILE, "w") as fh:
+                json.dump(data, fh)
+        except Exception:
+            pass
 
     # ── Data fetch ────────────────────────────────────────────────────────────
 
@@ -527,11 +558,12 @@ Return JSON only:
         if not row:
             return {"error": f"Idea {idea_id} not found"}
 
-        symbol   = row["pair"] or "1155.KL"
+        symbol   = row["ticker"] or "1155.KL"
         interval = row["timeframe"] or "1d"
         stock    = KLCI_BY_SYMBOL.get(symbol, {})
 
         self.log_daemon("INFO", f"Backtesting [{idea_id}] {row['title']} — {symbol} {interval}")
+        self._log_progress(idea_id, 10, f"Fetching price data for {symbol}")
 
         # Parse factor formula
         params = self._parse_factor(
@@ -548,6 +580,7 @@ Return JSON only:
             self.log_daemon("WARN", f"Insufficient data [{idea_id}]: {len(df)} bars for {symbol}")
             return {"error": "Insufficient historical data", "idea_id": idea_id, "symbol": symbol}
 
+        self._log_progress(idea_id, 30, f"Computing factor signals ({symbol})")
         # Classify holding period for appropriate thresholds and warnings
         hp_class = self.classify_holding_period(
             interval, row["factor_formula"] or "", row["hypothesis"] or ""
@@ -571,6 +604,7 @@ Return JSON only:
                 f"Backtest [{idea_id}] INTRADAY strategy on daily OHLCV — results are indicative only",
             )
 
+        self._log_progress(idea_id, 50, "Running train/val/test split")
         train_df, val_df, test_df = self._split(df)
 
         results = {}
@@ -584,6 +618,7 @@ Return JSON only:
             sig = self._compute_signals(split_df, params)
             results[split_name] = self._compute_performance(split_df, sig, interval)
 
+        self._log_progress(idea_id, 70, "Computing Sharpe and drawdown")
         train_r = results["train"]
         val_r   = results["val"]
         test_r  = results["test"]
@@ -631,6 +666,7 @@ Return JSON only:
                 pass
 
         overall_pass = gate3_pass and trade_count_pass
+        self._log_progress(idea_id, 90, "Running cross-sectional IC check")
 
         run_id = None
         try:
@@ -690,6 +726,8 @@ Return JSON only:
             self.log_daemon("ERROR", f"Backtest save FAILED for idea {idea_id}: {e}")
             raise
 
+        self._log_progress(idea_id, 100, "Complete")
+        self._clear_progress(idea_id)
         self.log_daemon(
             "INFO" if overall_pass else "WARN",
             f"Backtest [{idea_id}] {symbol} {'PASSED' if overall_pass else 'FAILED'} "

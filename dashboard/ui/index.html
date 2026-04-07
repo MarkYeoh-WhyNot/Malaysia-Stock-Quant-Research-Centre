@@ -125,6 +125,81 @@ svg text{font-family:'Courier New',monospace}
 .kv .k{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
 .kv .v{font-size:12px;color:var(--text);word-break:break-word}
 
+/* ── Technique Arsenal ── */
+.arsenal-filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+.arsenal-filter-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted2);padding:3px 10px;border-radius:12px;font-size:10px;cursor:pointer;font-family:inherit;transition:all .12s}
+.arsenal-filter-btn:hover,.arsenal-filter-btn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(6,182,212,.08)}
+.technique-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
+.technique-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:14px;position:relative;transition:border-color .15s}
+.technique-card:hover{border-color:var(--cyan)}
+.technique-card.implemented{border-left:3px solid var(--green)}
+.technique-card.pending{border-left:3px solid var(--muted)}
+.tc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
+.tc-name{font-size:12px;font-weight:bold;color:var(--text);line-height:1.3}
+.tc-key{font-size:9px;color:var(--muted);font-family:monospace;margin-top:2px}
+.tc-badges{display:flex;gap:4px;flex-wrap:wrap;flex-shrink:0}
+.tc-badge{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:bold;white-space:nowrap}
+.tc-badge.impl{background:#064e3b;color:var(--green)}
+.tc-badge.pending{background:var(--bg3);color:var(--muted)}
+.tc-badge.low{background:#052e16;color:#4ade80}
+.tc-badge.medium{background:#2d2a0f;color:var(--yellow)}
+.tc-badge.high{background:#450a0a;color:var(--red)}
+.tc-applicability{font-size:10px;color:var(--cyan);margin-bottom:8px;font-style:italic;line-height:1.4}
+.tc-ic-bench{font-size:10px;color:var(--purple);margin-bottom:8px}
+.tc-use-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.tc-use-list{list-style:none;padding:0;margin:0 0 6px}
+.tc-use-list li{font-size:10px;color:var(--muted2);padding:1px 0;padding-left:12px;position:relative;line-height:1.4}
+.tc-use-list li::before{content:"▸";position:absolute;left:0;color:var(--cyan)}
+.tc-avoid-list li::before{color:var(--red)}
+.tc-expand-btn{font-size:9px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:0;margin-top:4px}
+.tc-expand-btn:hover{color:var(--text)}
+.tc-avoid-section{display:none;margin-top:6px}
+.tc-avoid-section.open{display:block}
+.arsenal-stat-row{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.arsenal-stat{background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px 16px;text-align:center;min-width:100px}
+.arsenal-stat .val{font-size:22px;font-weight:bold}
+.arsenal-stat .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;margin-top:2px}
+.arsenal-progress{background:var(--bg3);border-radius:3px;height:5px;margin:6px 0}
+.arsenal-progress-fill{height:5px;border-radius:3px;background:var(--green);transition:width .5s}
+
+/* ── System Direction ── */
+.dir-section{margin-bottom:14px}
+.dir-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.dir-card-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none;transition:background .12s}
+.dir-card-head:hover{background:var(--bg3)}
+.dir-card-title{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.dir-card-title .ico{font-size:14px}
+.dir-card-chevron{color:var(--muted);font-size:12px;transition:transform .2s}
+.dir-card.open .dir-card-chevron{transform:rotate(180deg)}
+.dir-card-body{display:none;padding:14px;border-top:1px solid var(--border)}
+.dir-card.open .dir-card-body{display:block}
+.dir-angle-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
+.dir-angle-item{background:var(--bg3);border-radius:5px;padding:10px 12px;border:1px solid var(--border)}
+.dir-angle-name{font-size:11px;font-weight:bold;color:var(--text);margin-bottom:3px}
+.dir-angle-desc{font-size:10px;color:var(--muted2);margin-bottom:8px;line-height:1.4}
+.dir-angle-bar-wrap{background:var(--bg4);border-radius:2px;height:4px;margin-bottom:4px}
+.dir-angle-bar{height:4px;border-radius:2px;transition:width .5s}
+.dir-angle-bar.ready{background:var(--green)}.dir-angle-bar.partial{background:var(--yellow)}.dir-angle-bar.empty{background:var(--red)}
+.dir-angle-stat{font-size:9px;color:var(--muted);display:flex;justify-content:space-between}
+.dir-issue-row{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--bg4);font-size:11px;align-items:flex-start}
+.dir-issue-row:last-child{border-bottom:none}
+.dir-issue-status{flex-shrink:0;width:56px;font-size:9px;font-weight:bold;padding:2px 6px;border-radius:3px;text-align:center}
+.dir-issue-status.fixed{background:#064e3b;color:var(--green)}
+.dir-issue-status.active{background:#450a0a;color:var(--red)}
+.dir-issue-status.pending{background:#2d2a0f;color:var(--yellow)}
+.dir-constraint-list{list-style:none;padding:0}
+.dir-constraint-list li{padding:4px 0;border-bottom:1px solid var(--bg4);font-size:11px;color:var(--muted2);display:flex;gap:8px}
+.dir-constraint-list li:last-child{border-bottom:none}
+.dir-constraint-list li::before{content:"▸";color:var(--red);flex-shrink:0}
+.dir-threshold-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.dir-threshold-item{background:var(--bg3);border-radius:4px;padding:8px 10px}
+.dir-threshold-label{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.dir-threshold-value{font-size:14px;font-weight:bold;color:var(--cyan)}
+.dir-threshold-note{font-size:9px;color:var(--muted2);margin-top:2px}
+.dir-state-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:14px}
+.dir-progress-bar-wrap{background:var(--bg3);border-radius:3px;height:5px;margin:4px 0}
+.dir-progress-bar{height:5px;border-radius:3px;background:var(--cyan);transition:width .5s}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg)}
@@ -133,6 +208,27 @@ svg text{font-family:'Courier New',monospace}
 /* ── Spinner ── */
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Activity animations ── */
+@keyframes pulse-active{0%,100%{opacity:1}50%{opacity:0.45}}
+@keyframes pulse-dot{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.4);opacity:0.6}}
+@keyframes heartbeat{0%,100%{transform:scale(1)}30%{transform:scale(1.25)}60%{transform:scale(1)}}
+.status-active{animation:pulse-active 1.5s ease-in-out infinite}
+.agent-task-active{color:var(--text)!important;font-style:normal!important}
+.agent-task-spinner{display:inline-block;width:8px;height:8px;border:1.5px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:5px;flex-shrink:0}
+.stage-active-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse-dot 1s ease-in-out infinite;margin-left:6px;vertical-align:middle}
+.heartbeat-icon{display:inline-block;animation:heartbeat 1.5s ease-in-out infinite;color:var(--green)}
+.heartbeat-icon.stale{color:var(--red)}
+.heartbeat-label{font-size:10px;color:var(--muted);margin-left:4px}
+.heartbeat-label.stale{color:var(--red)}
+
+/* ── Progress bar (backtest) ── */
+.bt-progress-wrap{margin-top:5px;background:var(--bg3);border-radius:3px;height:4px;overflow:hidden}
+.bt-progress-fill{height:4px;border-radius:3px;background:var(--purple);transition:width .4s ease}
+.bt-progress-msg{font-size:9px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ── Activity summary bar ── */
+.activity-summary{font-size:10px;color:var(--muted2);padding:4px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px;min-height:18px}
 
 /* ── Tabs ── */
 .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px}
@@ -148,23 +244,93 @@ svg text{font-family:'Courier New',monospace}
 .agent-team-row{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;margin-bottom:0}
 .agent-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;min-width:200px;flex-shrink:0;position:relative;transition:border-color .15s}
 .agent-card:hover{border-color:var(--cyan)}
+.agent-card.pipeline-active{border-color:#1d4730}
 .agent-badge{position:absolute;top:10px;right:10px;background:var(--purple);color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;line-height:1}
 .agent-badge.zero{background:var(--bg3);color:var(--muted)}
 .agent-icon{width:36px;height:36px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:bold;letter-spacing:-.5px;margin-bottom:8px;flex-shrink:0}
 .agent-name{font-size:12px;font-weight:bold;color:var(--text);margin-bottom:2px}
 .agent-subtitle{font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4}
-.agent-status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:9px;font-weight:bold;letter-spacing:.5px;margin-bottom:8px}
+.agent-status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:9px;font-weight:bold;letter-spacing:.5px;margin-bottom:6px}
 .agent-status-pill.ACTIVE{background:#064e3b;color:var(--green)}
-.agent-status-pill.WAITING{background:#3a2a00;color:var(--yellow)}
+.agent-status-pill.IDLE{background:#1a2035;color:var(--muted)}
 .agent-task{font-size:11px;color:var(--muted2);font-style:italic;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px}
+.agent-working-on{font-size:10px;color:var(--cyan);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px;opacity:.85}
+.agent-last-updated{font-size:9px;color:var(--muted);margin-top:4px}
+/* Custom tooltip for agent cards */
+.agent-card[data-tooltip]{cursor:default}
+.agent-card[data-tooltip]:hover::after{
+  content:attr(data-tooltip);
+  position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
+  background:#0f172a;border:1px solid var(--border);border-radius:6px;
+  color:var(--text);font-size:10px;line-height:1.5;padding:6px 10px;
+  white-space:normal;max-width:240px;min-width:160px;
+  box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:200;pointer-events:none
+}
+.agent-card[data-tooltip]:hover::before{
+  content:'';position:absolute;bottom:calc(100% + 1px);left:50%;transform:translateX(-50%);
+  border:5px solid transparent;border-top-color:var(--border);z-index:201;pointer-events:none
+}
+
+/* ── Mobile hamburger button (hidden on desktop) ── */
+#mobile-menu-btn{display:none}
+#mobile-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999}
+
+/* ── Mobile responsive ── */
+@media (max-width:768px){
+  body{overflow:auto}
+  .layout{grid-template-columns:1fr}
+
+  /* Sidebar slides in from left */
+  nav.sidebar{
+    position:fixed;left:-240px;top:0;height:100vh;width:240px;
+    transition:left .25s ease;z-index:1000
+  }
+  nav.sidebar.mobile-open{left:0}
+
+  /* Hamburger button */
+  #mobile-menu-btn{
+    display:flex;position:fixed;top:10px;left:10px;z-index:1001;
+    background:var(--bg2);border:1px solid var(--border);border-radius:6px;
+    padding:5px 10px;cursor:pointer;font-size:18px;color:var(--text);
+    align-items:center;line-height:1
+  }
+
+  /* Overlay closes sidebar on outside tap */
+  #mobile-overlay.visible{display:block}
+
+  /* Main content full width, padded for header */
+  main.main{margin-left:0!important;padding:54px 10px 12px}
+
+  /* Stat cards: 2 columns */
+  .stat-grid{grid-template-columns:1fr 1fr!important;gap:8px!important}
+
+  /* Row panels stack vertically */
+  .row{flex-direction:column}
+
+  /* Pipeline stages and agent row scroll horizontally */
+  .pipeline-stages,.agent-team-row{overflow-x:auto;flex-wrap:nowrap!important}
+
+  /* Tables scroll horizontally */
+  .tbl-wrap,.tbl-wrap-lg{overflow-x:auto}
+
+  /* Log stream shorter on mobile */
+  #log-stream{height:180px!important}
+}
 </style>
 </head>
 <body>
+
+<button id="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
+<div id="mobile-overlay" onclick="closeSidebar()"></div>
 
 <header>
   <h1>🐋 OPENCLAW</h1>
   <span style="color:var(--muted);font-size:11px">MISSION CONTROL</span>
   <span class="live-badge">LIVE</span>
+  <span id="heartbeat-wrap" style="display:inline-flex;align-items:center;gap:4px;margin-left:10px">
+    <span class="heartbeat-icon" id="heartbeat-icon">♥</span>
+    <span class="heartbeat-label" id="heartbeat-label">Daemon…</span>
+  </span>
   <span style="margin-left:auto;color:var(--muted);font-size:11px" id="clock"></span>
   <button class="btn btn-sm" onclick="loadAll()" style="margin-left:8px">↻ Refresh</button>
 </header>
@@ -173,6 +339,7 @@ svg text{font-family:'Courier New',monospace}
 <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════════ -->
 <nav class="sidebar">
   <div class="sidebar-section">Command</div>
+  <a onclick="nav('direction',this)"><span class="ico">🧭</span>System Direction</a>
   <a class="active" onclick="nav('mc',this)"><span class="ico">⚡</span>Mission Control</a>
   <a onclick="nav('analytics',this)"><span class="ico">📊</span>Pipeline Analytics</a>
 
@@ -181,6 +348,7 @@ svg text{font-family:'Courier New',monospace}
   <a onclick="nav('ideas',this)"><span class="ico">💡</span>Ideas Queue</a>
 
   <div class="sidebar-section">Research</div>
+  <a onclick="nav('arsenal',this)"><span class="ico">⚙️</span>Technique Arsenal</a>
   <a onclick="nav('backtest-lab',this)"><span class="ico">🔬</span>Backtest Lab</a>
   <a onclick="nav('factor-sandbox',this)"><span class="ico">🧪</span>Factor Sandbox</a>
 
@@ -197,6 +365,132 @@ svg text{font-family:'Courier New',monospace}
 
 <!-- ═══ MAIN ═══════════════════════════════════════════════════════════════ -->
 <main class="main">
+
+<!-- ── Technique Arsenal ─────────────────────────────────────────────────── -->
+<div id="page-arsenal" class="page">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+    <h2 style="margin-bottom:0">Quantitative Technique Arsenal</h2>
+    <span style="font-size:10px;color:var(--muted)">When to use which model on Bursa Malaysia</span>
+  </div>
+
+  <!-- Summary stats -->
+  <div class="arsenal-stat-row" id="arsenal-stats-row">
+    <div class="arsenal-stat"><div class="val" id="arsenal-total" style="color:var(--cyan)">—</div><div class="lbl">Techniques</div></div>
+    <div class="arsenal-stat"><div class="val" id="arsenal-impl" style="color:var(--green)">—</div><div class="lbl">Implemented</div></div>
+    <div class="arsenal-stat"><div class="val" id="arsenal-pending" style="color:var(--yellow)">—</div><div class="lbl">Planned</div></div>
+    <div class="arsenal-stat" style="flex:1;min-width:160px">
+      <div class="lbl" style="text-align:left;margin-bottom:4px">Implementation Progress</div>
+      <div class="arsenal-progress"><div class="arsenal-progress-fill" id="arsenal-progress-fill" style="width:0%"></div></div>
+      <div id="arsenal-progress-label" style="font-size:9px;color:var(--muted)"></div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="arsenal-filter-bar">
+    <span style="font-size:10px;color:var(--muted);margin-right:4px">Filter:</span>
+    <button class="arsenal-filter-btn active" onclick="arsenalFilter('all',this)">All</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilter('implemented',this)">✅ Implemented</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilter('pending',this)">🔲 Planned</button>
+    <span style="margin-left:8px;font-size:10px;color:var(--muted)">Angle:</span>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('price_action',this)">price_action</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('statistical_modelling',this)">statistical_modelling</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('event_driven',this)">event_driven</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('commodity',this)">commodity</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('macro',this)">macro</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('institutional',this)">institutional</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('fundamental',this)">fundamental</button>
+  </div>
+
+  <div class="technique-grid" id="technique-grid">
+    <div style="color:var(--muted);padding:20px">Loading techniques…</div>
+  </div>
+</div>
+
+<!-- ── System Direction ─────────────────────────────────────────────────── -->
+<div id="page-direction" class="page">
+  <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+    <h2 style="margin-bottom:0">OpenClaw System Direction</h2>
+    <span id="dir-updated" style="font-size:10px;color:var(--muted)"></span>
+  </div>
+  <p style="font-size:11px;color:var(--muted2);margin-bottom:16px;line-height:1.6" id="dir-purpose">Loading…</p>
+
+  <!-- Live state row -->
+  <div class="dir-state-grid" id="dir-state-row"></div>
+
+  <!-- Core Purpose / Philosophy -->
+  <div class="dir-section">
+    <div class="dir-card open" id="dir-card-philosophy">
+      <div class="dir-card-head" onclick="dirToggle('philosophy')">
+        <span class="dir-card-title"><span class="ico">🎯</span>Design Philosophy</span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <p id="dir-philosophy-text" style="font-size:12px;color:var(--muted2);line-height:1.7;margin-bottom:14px"></p>
+        <div class="panel-title" style="margin-bottom:8px">Success Metrics (in priority order)</div>
+        <ol id="dir-metrics-list" style="padding-left:20px;font-size:11px;color:var(--muted2);line-height:2"></ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- 9 Research Angles -->
+  <div class="dir-section">
+    <div class="dir-card open" id="dir-card-angles">
+      <div class="dir-card-head" onclick="dirToggle('angles')">
+        <span class="dir-card-title"><span class="ico">🔬</span>The 9 Research Angles
+          <span id="dir-angles-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:9px;color:var(--muted2)"></span>
+        </span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <p style="font-size:10px;color:var(--muted);margin-bottom:12px">Each angle needs ≥ 5 KB docs before idea generation can begin. Bar shows progress toward that target.</p>
+        <div class="dir-angle-grid" id="dir-angles-grid">Loading…</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bursa Constraints -->
+  <div class="dir-section">
+    <div class="dir-card" id="dir-card-constraints">
+      <div class="dir-card-head" onclick="dirToggle('constraints')">
+        <span class="dir-card-title"><span class="ico">🔒</span>Bursa Malaysia Constraints — Non-Negotiable</span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <ul class="dir-constraint-list" id="dir-constraints-list"></ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- Gate Thresholds -->
+  <div class="dir-section">
+    <div class="dir-card" id="dir-card-gates">
+      <div class="dir-card-head" onclick="dirToggle('gates')">
+        <span class="dir-card-title"><span class="ico">🚦</span>Gate Thresholds</span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <div class="dir-threshold-grid" id="dir-gates-grid"></div>
+        <div class="panel-title" style="margin:14px 0 8px">Minimum Trade Counts by Holding Period</div>
+        <div class="dir-threshold-grid" id="dir-trades-grid"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Known Issues -->
+  <div class="dir-section">
+    <div class="dir-card open" id="dir-card-issues">
+      <div class="dir-card-head" onclick="dirToggle('issues')">
+        <span class="dir-card-title"><span class="ico">🐛</span>Known Issues Log
+          <span id="dir-issues-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:9px;color:var(--muted2)"></span>
+        </span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <div id="dir-issues-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- ── Mission Control ──────────────────────────────────────────────────── -->
 <div id="page-mc" class="page active">
@@ -218,9 +512,11 @@ svg text{font-family:'Courier New',monospace}
       <span class="panel-title">Agent Team</span>
       <span style="font-size:10px;color:var(--muted2)">
         <span id="at-active-badge" style="color:var(--green);font-weight:bold">—</span> ACTIVE &nbsp;
+        <span id="at-idle-badge" style="color:var(--muted);font-weight:bold">—</span> IDLE &nbsp;
         <span id="at-pending-badge" style="color:var(--purple);font-weight:bold">—</span> PENDING
       </span>
     </div>
+    <div class="activity-summary" id="activity-summary">Loading system status…</div>
     <div class="agent-team-row" id="agent-team-row">
       <div style="color:var(--muted);font-size:11px;padding:8px">Loading…</div>
     </div>
@@ -302,9 +598,9 @@ svg text{font-family:'Courier New',monospace}
     </div>
     <div class="col">
       <div class="panel">
-        <div class="panel-head"><span class="panel-title">Pair Performance</span></div>
+        <div class="panel-head"><span class="panel-title">Ticker Performance</span></div>
         <div class="tbl-wrap"><table>
-          <thead><tr><th>Pair</th><th>Ideas</th><th>Avg BT Sharpe</th></tr></thead>
+          <thead><tr><th>Ticker</th><th>Ideas</th><th>Avg BT Sharpe</th></tr></thead>
           <tbody id="analytics-pairs"></tbody>
         </table></div>
       </div>
@@ -416,7 +712,7 @@ svg text{font-family:'Courier New',monospace}
       </div>
     </div>
     <div class="tbl-wrap-lg"><table>
-      <thead><tr><th>ID</th><th>Title</th><th>Pair</th><th>TF</th><th>Stage</th><th>Status</th><th>Novelty</th><th>Logic</th><th>Research</th><th>BT Sharpe</th><th>BT DD</th><th>Created</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Title</th><th>Ticker</th><th>TF</th><th>Stage</th><th>Status</th><th>Novelty</th><th>Logic</th><th>Research</th><th>BT Sharpe</th><th>BT DD</th><th>Created</th><th></th></tr></thead>
       <tbody id="ideas-table"></tbody>
     </table></div>
   </div>
@@ -836,6 +1132,8 @@ function nav(id, el) {
   if (el) el.classList.add('active');
   _currentPage = id;
   const loaders = {
+    direction: loadDirection,
+    arsenal:   loadArsenal,
     mc: loadMC, analytics: loadAnalytics, 'gate-queue': loadGateQueue,
     ideas: loadIdeas, 'backtest-lab': loadBacktestRuns,
     'paper-trades': loadPaperTrades, kb: loadKBStats,
@@ -936,27 +1234,92 @@ const _agentColors = {
 };
 
 async function loadAgentTeam() {
-  const d = await apiFetch('/agent-team');
+  const [d, prog] = await Promise.all([
+    apiFetch('/agent-team'),
+    apiFetch('/agent-progress'),
+  ]);
   const row = document.getElementById('agent-team-row');
   if (!d || !d.agents) {
     row.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px">Agent data unavailable</div>';
     return;
   }
   document.getElementById('at-active-badge').textContent  = d.total_active;
+  document.getElementById('at-idle-badge').textContent    = (d.agents||[]).filter(a=>a.status==='IDLE').length;
   document.getElementById('at-pending-badge').textContent = d.total_pending;
+
+  const progress = (prog && prog.progress) ? prog.progress : {};
+
+  // Build a set of active pipeline stages from mission control data
+  // so agent cards can sync visually with the pipeline dot indicators.
+  // Stage→agent mapping per spec:
+  //   gate0/pending      → StrategyResearcher
+  //   stage1/active      → StrategyResearcher
+  //   stage2/active      → DataEngineer + BacktestEngineer
+  //   stage4a/active     → PortfolioExecutor
+  const _stageAgentMap = {
+    gate0:  ['StrategyResearcher'],
+    stage1: ['StrategyResearcher'],
+    stage2: ['DataEngineer','BacktestEngineer'],
+    stage3: ['BacktestEngineer'],
+    stage4a:['PortfolioExecutor'],
+    stage5: ['PortfolioExecutor'],
+  };
 
   row.innerHTML = d.agents.map(a => {
     const c = _agentColors[a.name] || {bg:'#1a2035', fg:'#64748b', initials:'??'};
     const pending = a.pending_tasks || 0;
-    return `<div class="agent-card">
+    const isActive = a.status === 'ACTIVE';
+    // Pipeline-derived active: agent owns any currently-active stage
+    const pipelineActive = isActive && !!a.pipeline_stage;
+    const pillClass = isActive ? 'agent-status-pill ACTIVE status-active' : 'agent-status-pill IDLE';
+    const taskClass = isActive ? 'agent-task agent-task-active' : 'agent-task';
+    const spinnerHtml = isActive ? '<span class="agent-task-spinner"></span>' : '';
+    // Card border highlight when driven by pipeline state (not just timestamp)
+    const cardClass = pipelineActive ? 'agent-card pipeline-active' : 'agent-card';
+    // Tooltip: show working_on if available, else current_task
+    const tooltipText = (isActive && a.working_on) ? a.working_on : '';
+
+    // Progress bar (BacktestEngineer only when running)
+    let progressHtml = '';
+    if (a.name === 'BacktestEngineer' && isActive) {
+      const entries = Object.values(progress);
+      if (entries.length > 0) {
+        const entry = entries[0];
+        const pct = entry.pct || 0;
+        progressHtml = `
+          <div class="bt-progress-wrap">
+            <div class="bt-progress-fill" style="width:${pct}%"></div>
+          </div>
+          <div class="bt-progress-msg">${esc(entry.msg || '')}</div>`;
+      }
+    }
+
+    // When IDLE, show last_action as muted context
+    const taskText = isActive ? a.current_task : (a.last_action || a.current_task || 'Idle');
+    const lastUpdHtml = a.last_updated
+      ? `<div class="agent-last-updated">↻ ${esc(a.last_updated)}</div>`
+      : '';
+    // "Working on" strip — shown only when pipeline-derived active with a real idea
+    const workingOnHtml = (pipelineActive && a.working_on)
+      ? `<div class="agent-working-on" title="${esc(a.working_on)}">${esc(a.working_on.replace('Working on: ',''))}</div>`
+      : '';
+    const tooltipAttr = tooltipText ? ` data-tooltip="${esc(tooltipText)}"` : '';
+
+    return `<div class="${cardClass}"${tooltipAttr}>
       <div class="agent-badge ${pending === 0 ? 'zero' : ''}">${pending}</div>
       <div class="agent-icon" style="background:${c.bg};color:${c.fg}">${c.initials}</div>
       <div class="agent-name">${esc(a.display_name)}</div>
       <div class="agent-subtitle">${esc(a.subtitle)}</div>
-      <div class="agent-status-pill ${a.status}">${a.status}</div>
-      <div class="agent-task" title="${esc(a.current_task)}">${esc(a.current_task)}</div>
+      <div class="${pillClass}">${a.status}</div>
+      <div class="${taskClass}" title="${esc(taskText)}">${spinnerHtml}${esc(taskText)}</div>
+      ${workingOnHtml}
+      ${progressHtml}
+      ${lastUpdHtml}
     </div>`;
   }).join('');
+
+  // Build activity summary
+  _updateActivitySummary(d, progress);
 }
 
 // ── Mission Control ──────────────────────────────────────────────────────────
@@ -981,10 +1344,15 @@ async function loadMC() {
   const stageNames = {gate0:'Alpha Idea',stage1:'Research',stage2:'Factor Dev',stage3:'Backtest',stage4a:'Paper Trade',stage4b:'Verify',stage5:'Live'};
   const stageColors = {gate0:'var(--blue)',stage1:'var(--cyan)',stage2:'var(--purple)',stage3:'var(--orange)',stage4a:'var(--green)',stage4b:'#22d3ee',stage5:'var(--pink)'};
   const keys = ['gate0','stage1','stage2','stage3','stage4a','stage4b','stage5'];
-  document.getElementById('mc-pipeline').innerHTML = keys.map((k,i) =>
-    (i > 0 ? '<span class="flow-arrow">→</span>' : '') +
-    `<div class="flow-stage"><div class="fn" style="color:${stageColors[k]}">${d.pipeline.stages[k]||0}</div><div class="fl">${stageNames[k]}</div></div>`
-  ).join('');
+  const activeStages = new Set(d.pipeline.active_stages || []);
+  document.getElementById('mc-pipeline').innerHTML = keys.map((k,i) => {
+    const dot = activeStages.has(k) ? '<span class="stage-active-dot"></span>' : '';
+    return (i > 0 ? '<span class="flow-arrow">→</span>' : '') +
+      `<div class="flow-stage"><div class="fn" style="color:${stageColors[k]}">${d.pipeline.stages[k]||0}${dot}</div><div class="fl">${stageNames[k]}</div></div>`;
+  }).join('');
+
+  // Update heartbeat
+  _updateHeartbeat();
 
   _allMCLogs = d.daemon_logs;
   renderMCLogs();
@@ -1017,6 +1385,71 @@ function renderMCLogs() {
      </div>`
   ).join('') || '<div style="color:var(--muted);padding:8px;font-size:11px">No logs yet</div>';
 }
+
+// ── Heartbeat helper ─────────────────────────────────────────────────────────
+async function _updateHeartbeat() {
+  try {
+    const h = await apiFetch('/health');
+    if (!h) return;
+    const icon  = document.getElementById('heartbeat-icon');
+    const label = document.getElementById('heartbeat-label');
+    if (!icon || !label) return;
+    const secs = h.last_scan_secs;
+    if (secs === null || secs === undefined) {
+      label.textContent = 'Daemon offline?';
+      icon.className = 'heartbeat-icon stale';
+      label.className = 'heartbeat-label stale';
+      return;
+    }
+    const stale = secs > 120;
+    icon.className  = stale ? 'heartbeat-icon stale' : 'heartbeat-icon';
+    label.className = stale ? 'heartbeat-label stale' : 'heartbeat-label';
+    label.textContent = secs < 60 ? `Scan: ${secs}s ago` : `Scan: ${Math.floor(secs/60)}m ago`;
+  } catch(e) {}
+}
+
+// ── Activity summary helper ───────────────────────────────────────────────────
+function _updateActivitySummary(agentData, progress) {
+  const el = document.getElementById('activity-summary');
+  if (!el) return;
+  const agents  = agentData.agents || [];
+  const active  = agents.filter(a => a.status === 'ACTIVE');
+  const pending = agentData.total_pending || 0;
+  const progEntries = Object.values(progress || {});
+
+  let parts = [];
+
+  // Any active backtests?
+  if (progEntries.length > 0) {
+    parts.push(`Backtesting ${progEntries.length} idea${progEntries.length>1?'s':''}`);
+  }
+
+  // Active researcher?
+  const sr = agents.find(a => a.name === 'StrategyResearcher' && a.status === 'ACTIVE');
+  if (sr) parts.push(`Scoring ideas`);
+
+  if (pending > 0) {
+    parts.push(`${pending} idea${pending>1?'s':''} awaiting processing`);
+  }
+
+  if (parts.length === 0) {
+    el.textContent = active.length === 0
+      ? 'All agents idle · 0 ideas in pipeline'
+      : `${active.length} agent${active.length>1?'s':''} active`;
+  } else {
+    el.textContent = parts.join(' · ');
+  }
+}
+
+// ── Progress polling (every 3 s, only on mc page) ─────────────────────────────
+setInterval(async () => {
+  if (_currentPage !== 'mc') return;
+  const prog = await apiFetch('/agent-progress');
+  if (!prog) return;
+  const progress = prog.progress || {};
+  // Refresh agent cards if any backtest is running
+  if (Object.keys(progress).length > 0) loadAgentTeam();
+}, 3000);
 
 // ── Analytics ────────────────────────────────────────────────────────────────
 async function loadAnalytics() {
@@ -1075,9 +1508,9 @@ async function loadAnalytics() {
      <td style="color:var(--yellow)">${fmtUSD(a.cost)}</td><td>${a.avg_in}</td><td>${a.avg_out}</td></tr>`
   ).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center">No data</td></tr>';
 
-  // Pairs table
-  document.getElementById('analytics-pairs').innerHTML = d.pairs.map(p =>
-    `<tr><td style="color:var(--cyan)">${p.pair}</td><td>${p.count}</td>
+  // Tickers table
+  document.getElementById('analytics-pairs').innerHTML = (d.tickers||[]).map(p =>
+    `<tr><td style="color:var(--cyan)">${p.ticker}</td><td>${p.count}</td>
      <td style="${clr(p.avg_sharpe)}">${fmt2(p.avg_sharpe)}</td></tr>`
   ).join('') || '<tr><td colspan="3" style="color:var(--muted);text-align:center">No data</td></tr>';
 
@@ -1192,7 +1625,7 @@ async function loadGateQueue() {
     `<tr>
        <td><a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${r.id}</a></td>
        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</td>
-       <td>${r.pair||'—'}</td><td>${r.timeframe||'—'}</td>
+       <td>${r.ticker||'—'}</td><td>${r.timeframe||'—'}</td>
        <td>${fmt2(r.novelty_score)}</td><td>${fmt2(r.logic_score)}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
        <td>${advanceBtn(r.id)}</td>
@@ -1203,7 +1636,7 @@ async function loadGateQueue() {
     `<tr>
        <td><a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${r.id}</a></td>
        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</td>
-       <td>${r.pair||'—'}</td>
+       <td>${r.ticker||'—'}</td>
        <td>${fmt2(r.novelty_score)}</td><td>${fmt2(r.logic_score)}</td>
        <td style="color:var(--muted)">—</td>
        <td>${advanceBtn(r.id)}</td>
@@ -1214,7 +1647,7 @@ async function loadGateQueue() {
     `<tr>
        <td><a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${r.id}</a></td>
        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</td>
-       <td>${r.pair||'—'}</td><td>${r.timeframe||'—'}</td>
+       <td>${r.ticker||'—'}</td><td>${r.timeframe||'—'}</td>
        <td style="${clr(r.research_score, 0.65)}">${fmt2(r.research_score)}</td>
        <td>
          <button class="btn btn-sm btn-cyan" onclick="triggerBacktestForIdea(${r.id})">▶ Backtest</button>
@@ -1266,7 +1699,7 @@ async function loadIdeas() {
        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
          <a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${esc(r.title)}</a>
        </td>
-       <td>${r.pair||'—'}</td><td>${r.timeframe||'—'}</td>
+       <td>${r.ticker||'—'}</td><td>${r.timeframe||'—'}</td>
        <td>${stageBadge(r.stage)}</td>
        <td>${statusBadge(r.status)}</td>
        <td style="${clr(r.novelty_score,.6)}">${fmt2(r.novelty_score)}</td>
@@ -1286,7 +1719,7 @@ async function openIdeaModal(id) {
   if (!d) return;
   const r = d.idea;
   document.getElementById('modal-title').textContent = r.title;
-  document.getElementById('modal-subtitle').textContent = `#${r.id} · ${r.pair||'—'} · ${r.timeframe||'—'} · ${r.stage}`;
+  document.getElementById('modal-subtitle').textContent = `#${r.id} · ${r.ticker||'—'} · ${r.timeframe||'—'} · ${r.stage}`;
   document.getElementById('modal-kv').innerHTML = [
     ['Stage', stageBadge(r.stage)],
     ['Status', statusBadge(r.status)],
@@ -1348,7 +1781,7 @@ async function loadBacktestRuns() {
     `<tr>
        <td style="color:var(--muted)">${r.id}</td>
        <td><a onclick="openIdeaModal(${r.idea_id})" style="color:var(--cyan);cursor:pointer;max-width:140px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title||'#'+r.idea_id)}</a></td>
-       <td>${r.pair||r.idea_pair||'—'}</td>
+       <td>${r.pair||r.idea_ticker||'—'}</td>
        <td>${r.timeframe||r.idea_tf||'—'}</td>
        <td style="${clr(r.train_sharpe,1)}">${fmt2(r.train_sharpe)}</td>
        <td style="${clr(r.val_sharpe,1)}">${fmt2(r.val_sharpe)}</td>
@@ -1392,7 +1825,7 @@ async function runSandbox() {
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Running backtest…';
   const r = await apiPost('/sandbox/run', {
     title, hypothesis: document.getElementById('sb-hypothesis').value,
-    pair: document.getElementById('sb-pair').value,
+    ticker: document.getElementById('sb-pair').value,
     timeframe: document.getElementById('sb-tf').value,
     factor_formula: formula,
   });
@@ -1654,8 +2087,266 @@ setInterval(() => {
   document.getElementById('clock').textContent = new Date().toUTCString().slice(17, 25) + ' UTC';
 }, 1000);
 
+// ── Technique Arsenal ─────────────────────────────────────────────────────────
+let _arsenalData = [];
+let _arsenalStatusFilter = 'all';
+let _arsenalAngleFilter  = null;
+
+async function loadArsenal() {
+  const d = await apiFetch('/system/arsenal');
+  if (!d) return;
+  _arsenalData = d.techniques || [];
+
+  // Stats
+  document.getElementById('arsenal-total').textContent   = d.total;
+  document.getElementById('arsenal-impl').textContent    = d.implemented;
+  document.getElementById('arsenal-pending').textContent = d.pending;
+  const pct = d.total ? Math.round(d.implemented / d.total * 100) : 0;
+  document.getElementById('arsenal-progress-fill').style.width = pct + '%';
+  document.getElementById('arsenal-progress-label').textContent =
+    `${pct}% complete — ${d.implemented}/${d.total} implemented`;
+
+  renderArsenal();
+}
+
+function arsenalFilter(status, btn) {
+  _arsenalStatusFilter = status;
+  document.querySelectorAll('.arsenal-filter-bar .arsenal-filter-btn').forEach(b => {
+    if (['all','implemented','pending'].includes(b.textContent.replace(/[✅🔲 ]/g,'').toLowerCase()) ||
+        b.onclick?.toString().includes("arsenalFilter(")) b.classList.remove('active');
+  });
+  btn.classList.add('active');
+  renderArsenal();
+}
+
+function arsenalFilterAngle(angle, btn) {
+  if (_arsenalAngleFilter === angle) {
+    _arsenalAngleFilter = null;
+    btn.classList.remove('active');
+  } else {
+    _arsenalAngleFilter = angle;
+    document.querySelectorAll('.arsenal-filter-bar .arsenal-filter-btn').forEach(b => {
+      if (b.onclick?.toString().includes("arsenalFilterAngle")) b.classList.remove('active');
+    });
+    btn.classList.add('active');
+  }
+  renderArsenal();
+}
+
+function renderArsenal() {
+  let techs = _arsenalData;
+  if (_arsenalStatusFilter === 'implemented') techs = techs.filter(t => t.implemented);
+  else if (_arsenalStatusFilter === 'pending')     techs = techs.filter(t => !t.implemented);
+  if (_arsenalAngleFilter) techs = techs.filter(t => t.angle === _arsenalAngleFilter);
+
+  const complexityColors = {low:'low', medium:'medium', high:'high'};
+  const riskLabels = {low:'🟢 low', medium:'🟡 med', high:'🔴 high'};
+
+  document.getElementById('technique-grid').innerHTML = techs.map(t => {
+    const implClass = t.implemented ? 'implemented' : 'pending';
+    const implBadge = t.implemented
+      ? '<span class="tc-badge impl">✅ LIVE</span>'
+      : '<span class="tc-badge pending">🔲 PLANNED</span>';
+    const cplxClass = complexityColors[t.complexity] || 'medium';
+    const useItems  = (t.when_to_use||[]).slice(0,3).map(u =>
+      `<li>${esc(u)}</li>`).join('');
+    const avoidItems= (t.when_to_avoid||[]).map(u =>
+      `<li class="tc-avoid-list">${esc(u)}</li>`).join('');
+    const avoidBlock = avoidItems
+      ? `<button class="tc-expand-btn" onclick="toggleAvoid('avoid-${t.key}',this)">▸ Show avoid rules</button>
+         <div id="avoid-${t.key}" class="tc-avoid-section">
+           <div class="tc-use-label" style="color:var(--red)">Avoid when</div>
+           <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
+         </div>`
+      : '';
+    const icBench = t.ic_benchmark
+      ? `<div class="tc-ic-bench">📐 IC benchmark: ${esc(t.ic_benchmark)}</div>` : '';
+    const stockTypes = (t.stock_types||[]).join(', ');
+    const holdingPeriods = (t.holding_periods||[]).join(', ');
+
+    return `<div class="technique-card ${implClass}">
+      <div class="tc-head">
+        <div>
+          <div class="tc-name">${esc(t.name)}</div>
+          <div class="tc-key"><code>${t.key}</code> &middot; ${t.angle || '—'}</div>
+        </div>
+        <div class="tc-badges">
+          ${implBadge}
+          <span class="tc-badge ${cplxClass}">${t.complexity}</span>
+          <span class="tc-badge ${cplxClass}" title="Overfitting risk">${riskLabels[t.overfitting_risk]||t.overfitting_risk}</span>
+        </div>
+      </div>
+      <div class="tc-applicability">${esc(t.bursa_applicability)}</div>
+      ${icBench}
+      <div class="tc-use-label">Use when</div>
+      <ul class="tc-use-list">${useItems}</ul>
+      ${avoidBlock}
+      ${stockTypes ? `<div style="font-size:9px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
+    </div>`;
+  }).join('') || '<div style="color:var(--muted);padding:20px">No techniques match the current filter.</div>';
+}
+
+function toggleAvoid(id, btn) {
+  const el = document.getElementById(id);
+  const open = el.classList.toggle('open');
+  btn.textContent = open ? '▾ Hide avoid rules' : '▸ Show avoid rules';
+}
+
+// ── System Direction ─────────────────────────────────────────────────────────
+function dirToggle(id) {
+  const card = document.getElementById('dir-card-' + id);
+  if (card) card.classList.toggle('open');
+}
+
+async function loadDirection() {
+  const d = await apiFetch('/system/direction');
+  if (!d) return;
+
+  document.getElementById('dir-updated').textContent = 'Last updated: ' + (d.last_updated || '—');
+  document.getElementById('dir-purpose').textContent = d.core_purpose || '';
+  document.getElementById('dir-philosophy-text').textContent = d.design_philosophy || '';
+
+  // Live state row
+  const ss = d.system_state || {};
+  const kbPct = Math.min(100, Math.round((ss.total_kb_docs||0) / (ss.kb_target||50) * 100));
+  const ideasPct = Math.min(100, Math.round((ss.total_ideas||0) / (ss.ideas_target||45) * 100));
+  const spendPct = Math.min(100, Math.round((ss.today_spend_usd||0) / (ss.daily_budget_usd||20) * 100));
+  document.getElementById('dir-state-row').innerHTML = `
+    <div class="stat-card">
+      <div class="val" style="color:var(--cyan)">${ss.total_kb_docs||0}</div>
+      <div class="lbl">KB Docs</div>
+      <div class="dir-progress-bar-wrap"><div class="dir-progress-bar" style="width:${kbPct}%"></div></div>
+      <div class="sub">${kbPct}% of ${ss.kb_target||50} target</div>
+    </div>
+    <div class="stat-card">
+      <div class="val" style="color:var(--purple)">${ss.total_ideas||0}</div>
+      <div class="lbl">Ideas Created</div>
+      <div class="dir-progress-bar-wrap"><div class="dir-progress-bar" style="width:${ideasPct}%"></div></div>
+      <div class="sub">${ideasPct}% of ${ss.ideas_target||45} target</div>
+    </div>
+    <div class="stat-card">
+      <div class="val" style="color:var(--yellow)">$${(ss.today_spend_usd||0).toFixed(2)}</div>
+      <div class="lbl">Today's Spend</div>
+      <div class="bar-wrap"><div class="bar-fill ${spendPct>80?'danger':spendPct>50?'warn':'ok'}" style="width:${spendPct}%"></div></div>
+      <div class="sub">$${ss.daily_budget_usd||20} daily budget</div>
+    </div>
+    <div class="stat-card">
+      <div class="val" style="color:var(--green)">${d.angles_ready_count||0} / ${d.angles_total||9}</div>
+      <div class="lbl">Angles Ready</div>
+      <div class="dir-progress-bar-wrap"><div class="dir-progress-bar" style="width:${Math.round((d.angles_ready_count||0)/(d.angles_total||9)*100)}%"></div></div>
+      <div class="sub">≥5 docs each</div>
+    </div>`;
+
+  // Success metrics
+  document.getElementById('dir-metrics-list').innerHTML = (d.success_metrics||[]).map(m =>
+    `<li style="color:var(--muted2)">${esc(m.metric)}</li>`
+  ).join('');
+
+  // Research angles
+  const anglesReady = (d.research_angles||[]).filter(a => a.ready).length;
+  document.getElementById('dir-angles-badge').textContent = `${anglesReady}/${(d.research_angles||[]).length} ready`;
+  document.getElementById('dir-angles-grid').innerHTML = (d.research_angles||[]).map(a => {
+    const barClass = a.ready ? 'ready' : a.doc_count > 0 ? 'partial' : 'empty';
+    const pct = Math.max(2, a.coverage_pct);
+    return `<div class="dir-angle-item">
+      <div class="dir-angle-name" style="color:${a.ready?'var(--green)':'var(--text)'}">${esc(a.label)}</div>
+      <div class="dir-angle-desc">${esc(a.description)}</div>
+      <div class="dir-angle-bar-wrap"><div class="dir-angle-bar ${barClass}" style="width:${pct}%"></div></div>
+      <div class="dir-angle-stat">
+        <span>${a.doc_count} doc${a.doc_count!==1?'s':''}</span>
+        <span style="color:${a.ready?'var(--green)':'var(--yellow)'}">${a.ready?'✔ Ready':'Need '+(a.target-a.doc_count)+' more'}</span>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Constraints
+  document.getElementById('dir-constraints-list').innerHTML = (d.bursa_constraints||[]).map(c =>
+    `<li>${esc(c)}</li>`
+  ).join('');
+
+  // Gate thresholds
+  const gt = d.gate_thresholds || {};
+  const g0 = gt.gate0 || {};
+  document.getElementById('dir-gates-grid').innerHTML = `
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Gate 0 Novelty</div>
+      <div class="dir-threshold-value">&ge; ${g0.novelty||0.60}</div>
+      <div class="dir-threshold-note">Idea originality score</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Gate 0 Logic</div>
+      <div class="dir-threshold-value">&ge; ${g0.logic||0.70}</div>
+      <div class="dir-threshold-note">Economic mechanism soundness</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Gate 0 Feasibility</div>
+      <div class="dir-threshold-value">&ge; ${g0.feasibility||0.60}</div>
+      <div class="dir-threshold-note">Bursa implementability</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Stage 2 Sharpe</div>
+      <div class="dir-threshold-value">&ge; ${gt.stage2_sharpe||1.1}</div>
+      <div class="dir-threshold-note">Medium-term backtest</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Train/Val Gap</div>
+      <div class="dir-threshold-value">&le; ${Math.round((gt.stage2_tv_gap||0.30)*100)}%</div>
+      <div class="dir-threshold-note">Overfitting guard</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Cross-section IC</div>
+      <div class="dir-threshold-value">&gt; ${gt.cross_section_ic||0.05}</div>
+      <div class="dir-threshold-note">Mean information coefficient</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">IC t-stat</div>
+      <div class="dir-threshold-value">&gt; ${gt.cross_section_tstat||1.5}</div>
+      <div class="dir-threshold-note">Statistical significance</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Min Stocks</div>
+      <div class="dir-threshold-value">${gt.cross_section_stocks||15}+</div>
+      <div class="dir-threshold-note">Positive IC on N of 30 KLCI</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Stage 4A Sharpe</div>
+      <div class="dir-threshold-value">&ge; ${gt.stage4a_sharpe||1.0}</div>
+      <div class="dir-threshold-note">Live paper trading</div>
+    </div>
+    <div class="dir-threshold-item">
+      <div class="dir-threshold-label">Stage 4A Max DD</div>
+      <div class="dir-threshold-value">&le; ${Math.round((gt.stage4a_max_dd||0.15)*100)}%</div>
+      <div class="dir-threshold-note">Paper trade drawdown</div>
+    </div>`;
+
+  // Min trades
+  const mt = d.min_trades || {};
+  document.getElementById('dir-trades-grid').innerHTML = Object.entries(mt).map(([cls, v]) =>
+    `<div class="dir-threshold-item">
+       <div class="dir-threshold-label">${esc(cls.replace('_',' '))}</div>
+       <div class="dir-threshold-value">${v.min}</div>
+       <div class="dir-threshold-note">${esc(v.note)}</div>
+     </div>`
+  ).join('');
+
+  // Known issues
+  const fixed = (d.known_issues||[]).filter(i => i.status==='fixed').length;
+  const pending = (d.known_issues||[]).filter(i => i.status==='pending').length;
+  const active = (d.known_issues||[]).filter(i => i.status==='active').length;
+  document.getElementById('dir-issues-badge').textContent =
+    `${fixed} fixed · ${active} active · ${pending} pending`;
+  document.getElementById('dir-issues-list').innerHTML = (d.known_issues||[]).map(i =>
+    `<div class="dir-issue-row">
+       <span class="dir-issue-status ${i.status}">${i.status.toUpperCase()}</span>
+       <span style="color:${i.status==='fixed'?'var(--muted)':i.status==='active'?'var(--red)':'var(--yellow)'}">${esc(i.issue)}</span>
+     </div>`
+  ).join('');
+}
+
 function loadAll() {
-  if (_currentPage === 'mc') loadMC();
+  if (_currentPage === 'direction') loadDirection();
+  else if (_currentPage === 'arsenal')   loadArsenal();
+  else if (_currentPage === 'mc') loadMC();
   else if (_currentPage === 'analytics') loadAnalytics();
   else if (_currentPage === 'gate-queue') loadGateQueue();
   else if (_currentPage === 'ideas') loadIdeas();
@@ -1668,6 +2359,24 @@ function loadAll() {
 
 loadMC();
 setInterval(() => { if (_currentPage === 'mc') loadMC(); }, 15000);
+
+// ── Mobile sidebar ────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const sidebar = document.querySelector('nav.sidebar');
+  const overlay = document.getElementById('mobile-overlay');
+  const isOpen = sidebar.classList.toggle('mobile-open');
+  overlay.classList.toggle('visible', isOpen);
+}
+function closeSidebar() {
+  document.querySelector('nav.sidebar').classList.remove('mobile-open');
+  document.getElementById('mobile-overlay').classList.remove('visible');
+}
+// Close sidebar after nav link tap on mobile
+document.querySelectorAll('nav.sidebar a').forEach(a => {
+  a.addEventListener('click', () => {
+    if (window.innerWidth <= 768) closeSidebar();
+  });
+});
 </script>
 </body>
 </html>

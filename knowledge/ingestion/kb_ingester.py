@@ -18,54 +18,57 @@ from research documents to build a searchable knowledge base for Bursa Malaysia 
 # The domain field in kb_documents now uses these values so check_balance() can
 # query by domain directly instead of using keyword/source_url heuristics.
 VALID_DOMAINS = {
-    "price_action",    # Technical analysis, price momentum, chart patterns
-    "fundamental",     # Value investing, earnings quality, fundamental factors
-    "event_driven",    # Post-earnings drift, dividend capture, corporate events
-    "institutional",   # EPF flows, GLC ownership, institutional trading patterns
-    "macro",           # OPR cycle, MYR macro impacts on sector returns
-    "commodity",       # CPO price impact on plantation stocks
-    "sector_rotation", # KLSE sector rotation, defensive vs cyclical
-    "behavioural",     # Investor behaviour biases, market anomalies
+    "price_action",          # Technical analysis, price momentum, chart patterns
+    "fundamental",           # Value investing, earnings quality, fundamental factors
+    "event_driven",          # Post-earnings drift, dividend capture, corporate events
+    "institutional",         # EPF flows, GLC ownership, institutional trading patterns
+    "macro",                 # OPR cycle, MYR macro impacts on sector returns
+    "commodity",             # CPO price impact on plantation stocks
+    "sector_rotation",       # KLSE sector rotation, defensive vs cyclical
+    "behavioural",           # Investor behaviour biases, market anomalies
+    "statistical_modelling", # GARCH/ARIMA, factor models, ML, cointegration, HMM, Monte Carlo
 }
 
 # Map legacy / internal domain names → unified angle names
 DOMAIN_TO_ANGLE = {
-    "price_action":      "price_action",
-    "fundamental":       "fundamental",
-    "event_driven":      "event_driven",
-    "institutional":     "institutional",
-    "macro":             "macro",
-    "commodity":         "commodity",
-    "sector_rotation":   "sector_rotation",
-    "behavioural":       "behavioural",
+    "price_action":          "price_action",
+    "fundamental":           "fundamental",
+    "event_driven":          "event_driven",
+    "institutional":         "institutional",
+    "macro":                 "macro",
+    "commodity":             "commodity",
+    "sector_rotation":       "sector_rotation",
+    "behavioural":           "behavioural",
+    "statistical_modelling": "statistical_modelling",
     # Legacy domain names (pre-unification)
-    "research":          "price_action",
-    "analysis-methods":  "fundamental",
-    "quant-philosophy":  "price_action",
-    "mental-models":     "behavioural",
-    "factor-data":       "fundamental",
-    "infrastructure":    "price_action",
-    "portfolio-management": "fundamental",
-    "risk-management":   "macro",
-    "alpha-ideas":       "event_driven",
-    "market-structure":  "price_action",
-    "technical":         "price_action",
-    "fx":                "price_action",
-    "risk":              "macro",
-    "execution":         "price_action",
-    "other":             None,   # triggers auto-classification
+    "research":              "price_action",
+    "analysis-methods":      "statistical_modelling",
+    "quant-philosophy":      "statistical_modelling",
+    "mental-models":         "behavioural",
+    "factor-data":           "statistical_modelling",
+    "infrastructure":        "price_action",
+    "portfolio-management":  "fundamental",
+    "risk-management":       "macro",
+    "alpha-ideas":           "event_driven",
+    "market-structure":      "price_action",
+    "technical":             "price_action",
+    "fx":                    "price_action",
+    "risk":                  "macro",
+    "execution":             "price_action",
+    "other":                 None,   # triggers auto-classification
 }
 
 # Ordered list used for domain classification prompts
 INFER_DOMAINS = [
-    "price_action",    # Technical analysis, price momentum, moving averages, RSI, MACD
-    "fundamental",     # Value investing, earnings quality, P/E, ROE, dividend yield
-    "event_driven",    # Post-earnings drift, dividend capture, corporate events
-    "institutional",   # EPF/GLC ownership, pension fund flows, index rebalancing
-    "macro",           # OPR cycle, BNM policy, macroeconomic sector impacts
-    "commodity",       # CPO/plantation stocks, aluminium/Press Metal, energy sector
-    "sector_rotation", # Sector momentum, cyclical/defensive rotation, industry trends
-    "behavioural",     # Investor sentiment, anomalies, behavioural biases
+    "price_action",          # Technical analysis, price momentum, moving averages, RSI, MACD
+    "fundamental",           # Value investing, earnings quality, P/E, ROE, dividend yield
+    "event_driven",          # Post-earnings drift, dividend capture, corporate events
+    "institutional",         # EPF/GLC ownership, pension fund flows, index rebalancing
+    "macro",                 # OPR cycle, BNM policy, macroeconomic sector impacts
+    "commodity",             # CPO/plantation stocks, aluminium/Press Metal, energy sector
+    "sector_rotation",       # Sector momentum, cyclical/defensive rotation, industry trends
+    "behavioural",           # Investor sentiment, anomalies, behavioural biases
+    "statistical_modelling", # GARCH/ARIMA, HMM regime detection, factor models, PCA, ML, cointegration, Kalman, Monte Carlo, Bayesian
 ]
 
 
@@ -249,24 +252,52 @@ Return JSON:
     # Relevance check (Layer 1 quality gate)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _score_to_category(score: float) -> str:
+        """Map a relevance score to its 5-tier category label."""
+        if score < 0.20:  return "irrelevant"
+        if score < 0.40:  return "generic"
+        if score < 0.60:  return "partial"
+        if score < 0.80:  return "relevant"
+        return "direct"
+
     def relevance_check(self, title: str, content_preview: str) -> dict:
         """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0–1.0).
 
-        Returns {'relevance': float, 'reason': str}.
-        Defaults to {'relevance': 1.0, 'reason': 'check_failed'} on any error
-        so that ingest is never blocked by a transient API issue.
+        Returns {'relevance': float, 'category': str, 'reason': str}.
+        Category is one of: irrelevant / generic / partial / relevant / direct.
+        Defaults to {'relevance': 1.0, 'category': 'relevant', 'reason': 'check_failed'}
+        on any error so that ingest is never blocked by a transient API issue.
+
+        5-tier scoring:
+          0.00–0.20  irrelevant  — wrong market/asset class, non-financial, crypto, forex, CFD
+          0.20–0.40  generic     — transferable finance concepts but no EM/Asian context
+          0.40–0.60  partial     — ASEAN / emerging-market / Asian market context
+          0.60–0.80  relevant    — Bursa Malaysia or Malaysian equity specific
+          0.80–1.00  direct      — actionable KLSE intelligence (specific stocks, EPF, CPO, BNM)
         """
         prompt = (
-            f"Rate this content's relevance to Bursa Malaysia equity trading on a scale 0.0-1.0.\n\n"
+            f"Rate this content's relevance to Bursa Malaysia equity trading.\n\n"
             f"Title: {title}\n"
-            f"Summary first 500 chars: {content_preview[:500]}\n\n"
-            f"Score 0.0-0.3: Not relevant (generic theory, wrong market, non-equity, "
-            f"cybersecurity, banking infrastructure etc.)\n"
-            f"Score 0.3-0.6: Partially relevant (general EM equity, Asian markets, "
-            f"applicable techniques)\n"
-            f"Score 0.6-1.0: Highly relevant (specifically Bursa, Malaysian stocks, "
-            f"KLCI, CPO, EPF etc.)\n\n"
-            f'Return JSON: {{"relevance": 0.0, "reason": "..."}}'
+            f"Content preview: {content_preview[:500]}\n\n"
+            f"Use this 5-tier scale:\n\n"
+            f"  0.00–0.20  irrelevant — completely wrong market or asset class\n"
+            f"    Examples: Australian CFD trading, cryptocurrency, forex pairs,\n"
+            f"    navigation/login pages, cybersecurity, non-financial content\n\n"
+            f"  0.20–0.40  generic — general finance, transferable concepts only\n"
+            f"    Examples: General momentum theory, generic valuation frameworks,\n"
+            f"    global market mechanics with no Asian or EM context\n\n"
+            f"  0.40–0.60  partial — emerging market or Asian market context\n"
+            f"    Examples: ASEAN equity research, Southeast Asia investment strategies,\n"
+            f"    EM factor models, regional market microstructure\n\n"
+            f"  0.60–0.80  relevant — Bursa Malaysia or Malaysian equity specific\n"
+            f"    Examples: KLSE analysis, Malaysian stock strategies,\n"
+            f"    Bursa market structure, BNM policy effects, FBM KLCI\n\n"
+            f"  0.80–1.00  direct — actionable KLSE intelligence\n"
+            f"    Examples: Specific stock analysis (.KL tickers), KLCI constituent data,\n"
+            f"    EPF flow data, CPO price impact on plantation stocks, Bursa announcements\n\n"
+            f"Return JSON only:\n"
+            f'{{"relevance": 0.0, "category": "irrelevant|generic|partial|relevant|direct", "reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
@@ -274,15 +305,19 @@ Return JSON:
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
-                max_tokens=80,
+                max_tokens=100,
                 task_label="kb_relevance_check",
             )
             relevance = float(result.get("relevance", 1.0))
+            # Accept Claude's category if valid; otherwise derive from score
+            raw_cat = str(result.get("category", ""))
+            category = raw_cat if raw_cat in {"irrelevant", "generic", "partial", "relevant", "direct"} \
+                       else self._score_to_category(relevance)
             reason = str(result.get("reason", ""))
-            return {"relevance": relevance, "reason": reason}
+            return {"relevance": relevance, "category": category, "reason": reason}
         except Exception as e:
             self.log_daemon("WARN", f"KB relevance check failed: {e}")
-            return {"relevance": 1.0, "reason": "check_failed"}
+            return {"relevance": 1.0, "category": "relevant", "reason": "check_failed"}
 
     # ------------------------------------------------------------------
     # Public ingest methods
@@ -293,22 +328,31 @@ Return JSON:
         domain = _normalise_domain(domain)
         slug = self._slug(title)
 
-        # Layer 1: relevance gate — cheap Haiku call before the expensive Sonnet summarise
+        # ── Layer 1: relevance gate ─────────────────────────────────────────────
+        # Cheap Haiku call before the expensive Sonnet summarise.
+        # 5-tier result: irrelevant / generic / partial / relevant / direct
         rel = self.relevance_check(title, content)
-        relevance_score = rel["relevance"]
-        relevance_reason = rel["reason"]
-        is_low_relevance = relevance_score < 0.4
+        relevance_score    = rel["relevance"]
+        relevance_category = rel["category"]   # one of the 5 tier labels
+        relevance_reason   = rel["reason"]
+
+        # Always save the doc regardless of tier (knowledge is never deleted)
+        # but tag 'generic' docs so downstream logic can filter them.
+        extra_tags_pre = []
+        if relevance_category == "generic":
+            extra_tags_pre.append("generic")
 
         meta = self._summarise(content, title, domain)
         if "error" in meta:
             self.log_daemon("WARN", f"Summarisation failed for '{title}': {meta.get('error')}")
             meta = {"summary": "", "tags": [], "key_concepts": []}
 
-        summary = meta.get("summary", "")
-        tags = meta.get("tags", [])
+        summary  = meta.get("summary", "")
+        tags     = extra_tags_pre + meta.get("tags", [])
         concepts = meta.get("key_concepts", [])
 
-        doc_status = "low_relevance" if is_low_relevance else "indexed"
+        # Use category as the DB status so process_undigested() can filter intelligently
+        doc_status = relevance_category  # irrelevant / generic / partial / relevant / direct
         doc_id = self._upsert_document(slug, title, domain, content, summary, source_url, tags, doc_status)
 
         concept_ids = []
@@ -319,46 +363,59 @@ Return JSON:
             self._link_document_concept(doc_id, c["name"])
             concept_ids.append(cid)
 
-        # Tag-based doc-to-doc linking (broader than concept-phrase matching)
         self._link_by_tags(doc_id, tags)
 
         self.log_daemon(
             "INFO",
             f"Ingested doc [{doc_id}] '{title}' ({len(concepts)} concepts, {len(tags)} tags) "
-            f"relevance={relevance_score:.2f} ({doc_status})",
+            f"relevance={relevance_score:.2f} category={relevance_category}",
         )
 
-        # Auto-seed alpha ideas — only for sufficiently relevant documents
-        if is_low_relevance:
+        # ── Seeding logic — tier-aware ──────────────────────────────────────────
+        #
+        # irrelevant (<0.20): save only — no seeding
+        # generic    (0.20–0.40): save only — no seeding (transferable but not Bursa-specific)
+        # partial    (0.40–0.60): seed with confidence cap 0.65 (ASEAN/EM context, lower weight)
+        # relevant   (0.60–0.80): seed normally (Bursa-specific)
+        # direct     (0.80+):     seed immediately, priority processing
+        #
+        if relevance_category in ("irrelevant", "generic"):
             self.log_daemon(
                 "INFO",
-                f"KB: skipped seeding low-relevance doc [{doc_id}] "
+                f"KB: skipped seeding {relevance_category} doc [{doc_id}] "
                 f"(score={relevance_score:.2f}: {relevance_reason})",
             )
         else:
+            confidence_cap = 0.65 if relevance_category == "partial" else 1.0
+            priority       = relevance_category == "direct"
             try:
                 from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
-                seed_result = AlphaSeedGenerator().digest(doc_id)
+                seed_result = AlphaSeedGenerator().digest(doc_id, confidence_cap=confidence_cap)
                 if not seed_result.get("skipped"):
                     self.log_daemon(
                         "INFO",
-                        f"AlphaSeed: {seed_result['hypotheses_generated']} hypotheses from '{title[:50]}'",
+                        f"AlphaSeed: {seed_result['hypotheses_generated']} hypotheses from "
+                        f"'{title[:50]}' (category={relevance_category}"
+                        f"{', confidence_cap=0.65' if confidence_cap < 1.0 else ''}"
+                        f"{', PRIORITY' if priority else ''})",
                     )
             except Exception as e:
                 self.log_daemon("WARN", f"AlphaSeed failed for doc {doc_id}: {e}")
 
         return {
-            "doc_id": doc_id,
-            "slug": slug,
-            "title": title,
-            "domain": domain,
-            "summary": summary,
-            "tags": tags,
-            "concepts_extracted": len(concepts),
-            "trading_relevance": meta.get("trading_relevance", 0.0),
-            "relevance_score": relevance_score,
-            "relevance_reason": relevance_reason,
-            "low_relevance": is_low_relevance,
+            "doc_id":              doc_id,
+            "slug":                slug,
+            "title":               title,
+            "domain":              domain,
+            "summary":             summary,
+            "tags":                tags,
+            "concepts_extracted":  len(concepts),
+            "trading_relevance":   meta.get("trading_relevance", 0.0),
+            "relevance_score":     relevance_score,
+            "relevance_category":  relevance_category,
+            "relevance_reason":    relevance_reason,
+            # keep legacy key for backward compat with Telegram bot old code
+            "low_relevance":       relevance_category in ("irrelevant", "generic"),
         }
 
     async def ingest_url(self, url: str, title: str = "", domain: str = "other") -> dict:
@@ -394,6 +451,19 @@ Return JSON:
             f"Title: {title}\n"
             f"Summary: {summary[:600]}\n\n"
             f"Available angles:\n{domain_list}\n\n"
+            f"Angle descriptions:\n"
+            f"  price_action: technical analysis, momentum, moving averages, RSI, MACD, chart patterns\n"
+            f"  fundamental: value investing, earnings quality, P/E, ROE, dividend yield\n"
+            f"  event_driven: post-earnings drift, dividend capture, corporate events\n"
+            f"  institutional: EPF/GLC ownership, pension fund flows, index rebalancing\n"
+            f"  macro: OPR cycle, BNM policy, macroeconomic sector impacts\n"
+            f"  commodity: CPO/plantation stocks, energy sector, commodity correlations\n"
+            f"  sector_rotation: sector momentum, cyclical/defensive rotation, industry trends\n"
+            f"  behavioural: investor sentiment, anomalies, behavioural biases, herding\n"
+            f"  statistical_modelling: GARCH, ARIMA, Hidden Markov Models, Random Matrix Theory,\n"
+            f"    factor models, PCA, regression, machine learning for finance, cointegration,\n"
+            f"    stationarity, Kalman filter, Monte Carlo, Bayesian methods, time series analysis,\n"
+            f"    clustering algorithms, statistical arbitrage mathematics\n\n"
             f'Return JSON only: {{"domain": "<angle-name>", "confidence": 0.0, '
             f'"reason": "one sentence"}}'
         )

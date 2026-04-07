@@ -59,14 +59,34 @@ class BaseAgent(ABC):
     def call_claude_json(self, system, messages, model=None, max_tokens=4096, task_label=""):
         system_with_json = system + "\n\nRespond ONLY with valid JSON. No markdown, no preamble."
         text = self.call_claude(system_with_json, messages, model, max_tokens, task_label)
+        raw = text  # preserve original for error reporting
         text = text.strip()
+        # Strip any markdown code fences (```json ... ``` or ``` ... ```)
         if text.startswith("```"):
-            text = "\n".join(text.split("\n")[1:-1])
+            lines = text.split("\n")
+            # Drop first line (``` or ```json) and last line (```)
+            inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
+            text = "\n".join(inner).strip()
+        # Some models wrap JSON in a single-line JSON block without newlines
+        # Try to extract the first {...} or [...] substring if direct parse fails
         try:
             return json.loads(text)
-        except json.JSONDecodeError as e:
-            self.logger.error(f"JSON parse failed: {e}")
-            return {"error": str(e), "raw": text}
+        except json.JSONDecodeError:
+            pass
+        # Fallback: find first { or [ and last } or ] and try parsing that slice
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            start = text.find(start_char)
+            end   = text.rfind(end_char)
+            if start != -1 and end != -1 and end > start:
+                try:
+                    return json.loads(text[start:end + 1])
+                except json.JSONDecodeError:
+                    pass
+        self.logger.error(
+            f"[{self.name}] call_claude_json FAILED for task={task_label!r} — "
+            f"could not parse JSON.\nRAW RESPONSE ({len(raw)} chars):\n{raw[:2000]}"
+        )
+        return {"error": "json_parse_failed", "raw": raw}
 
     def _log_usage(self, model, input_tokens, output_tokens, cost, task):
         with db_session() as conn:

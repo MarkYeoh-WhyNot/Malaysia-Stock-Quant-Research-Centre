@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
+_PROGRESS_FILE = "/tmp/openclaw_progress.json"
+
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -12,7 +14,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from data.database import db_session, init_db
-from config.settings import AI_DAILY_BUDGET_USD
+from config.settings import AI_DAILY_BUDGET_USD, key_health_check
 
 app = FastAPI(title="OpenClaw Mission Control", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -36,7 +38,60 @@ async def _in_thread(fn):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "version": "2.0.0", "time": datetime.utcnow().isoformat()}
+    kh = key_health_check()
+    # Query last daemon scan time from daemon_logs
+    last_scan_time = None
+    last_scan_secs = None
+    try:
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM daemon_logs WHERE source='ResearchDaemon' "
+                "AND message LIKE 'Scan cycle%' ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if row:
+            ts = row["created_at"][:19].replace(" ", "T")
+            dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+            last_scan_time = ts
+            last_scan_secs = int((datetime.utcnow() - dt).total_seconds())
+    except Exception:
+        pass
+    return {
+        "status": "ok",
+        "version": "2.0.0",
+        "time": datetime.utcnow().isoformat(),
+        "last_scan_time": last_scan_time,
+        "last_scan_secs": last_scan_secs,
+        "key_health": {
+            "key_preview": kh["key_preview"],
+            "healthy": kh["healthy"],
+            "issues": kh["issues"],
+        },
+    }
+
+
+# ─── Agent Progress ──────────────────────────────────────────────────────────
+
+@app.get("/api/agent-progress")
+def agent_progress():
+    """Return active backtest progress keyed by idea_id."""
+    data: dict = {}
+    try:
+        if os.path.exists(_PROGRESS_FILE):
+            with open(_PROGRESS_FILE, "r") as fh:
+                raw = json.load(fh)
+            now = datetime.utcnow()
+            # Purge stale entries (> 10 min old — backtest should never take that long)
+            for idea_id, entry in raw.items():
+                try:
+                    ts = datetime.strptime(entry["ts"][:19], "%Y-%m-%dT%H:%M:%S")
+                    age_secs = (now - ts).total_seconds()
+                    if age_secs < 600:
+                        data[idea_id] = entry
+                except Exception:
+                    data[idea_id] = entry
+    except Exception:
+        pass
+    return {"progress": data, "as_of": datetime.utcnow().isoformat()}
 
 
 # ─── Mission Control ─────────────────────────────────────────────────────────
@@ -50,9 +105,17 @@ def mission_control():
         logs    = conn.execute("SELECT level, source, message, created_at FROM daemon_logs ORDER BY id DESC LIMIT 50").fetchall()
         totals  = conn.execute("SELECT COUNT(*) as total, SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected, SUM(CASE WHEN stage='stage5' THEN 1 ELSE 0 END) as live FROM alpha_ideas").fetchone()
         models  = conn.execute("SELECT model, SUM(cost_usd) as cost, COUNT(*) as calls FROM ai_usage WHERE created_at LIKE ? GROUP BY model", (f"{today}%",)).fetchall()
+        # Active stages: stages that have ideas currently awaiting processing
+        active_raw = conn.execute("""
+            SELECT stage FROM alpha_ideas
+            WHERE (stage='gate0' AND status='pending')
+               OR (stage IN ('stage1','stage2','stage3','stage4a') AND status='active')
+            GROUP BY stage
+        """).fetchall()
     stage_map = {r["stage"]: r["n"] for r in stages}
+    active_stages = [r["stage"] for r in active_raw]
     return {
-        "pipeline": {"total_ideas": totals["total"], "total_rejected": totals["rejected"], "live_strategies": totals["live"], "stages": stage_map},
+        "pipeline": {"total_ideas": totals["total"], "total_rejected": totals["rejected"], "live_strategies": totals["live"], "stages": stage_map, "active_stages": active_stages},
         "ai_usage": {"today_spend": round(float(spend["total"]), 4), "budget": AI_DAILY_BUDGET_USD, "budget_pct": round(float(spend["total"]) / AI_DAILY_BUDGET_USD * 100, 1), "total_calls": spend["calls"], "by_model": [{"model": r["model"], "cost": round(float(r["cost"]), 4), "calls": r["calls"]} for r in models]},
         "daemon_logs": [{"level": r["level"], "source": r["source"], "message": r["message"], "time": r["created_at"]} for r in logs],
         "timestamp": datetime.utcnow().isoformat(),
@@ -97,11 +160,11 @@ def analytics():
             FROM ai_usage GROUP BY agent ORDER BY cost DESC
         """).fetchall()
 
-        # Pair distribution
+        # Ticker distribution
         pairs = conn.execute("""
-            SELECT pair, COUNT(*) as n,
+            SELECT ticker, COUNT(*) as n,
                    AVG(COALESCE(backtest_sharpe, 0)) as avg_sharpe
-            FROM alpha_ideas WHERE pair IS NOT NULL GROUP BY pair ORDER BY n DESC
+            FROM alpha_ideas WHERE ticker IS NOT NULL GROUP BY ticker ORDER BY n DESC
         """).fetchall()
 
         # Pipeline events last 7 days
@@ -144,7 +207,7 @@ def analytics():
         "daily_ideas": [dict(r) for r in daily],
         "daily_spend": [{"day": r["day"], "cost": round(float(r["cost"]), 4), "calls": r["calls"]} for r in daily_spend],
         "agent_stats": [{"agent": r["agent"], "calls": r["calls"], "cost": round(float(r["cost"]), 4), "avg_in": round(float(r["avg_in"] or 0)), "avg_out": round(float(r["avg_out"] or 0))} for r in agent_stats],
-        "pairs": [{"pair": r["pair"], "count": r["n"], "avg_sharpe": round(float(r["avg_sharpe"]), 3)} for r in pairs],
+        "tickers": [{"ticker": r["ticker"], "count": r["n"], "avg_sharpe": round(float(r["avg_sharpe"]), 3)} for r in pairs],
         "pipeline_events": [dict(r) for r in events],
     }
 
@@ -189,7 +252,7 @@ def gate_queue():
         pending_g0   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='gate0' AND status='pending' ORDER BY id DESC LIMIT 20").fetchall()
         pending_s1   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='stage1' AND status='active' AND research_score IS NULL ORDER BY id DESC LIMIT 20").fetchall()
         pending_s2   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='stage2' AND status='active' ORDER BY id DESC LIMIT 20").fetchall()
-        recent_gates = conn.execute("SELECT gd.*, ai.title, ai.pair FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id=gd.idea_id ORDER BY gd.id DESC LIMIT 30").fetchall()
+        recent_gates = conn.execute("SELECT gd.*, ai.title, ai.ticker FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id=gd.idea_id ORDER BY gd.id DESC LIMIT 30").fetchall()
     return {
         "gate0_pending": [dict(r) for r in pending_g0],
         "stage1_pending": [dict(r) for r in pending_s1],
@@ -286,117 +349,312 @@ def detailed_analytics():
 
 @app.get("/api/agent-team")
 def agent_team():
-    cutoff_5m = (datetime.utcnow() - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
-    cutoff_1h = (datetime.utcnow() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    now       = datetime.utcnow()
+    ts_now    = now.strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_2m = (now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_5m = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    cutoff_1h = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
 
     with db_session() as conn:
-        # StrategyResearcher
-        sr_pending = conn.execute(
+        # ── StrategyResearcher ────────────────────────────────────────────────
+        sr_gate0_pending = conn.execute(
             "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='gate0' AND status='pending'"
         ).fetchone()["n"]
-        sr_active = conn.execute(
+        sr_stage1_active = conn.execute(
             "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage1' AND status='active'"
         ).fetchone()["n"]
-        sr_recent = conn.execute(
-            "SELECT title, updated_at FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('pending','active') ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
-        sr_is_active = bool(conn.execute(
-            "SELECT 1 FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('pending','active') AND updated_at >= ? LIMIT 1",
-            (cutoff_5m,)
+        # Last gate decision (most meaningful "last action")
+        sr_last_gate = conn.execute("""
+            SELECT gd.decision, gd.created_at, gd.idea_id, ai.title, ai.ticker,
+                   ai.novelty_score, ai.logic_score
+            FROM gate_decisions gd
+            JOIN alpha_ideas ai ON ai.id = gd.idea_id
+            WHERE gd.gate = 'gate0'
+            ORDER BY gd.id DESC LIMIT 1
+        """).fetchone()
+        # Pipeline-derived active: pending gate0 ideas OR active stage1 ideas OR recent update
+        sr_pipeline_active = (sr_gate0_pending > 0) or (sr_stage1_active > 0)
+        sr_ts_active = bool(conn.execute(
+            "SELECT 1 FROM alpha_ideas WHERE updated_at >= ? LIMIT 1", (cutoff_2m,)
         ).fetchone())
+        sr_is_active = sr_pipeline_active or sr_ts_active
+        sr_last_ts = sr_last_gate["created_at"] if sr_last_gate else None
+        # "Working on" — most recent gate0/stage1 idea
+        sr_working_idea = conn.execute("""
+            SELECT id, title, ticker, stage FROM alpha_ideas
+            WHERE (stage='gate0' AND status='pending')
+               OR (stage='stage1' AND status='active')
+            ORDER BY updated_at DESC LIMIT 1
+        """).fetchone()
 
-        # DataEngineer
-        de_pending = conn.execute(
+        # ── DataEngineer ──────────────────────────────────────────────────────
+        de_stage2_active = conn.execute(
             "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage2' AND status='active'"
         ).fetchone()["n"]
-        de_is_active = bool(conn.execute(
+        de_pipeline_active = de_stage2_active > 0
+        de_ts_active = bool(conn.execute(
             "SELECT 1 FROM backtest_runs WHERE created_at >= ? LIMIT 1", (cutoff_5m,)
         ).fetchone())
-        de_log = conn.execute(
-            "SELECT message FROM daemon_logs WHERE source LIKE '%data%' OR message LIKE '%Fetch%' OR message LIKE '%fetch%' ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        de_is_active = de_pipeline_active or de_ts_active
+        # Most informative data log: prefer fetch/cache messages
+        de_log = conn.execute("""
+            SELECT message, created_at FROM daemon_logs
+            WHERE (message LIKE '%Fetch%' OR message LIKE '%fetch%'
+                   OR message LIKE '%cache%' OR message LIKE '%bars%'
+                   OR message LIKE '%DataEngineer%')
+            ORDER BY id DESC LIMIT 1
+        """).fetchone()
+        de_last_ts = de_log["created_at"] if de_log else None
+        # "Working on" — most recent stage2 idea for data fetch
+        de_working_idea = conn.execute("""
+            SELECT id, title, ticker FROM alpha_ideas
+            WHERE stage='stage2' AND status='active'
+            ORDER BY updated_at DESC LIMIT 1
+        """).fetchone()
 
-        # BacktestEngineer
-        bt_recent = conn.execute(
-            "SELECT br.id, ai.title, ai.pair FROM backtest_runs br JOIN alpha_ideas ai ON ai.id=br.idea_id ORDER BY br.id DESC LIMIT 1"
-        ).fetchone()
-        bt_pending = conn.execute(
-            "SELECT COUNT(*) as n FROM alpha_ideas ai WHERE ai.stage='stage2' AND ai.status='active' AND NOT EXISTS (SELECT 1 FROM backtest_runs br WHERE br.idea_id=ai.id)"
-        ).fetchone()["n"]
-        bt_is_active = bool(conn.execute(
+        # ── BacktestEngineer ──────────────────────────────────────────────────
+        bt_last = conn.execute("""
+            SELECT br.id, br.idea_id, br.passed, br.train_sharpe, br.val_sharpe, br.test_sharpe,
+                   br.created_at, ai.title, ai.ticker
+            FROM backtest_runs br
+            JOIN alpha_ideas ai ON ai.id = br.idea_id
+            ORDER BY br.id DESC LIMIT 1
+        """).fetchone()
+        bt_queued = conn.execute("""
+            SELECT COUNT(*) as n FROM alpha_ideas ai
+            WHERE ai.stage='stage2' AND ai.status='active'
+              AND NOT EXISTS (SELECT 1 FROM backtest_runs br WHERE br.idea_id=ai.id)
+        """).fetchone()["n"]
+        bt_ts_active = bool(conn.execute(
             "SELECT 1 FROM backtest_runs WHERE created_at >= ? LIMIT 1", (cutoff_5m,)
         ).fetchone())
+        bt_pipeline_active = bt_queued > 0
+        bt_is_active = bt_pipeline_active or bt_ts_active
+        bt_last_ts = bt_last["created_at"] if bt_last else None
+        # "Working on" — next unbacktested stage2 idea
+        bt_working_idea = conn.execute("""
+            SELECT ai.id, ai.title, ai.ticker FROM alpha_ideas ai
+            WHERE ai.stage='stage2' AND ai.status='active'
+              AND NOT EXISTS (SELECT 1 FROM backtest_runs br WHERE br.idea_id=ai.id)
+            ORDER BY ai.updated_at DESC LIMIT 1
+        """).fetchone()
 
-        # RiskMonitor — always active
-        rm_alerts = conn.execute(
-            "SELECT COUNT(*) as n FROM daemon_logs WHERE level='ERROR' AND created_at >= ?", (cutoff_1h,)
+        # ── RiskMonitor ───────────────────────────────────────────────────────
+        rm_errors_1h = conn.execute(
+            "SELECT COUNT(*) as n FROM daemon_logs WHERE level='ERROR' AND created_at >= ?",
+            (cutoff_1h,)
         ).fetchone()["n"]
-
-        # PortfolioExecutor
-        pe_pending = conn.execute(
+        rm_watching = conn.execute(
             "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'"
         ).fetchone()["n"]
-        pe_is_active = pe_pending > 0
-        pe_recent = conn.execute(
-            "SELECT ai.title FROM paper_trades pt JOIN alpha_ideas ai ON ai.id=pt.idea_id WHERE pt.status='open' ORDER BY pt.id DESC LIMIT 1"
+        rm_research_active = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage1','stage2','stage3') AND status='active'"
+        ).fetchone()["n"]
+        rm_total_active = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE status='active'"
+        ).fetchone()["n"]
+        rm_last_log = conn.execute(
+            "SELECT message, created_at FROM daemon_logs ORDER BY id DESC LIMIT 1"
         ).fetchone()
+        rm_last_ts = rm_last_log["created_at"] if rm_last_log else None
 
-    def _task(text, maxlen=40):
+        # ── PortfolioExecutor ─────────────────────────────────────────────────
+        pe_open_trades = conn.execute(
+            "SELECT COUNT(*) as n FROM paper_trades WHERE status='open'"
+        ).fetchone()["n"]
+        pe_stage4_ideas = conn.execute(
+            "SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'"
+        ).fetchone()["n"]
+        pe_last_trade = conn.execute("""
+            SELECT pt.status, pt.opened_at, pt.pnl, ai.title, ai.ticker
+            FROM paper_trades pt
+            JOIN alpha_ideas ai ON ai.id = pt.idea_id
+            ORDER BY pt.id DESC LIMIT 1
+        """).fetchone()
+        pe_is_active = pe_open_trades > 0 or pe_stage4_ideas > 0
+        pe_last_ts = pe_last_trade["opened_at"] if pe_last_trade else None
+        # "Working on" — active stage4a/5 idea
+        pe_working_idea = conn.execute("""
+            SELECT id, title, ticker FROM alpha_ideas
+            WHERE stage IN ('stage4a','stage5') AND status='active'
+            ORDER BY updated_at DESC LIMIT 1
+        """).fetchone()
+
+    def _trunc(text: str, maxlen: int = 45) -> str:
         if not text:
-            return "Idle"
+            return ""
         return (text[:maxlen] + "…") if len(text) > maxlen else text
+
+    def _ts_ago(ts_str: str | None) -> str:
+        """Convert a UTC timestamp string to a human-readable 'X ago' string."""
+        if not ts_str:
+            return ""
+        try:
+            # SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" (space separator)
+            # normalise to ISO format before parsing
+            normalised = ts_str[:19].replace(" ", "T")
+            dt = datetime.strptime(normalised, "%Y-%m-%dT%H:%M:%S")
+            secs = int((now - dt).total_seconds())
+            if secs < 60:    return f"{secs}s ago"
+            if secs < 3600:  return f"{secs//60}m ago"
+            if secs < 86400: return f"{secs//3600}h ago"
+            return f"{secs//86400}d ago"
+        except Exception:
+            return ""
+
+    # Build last-action strings
+    if sr_last_gate:
+        _outcome = "pass" if sr_last_gate["decision"] == "approve" else "fail"
+        sr_last_action = (
+            f"Last: Scored idea [{sr_last_gate['idea_id']}] {sr_last_gate['ticker']} — {_outcome}"
+        )
+    else:
+        sr_last_action = "No gate decisions yet"
+
+    if de_log:
+        de_last_action = f"Last: {_trunc(de_log['message'], 52)}"
+    else:
+        de_last_action = "No data fetch activity yet"
+
+    if bt_last:
+        if bt_ts_active:
+            bt_last_action = f"Last: Backtesting [{bt_last['idea_id']}] {bt_last['ticker']} — running"
+        else:
+            _pass  = "pass" if bt_last["passed"] else "fail"
+            _sharpe = bt_last["test_sharpe"] or 0
+            bt_last_action = (
+                f"Last: Backtested [{bt_last['idea_id']}] {bt_last['ticker']} — {_pass}"
+                f" (Sharpe {_sharpe:.2f})"
+            )
+    else:
+        bt_last_action = "No backtest runs yet"
+
+    if rm_watching > 0:
+        rm_task = f"Watching {rm_watching} paper trade idea{'s' if rm_watching != 1 else ''}"
+    elif rm_research_active > 0:
+        rm_task = f"Watching {rm_research_active} idea{'s' if rm_research_active != 1 else ''} in factor dev"
+    elif rm_total_active > 0:
+        rm_task = f"Monitoring {rm_total_active} active idea{'s' if rm_total_active != 1 else ''} in pipeline"
+    else:
+        rm_task = "Pipeline empty — monitoring for activity"
+    if rm_errors_1h > 0:
+        rm_task += f" · {rm_errors_1h} error{'s' if rm_errors_1h != 1 else ''} in last hour"
+
+    if pe_last_trade:
+        if pe_open_trades > 0:
+            pe_task = f"{pe_open_trades} open trade{'s' if pe_open_trades != 1 else ''}: {pe_last_trade['ticker']} — {_trunc(pe_last_trade['title'], 30)}"
+        else:
+            _pnl = pe_last_trade["pnl"]
+            _pnl_str = f"PnL={_pnl:+.4f}" if _pnl is not None else "PnL=—"
+            pe_task = f"Last: {pe_last_trade['ticker']} {pe_last_trade['status']} {_pnl_str}"
+    else:
+        pe_task = "No paper trades active"
+
+    # Build pipeline-derived current_task and working_on strings
+    if sr_pipeline_active and sr_working_idea:
+        _sr_stage_label = "Screening" if sr_working_idea["stage"] == "gate0" else "Researching"
+        sr_current_task = f"{_sr_stage_label} [{sr_working_idea['id']}] {_trunc(sr_working_idea['title'], 35)}"
+        sr_working_on = f"Working on: [{sr_working_idea['id']}] {sr_working_idea['title']}"
+    elif sr_is_active:
+        sr_current_task = f"Scoring ideas… ({sr_gate0_pending} pending)"
+        sr_working_on = sr_current_task
+    else:
+        sr_current_task = sr_last_action
+        sr_working_on = ""
+
+    if de_pipeline_active and de_working_idea:
+        de_current_task = f"Fetching data for [{de_working_idea['id']}] {de_working_idea['ticker']}"
+        de_working_on = f"Working on: [{de_working_idea['id']}] {de_working_idea['title']}"
+    elif de_is_active:
+        de_current_task = de_last_action
+        de_working_on = de_last_action
+    else:
+        de_current_task = de_last_action
+        de_working_on = ""
+
+    if bt_pipeline_active and bt_working_idea:
+        bt_current_task = f"Queued: [{bt_working_idea['id']}] {_trunc(bt_working_idea['title'], 35)}"
+        bt_working_on = f"Working on: [{bt_working_idea['id']}] {bt_working_idea['title']}"
+    elif bt_ts_active and bt_last:
+        bt_current_task = f"Running backtest [{bt_last['idea_id']}] {bt_last['ticker']}…"
+        bt_working_on = f"Working on: [{bt_last['idea_id']}] {bt_last['title']}"
+    else:
+        bt_current_task = bt_last_action
+        bt_working_on = ""
+
+    if pe_is_active and pe_working_idea:
+        pe_working_on = f"Working on: [{pe_working_idea['id']}] {pe_working_idea['title']}"
+    else:
+        pe_working_on = ""
 
     agents = [
         {
-            "name": "StrategyResearcher",
-            "display_name": "Strategy Researcher",
-            "subtitle": "策略研究、文献分析、因子挖掘",
-            "status": "ACTIVE" if sr_is_active else "WAITING",
-            "pending_tasks": sr_pending + sr_active,
-            "current_task": _task(sr_recent["title"] if sr_recent else "Scanning for alpha ideas"),
+            "name":          "StrategyResearcher",
+            "display_name":  "Strategy Researcher",
+            "subtitle":      "Gate 0 screening, deep research, idea generation",
+            "status":        "ACTIVE" if sr_is_active else "IDLE",
+            "pending_tasks": sr_gate0_pending + sr_stage1_active,
+            "current_task":  sr_current_task,
+            "last_action":   sr_last_action,
+            "last_updated":  _ts_ago(sr_last_ts),
+            "working_on":    sr_working_on,
+            "pipeline_stage": "gate0" if sr_gate0_pending > 0 else ("stage1" if sr_stage1_active > 0 else ""),
         },
         {
-            "name": "DataEngineer",
-            "display_name": "Data Engineer",
-            "subtitle": "数据管理、清洗、特征工程",
-            "status": "ACTIVE" if de_is_active else "WAITING",
-            "pending_tasks": de_pending,
-            "current_task": _task(de_log["message"] if de_log else "Monitoring data pipeline"),
+            "name":          "DataEngineer",
+            "display_name":  "Data Engineer",
+            "subtitle":      "Yahoo Finance fetch, feature engineering, cache",
+            "status":        "ACTIVE" if de_is_active else "IDLE",
+            "pending_tasks": de_stage2_active,
+            "current_task":  de_current_task,
+            "last_action":   de_last_action,
+            "last_updated":  _ts_ago(de_last_ts),
+            "working_on":    de_working_on,
+            "pipeline_stage": "stage2" if de_pipeline_active else "",
         },
         {
-            "name": "BacktestEngineer",
-            "display_name": "Backtest Engineer",
-            "subtitle": "回测框架、量化分析、结果评估",
-            "status": "ACTIVE" if bt_is_active else "WAITING",
-            "pending_tasks": bt_pending,
-            "current_task": _task(
-                f"Backtesting {bt_recent['pair']} — {bt_recent['title']}" if bt_recent else "Awaiting factor signals"
-            ),
+            "name":          "BacktestEngineer",
+            "display_name":  "Backtest Engineer",
+            "subtitle":      "Vectorised NumPy backtest, K-fold validation",
+            "status":        "ACTIVE" if bt_is_active else "IDLE",
+            "pending_tasks": bt_queued,
+            "current_task":  bt_current_task,
+            "last_action":   bt_last_action,
+            "last_updated":  _ts_ago(bt_last_ts),
+            "working_on":    bt_working_on,
+            "pipeline_stage": "stage2" if bt_pipeline_active else ("stage3" if bt_ts_active else ""),
         },
         {
-            "name": "RiskMonitor",
-            "display_name": "Risk Monitor",
-            "subtitle": "风控审查、异常检测、exposure监控",
-            "status": "ACTIVE",
-            "pending_tasks": rm_alerts,
-            "current_task": "Monitoring pipeline health",
+            "name":          "RiskMonitor",
+            "display_name":  "Risk Monitor",
+            "subtitle":      "Drawdown monitoring, pipeline health, alerts",
+            "status":        "ACTIVE",
+            "pending_tasks": rm_errors_1h,
+            "current_task":  rm_task,
+            "last_action":   rm_task,
+            "last_updated":  _ts_ago(rm_last_ts),
+            "working_on":    "",
+            "pipeline_stage": "",
         },
         {
-            "name": "PortfolioExecutor",
-            "display_name": "Portfolio Executor",
-            "subtitle": "信号执行、仓位管理、交易路由",
-            "status": "ACTIVE" if pe_is_active else "WAITING",
-            "pending_tasks": pe_pending,
-            "current_task": _task(
-                f"Managing position: {pe_recent['title']}" if pe_recent else "Awaiting paper trade signals"
-            ),
+            "name":          "PortfolioExecutor",
+            "display_name":  "Portfolio Executor",
+            "subtitle":      "Paper trading, position sizing, exit management",
+            "status":        "ACTIVE" if pe_is_active else "IDLE",
+            "pending_tasks": pe_stage4_ideas,
+            "current_task":  pe_task,
+            "last_action":   pe_task,
+            "last_updated":  _ts_ago(pe_last_ts),
+            "working_on":    pe_working_on,
+            "pipeline_stage": "stage4a" if pe_stage4_ideas > 0 else "",
         },
     ]
 
     return {
-        "agents": agents,
-        "total_active": sum(1 for a in agents if a["status"] == "ACTIVE"),
+        "agents":        agents,
+        "total_active":  sum(1 for a in agents if a["status"] == "ACTIVE"),
         "total_pending": sum(a["pending_tasks"] for a in agents),
+        "as_of":         ts_now,
     }
 
 
@@ -439,7 +697,7 @@ def backtest_runs(idea_id: Optional[int] = None, limit: int = 50):
             where.append("br.idea_id=?"); params.append(idea_id)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         rows = conn.execute(f"""
-            SELECT br.*, ai.title, ai.pair as idea_pair, ai.timeframe as idea_tf
+            SELECT br.*, ai.title, ai.ticker as idea_ticker, ai.timeframe as idea_tf
             FROM backtest_runs br
             JOIN alpha_ideas ai ON ai.id = br.idea_id
             {clause} ORDER BY br.id DESC LIMIT ?
@@ -465,7 +723,7 @@ async def trigger_backtest(body: BacktestTrigger):
 class SandboxBody(BaseModel):
     title: str
     hypothesis: str = ""
-    pair: str = "1155.KL"
+    ticker: str = "1155.KL"
     timeframe: str = "1d"
     factor_formula: str
 
@@ -481,9 +739,9 @@ async def sandbox_run(body: SandboxBody):
     with db_session() as conn:
         conn.execute("""
             INSERT OR IGNORE INTO alpha_ideas
-            (slug, title, hypothesis, pair, timeframe, factor_formula, data_sources, stage, status, novelty_score, logic_score)
+            (slug, title, hypothesis, ticker, timeframe, factor_formula, data_sources, stage, status, novelty_score, logic_score)
             VALUES (?, ?, ?, ?, ?, ?, '[]', 'stage2', 'active', 0.7, 0.7)
-        """, (slug, body.title, body.hypothesis, body.pair, body.timeframe, body.factor_formula))
+        """, (slug, body.title, body.hypothesis, body.ticker, body.timeframe, body.factor_formula))
         row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
         idea_id = row["id"]
 
@@ -682,6 +940,158 @@ def ai_usage(days: int = 7):
         since = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
         usage = conn.execute("SELECT date(created_at) as day, model, agent, SUM(cost_usd) as cost, COUNT(*) as calls FROM ai_usage WHERE created_at >= ? GROUP BY day, model, agent ORDER BY day DESC", (since,)).fetchall()
     return {"usage": [dict(r) for r in usage]}
+
+
+# ─── System Direction ────────────────────────────────────────────────────────
+
+@app.get("/api/system/direction")
+def system_direction():
+    """Return the OpenClaw system direction document as structured JSON,
+    with live KB angle coverage pulled from the database."""
+    with db_session() as conn:
+        kb_by_domain = conn.execute(
+            "SELECT domain, COUNT(*) as n FROM kb_documents GROUP BY domain"
+        ).fetchall()
+        total_kb = conn.execute("SELECT COUNT(*) as n FROM kb_documents").fetchone()["n"]
+        total_ideas = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas").fetchone()["n"]
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today_spend = float(conn.execute(
+            "SELECT COALESCE(SUM(cost_usd),0) as t FROM ai_usage WHERE created_at LIKE ?",
+            (f"{today}%",)
+        ).fetchone()["t"])
+
+    domain_counts = {r["domain"]: r["n"] for r in kb_by_domain}
+
+    angles = [
+        {"id": "price_action",         "label": "Price Action",         "description": "Technical signals, momentum, mean reversion"},
+        {"id": "fundamental",           "label": "Fundamental",          "description": "PE, ROE, earnings, valuation, dividends"},
+        {"id": "event_driven",          "label": "Event Driven",         "description": "PEAD, dividend capture, announcements"},
+        {"id": "institutional",         "label": "Institutional",        "description": "EPF, KWAP, GLC, foreign fund flows"},
+        {"id": "macro",                 "label": "Macro",                "description": "OPR, BNM, GDP, inflation, MYR, global macro"},
+        {"id": "commodity",             "label": "Commodity",            "description": "CPO, palm oil, crude oil, aluminium, tin"},
+        {"id": "sector_rotation",       "label": "Sector Rotation",      "description": "Sector cycles, thematic investing"},
+        {"id": "behavioural",           "label": "Behavioural",          "description": "Retail sentiment, overreaction, anomalies"},
+        {"id": "statistical_modelling", "label": "Statistical Modelling","description": "GARCH, HMM, factor models, ML"},
+    ]
+    for a in angles:
+        a["doc_count"] = domain_counts.get(a["id"], 0)
+        a["target"] = 5   # docs-per-angle minimum before idea generation
+        a["coverage_pct"] = min(100, round(a["doc_count"] / a["target"] * 100))
+        a["ready"] = a["doc_count"] >= a["target"]
+
+    gate_thresholds = {
+        "gate0":           {"novelty": 0.60, "logic": 0.70, "feasibility": 0.60},
+        "stage2_sharpe":   1.1,
+        "stage2_tv_gap":   0.30,
+        "cross_section_ic": 0.05,
+        "cross_section_tstat": 1.5,
+        "cross_section_stocks": 15,
+        "stage4a_sharpe":  1.0,
+        "stage4a_max_dd":  0.15,
+    }
+
+    min_trades = {
+        "INTRADAY":    {"min": 100, "note": "flag as indicative only"},
+        "SHORT_TERM":  {"min": 50,  "note": "1–10 days"},
+        "MEDIUM_TERM": {"min": 30,  "note": "10–60 days"},
+        "LONG_TERM":   {"min": 15,  "note": ">60 days"},
+    }
+
+    transaction_costs = {
+        "commission_pct": 0.08,
+        "stamp_duty_pct": 0.15,
+        "stamp_duty_cap_myr": 200,
+        "clearing_pct": 0.03,
+        "clearing_cap_myr": 1000,
+        "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.25, "SMALL_CAP": 0.75},
+        "min_liquidity_myr": 500000,
+    }
+
+    known_issues = [
+        {"status": "fixed",   "issue": "load_dotenv() not called — all API keys were empty"},
+        {"status": "fixed",   "issue": "Backtest infinite loop — status not set to processing"},
+        {"status": "fixed",   "issue": "_link_document_concept() FK bug — links not created"},
+        {"status": "fixed",   "issue": "FX contamination — strategy_researcher had forex prompts"},
+        {"status": "fixed",   "issue": "KB garbage ingestion — no relevance filter existed"},
+        {"status": "fixed",   "issue": "Gate 0 feasibility missing — only novelty+logic scored"},
+        {"status": "fixed",   "issue": "Rejection memory missing — system blind to past failures"},
+        {"status": "fixed",   "issue": "Red-Blue debate not Bursa-grounded — generic debate"},
+        {"status": "fixed",   "issue": "Formula verification missing — code not checked vs text"},
+        {"status": "fixed",   "issue": "Domain classification inconsistent — two systems existed"},
+        {"status": "fixed",   "issue": "Gate 0 scoring bug — novelty/logic always 0.00 (JSON parse failure + silent 0.0 fallback)"},
+        {"status": "pending", "issue": "Cross-sectional validation fully wired into pipeline"},
+        {"status": "pending", "issue": "Broker connection for paper/live trading"},
+        {"status": "pending", "issue": "SSL/HTTPS for dashboard"},
+        {"status": "pending", "issue": "D3 knowledge graph (when KB hits 200+ docs)"},
+    ]
+
+    bursa_constraints = [
+        "Long-only strategies only (short-selling heavily restricted)",
+        "T+3 settlement — affects short-term strategy feasibility",
+        "Minimum lot size: 100 shares (affects small-cap liquidity)",
+        "Stamp duty: 0.15% buy-side, capped RM200 (real cost)",
+        "Brokerage: ~0.08% per side minimum",
+        "Trading hours: 9:00–12:30 and 14:30–17:00 MYT only",
+        "Circuit breakers: halt if stock moves >30% in a day",
+        "EPF dominates: ~15% of market cap, rebalancing is predictable",
+        "OPR sensitivity: banking stocks move with BNM rate decisions",
+        "CPO correlation: plantation stocks follow palm oil futures",
+    ]
+
+    angles_ready = sum(1 for a in angles if a["ready"])
+
+    return {
+        "last_updated": "April 2026",
+        "core_purpose": "Find genuine, statistically robust alpha factors in Bursa Malaysia equity markets. Prove them cross-sectionally. Deploy them safely with human oversight at every capital decision point.",
+        "design_philosophy": "Quality over quantity. 10 robust, well-validated strategies beats 300 hastily generated noise ideas. Every component must earn its place. The system should get smarter every day, not just bigger.",
+        "success_metrics": [
+            {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ stocks"},
+            {"rank": 2, "metric": "First idea completes 30-day paper trade with Sharpe >= 1.0"},
+            {"rank": 3, "metric": "First live strategy deployed with positive alpha after costs"},
+            {"rank": 4, "metric": "KB reaches 50 quality docs across all 9 research angles"},
+            {"rank": 5, "metric": "Daily budget stays under $10 while pipeline processes meaningful ideas"},
+        ],
+        "research_angles": angles,
+        "angles_ready_count": angles_ready,
+        "angles_total": len(angles),
+        "gate_thresholds": gate_thresholds,
+        "min_trades": min_trades,
+        "transaction_costs": transaction_costs,
+        "bursa_constraints": bursa_constraints,
+        "known_issues": known_issues,
+        "system_state": {
+            "total_kb_docs": total_kb,
+            "total_ideas": total_ideas,
+            "today_spend_usd": round(today_spend, 4),
+            "daily_budget_usd": AI_DAILY_BUDGET_USD,
+            "kb_target": 50,
+            "ideas_target": 45,
+        },
+    }
+
+
+# ─── Arsenal ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/system/arsenal")
+def system_arsenal(angle: Optional[str] = None):
+    """Return all quantitative techniques from TechniqueLibrary as structured JSON."""
+    from knowledge.ingestion.technique_library import TechniqueLibrary
+    lib = TechniqueLibrary()
+    techniques = lib.to_api_list()
+    if angle:
+        techniques = [t for t in techniques if t["angle"] == angle]
+    implemented   = sum(1 for t in techniques if t["implemented"])
+    total         = len(techniques)
+    by_angle: dict = {}
+    for t in techniques:
+        by_angle.setdefault(t["angle"], []).append(t)
+    return {
+        "total":       total,
+        "implemented": implemented,
+        "pending":     total - implemented,
+        "by_angle":    by_angle,
+        "techniques":  techniques,
+    }
 
 
 # ─── Static UI ───────────────────────────────────────────────────────────────

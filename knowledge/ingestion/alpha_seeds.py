@@ -10,8 +10,13 @@ from data.database import db_session
 logger = logging.getLogger(__name__)
 
 SYSTEM = (
-    "You are a senior quant researcher specialising in "
-    "Bursa Malaysia equity markets."
+    "You are a senior quant researcher specialising in Bursa Malaysia equity markets. "
+    "You are comfortable with both discretionary and quantitative approaches including "
+    "GARCH/ARIMA time series models, factor models (Fama-French, PCA), Hidden Markov "
+    "regime detection, cointegration, Kalman filters, Monte Carlo simulation, Bayesian "
+    "inference, machine learning applied to financial data, and statistical arbitrage. "
+    "When extracting alpha from statistical modelling papers, translate the quantitative "
+    "techniques into concrete, implementable KLSE strategies."
 )
 
 # Layer 2: phrases that indicate strategies not feasible on Bursa Malaysia
@@ -73,8 +78,15 @@ class AlphaSeedGenerator(BaseAgent):
     # digest(doc_id) → dict
     # ------------------------------------------------------------------
 
-    def digest(self, doc_id: int) -> dict:
+    def digest(self, doc_id: int, confidence_cap: float = 1.0) -> dict:
         """Extract alpha hypotheses from a single KB document and seed ideas.
+
+        Args:
+            doc_id:         KB document to process.
+            confidence_cap: Maximum confidence allowed for seeded hypotheses (0.0–1.0).
+                            Pass 0.65 for 'partial' relevance docs (ASEAN/EM context)
+                            so generated ideas enter the pipeline with lower weight.
+                            Default 1.0 = no cap (full confidence).
 
         Returns {"skipped": True} if the document has already been processed
         (seeded=1) or does not exist.
@@ -166,7 +178,7 @@ Return JSON:
             hypothesis = h.get("hypothesis", "")
             ticker     = h.get("ticker", "")
             formula    = h.get("factor_formula", "")
-            confidence = float(h.get("confidence") or 0.0)
+            confidence = min(float(h.get("confidence") or 0.0), confidence_cap)
 
             # Layer 3: minimum quality threshold
             if confidence < 0.5:
@@ -203,7 +215,7 @@ Return JSON:
             with db_session() as conn:
                 conn.execute("""
                     INSERT OR IGNORE INTO alpha_ideas
-                        (slug, title, hypothesis, pair, timeframe, factor_formula,
+                        (slug, title, hypothesis, ticker, timeframe, factor_formula,
                          data_sources, stage, status, novelty_score, logic_score)
                     VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?)
                 """, (slug, h_title, hypothesis, ticker, timeframe, formula,
@@ -246,10 +258,16 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def process_undigested(self, limit: int = 10) -> dict:
-        """Digest all KB documents where seeded=0, up to *limit* docs."""
+        """Digest all KB documents where seeded=0, up to *limit* docs.
+
+        Skips 'irrelevant' and 'generic' documents (no seeding for those tiers).
+        Applies confidence_cap=0.65 for 'partial' relevance documents.
+        """
         with db_session() as conn:
             docs = conn.execute(
-                "SELECT id FROM kb_documents WHERE seeded=0 ORDER BY id LIMIT ?",
+                "SELECT id, status FROM kb_documents "
+                "WHERE seeded=0 AND status NOT IN ('irrelevant', 'generic') "
+                "ORDER BY id LIMIT ?",
                 (limit,),
             ).fetchall()
 
@@ -258,7 +276,8 @@ Return JSON:
         skipped          = 0
 
         for doc in docs:
-            result = self.digest(doc["id"])
+            cap = 0.65 if doc["status"] == "partial" else 1.0
+            result = self.digest(doc["id"], confidence_cap=cap)
             if result.get("skipped"):
                 skipped += 1
             else:

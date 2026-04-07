@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from datetime import datetime
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent.parent
@@ -127,3 +128,42 @@ DASHBOARD_HOST = "0.0.0.0"
 DASHBOARD_PORT = 8001
 LOG_DIR        = BASE_DIR / "logs"
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
+
+
+# ── Security / Key health ─────────────────────────────────────────────────────
+
+def key_health_check() -> dict:
+    """Check API key validity and rotation reminder.
+
+    Never logs the actual key — only the first 8 characters as a preview.
+    Creates .key_rotation_date on first run; warns if > 30 days without rotation.
+    """
+    issues = []
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key or api_key == "sk-ant-your-key-here":
+        issues.append("ANTHROPIC_API_KEY is not set or is a placeholder")
+    elif not api_key.startswith("sk-ant-"):
+        issues.append("ANTHROPIC_API_KEY format looks wrong (expected 'sk-ant-...')")
+
+    rotation_file = BASE_DIR / ".key_rotation_date"
+    if rotation_file.exists():
+        try:
+            rotation_date = datetime.fromisoformat(rotation_file.read_text().strip())
+            days_since = (datetime.now() - rotation_date).days
+            if days_since > 30:
+                issues.append(
+                    f"API key not rotated in {days_since} days — "
+                    f"consider rotating for security"
+                )
+        except Exception:
+            rotation_file.write_text(datetime.now().isoformat())
+    else:
+        rotation_file.write_text(datetime.now().isoformat())
+
+    key_preview = api_key[:8] + "..." if api_key else "NOT SET"
+    return {
+        "key_preview": key_preview,
+        "issues": issues,
+        "healthy": len(issues) == 0,
+    }

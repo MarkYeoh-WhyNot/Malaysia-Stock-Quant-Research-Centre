@@ -47,6 +47,9 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/search `<query>` — full-text search across KB documents\n"
         "/diversity — KB coverage by research angle\n"
         "/digest `<doc_id|all>` — generate alpha ideas from KB documents\n\n"
+        "*Arsenal*\n"
+        "/arsenal — all quantitative techniques with implemented status\n"
+        "/arsenal `<key>` — full detail for one technique\n\n"
         "/start — show this help",
         parse_mode="Markdown"
     )
@@ -79,7 +82,7 @@ async def cmd_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     lines = ["📊 *Recent KLSE Alpha Ideas*\n"]
     for i in ideas:
         sharpe = f"Sharpe={i['backtest_sharpe']:.2f}" if i['backtest_sharpe'] else ""
-        ticker = i['pair'] or '—'
+        ticker = i['ticker'] or '—'
         lines.append(f"[{i['id']}] `{i['stage']}` *{i['title'][:40]}*\n    {ticker} {sharpe}")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -205,15 +208,34 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     tags    = result.get("tags", [])
     domain_label = f"`{domain}`" + (" _(auto-classified)_" if domain_inferred else "")
 
-    relevance_score  = result.get("relevance_score")
-    relevance_reason = result.get("relevance_reason", "")
-    low_relevance    = result.get("low_relevance", False)
+    relevance_score    = result.get("relevance_score")
+    relevance_category = result.get("relevance_category", "")
+    relevance_reason   = result.get("relevance_reason", "")
+
+    # 5-tier colour coding
+    _CAT_ICON = {
+        "irrelevant": "🟥",
+        "generic":    "🟨",
+        "partial":    "🟧",
+        "relevant":   "🟩",
+        "direct":     "🟦",
+    }
+    _CAT_ACTION = {
+        "irrelevant": "saved, NOT seeded — wrong market/asset class",
+        "generic":    "saved, NOT seeded — transferable concepts only",
+        "partial":    "saved, seeded with confidence cap 0.65 — ASEAN/EM context",
+        "relevant":   "saved, seeded — Bursa-specific",
+        "direct":     "saved, seeded (priority) — actionable KLSE intelligence",
+    }
 
     if relevance_score is not None:
-        rel_bar   = "🟥" if relevance_score < 0.4 else ("🟨" if relevance_score < 0.6 else "🟩")
-        rel_label = f"{rel_bar} `{relevance_score:.2f}` — _{relevance_reason[:80]}_"
-        if low_relevance:
-            rel_label += "\n⚠️ _Low relevance: saved but NOT seeded_"
+        icon   = _CAT_ICON.get(relevance_category, "⬜")
+        action = _CAT_ACTION.get(relevance_category, "")
+        rel_label = (
+            f"{icon} `{relevance_score:.2f}` — *{relevance_category}*\n"
+            f"_{relevance_reason[:100]}_\n"
+            f"↳ _{action}_"
+        )
     else:
         rel_label = "`n/a`"
 
@@ -394,7 +416,7 @@ async def cmd_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         today = datetime.utcnow().strftime("%Y-%m-%d")
         with db_session() as conn:
             ideas = conn.execute(
-                "SELECT id, title, pair FROM alpha_ideas "
+                "SELECT id, title, ticker FROM alpha_ideas "
                 "WHERE slug LIKE 'seed-%' AND created_at LIKE ? ORDER BY id DESC LIMIT 10",
                 (f"{today}%",),
             ).fetchall()
@@ -408,10 +430,27 @@ async def cmd_digest(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if ideas:
             lines.append("\n*Ideas:*")
             for idea in ideas[:result['ideas_saved']]:
-                ticker = idea['pair'] or '—'
+                ticker = idea['ticker'] or '—'
                 lines.append(f"• [{idea['id']}] {idea['title'][:50]} (`{ticker}`)")
 
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_arsenal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    try:
+        from knowledge.ingestion.technique_library import TechniqueLibrary
+        lib = TechniqueLibrary()
+        key = " ".join(ctx.args).strip().lower().replace(" ", "_") if ctx.args else None
+        text = lib.format_telegram_summary(key)
+        # Telegram message limit is 4096 chars; split if needed
+        if len(text) <= 4096:
+            await update.message.reply_text(text, parse_mode="Markdown")
+        else:
+            for i in range(0, len(text), 4000):
+                await update.message.reply_text(text[i:i+4000], parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
@@ -451,6 +490,7 @@ def main():
     app.add_handler(CommandHandler("kb",        cmd_kb))
     app.add_handler(CommandHandler("search",    cmd_search))
     app.add_handler(CommandHandler("research",  cmd_research))
+    app.add_handler(CommandHandler("arsenal",   cmd_arsenal))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
     app.add_handler(CommandHandler("digest",    cmd_digest))
     logger.info(f"Telegram bot starting (admin={ADMIN_CHAT})")

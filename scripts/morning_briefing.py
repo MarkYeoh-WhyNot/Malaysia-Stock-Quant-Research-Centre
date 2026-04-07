@@ -155,7 +155,7 @@ class MorningBriefing:
         if not article_tickers:
             return False
         for idea in pipeline_ideas:
-            idea_ticker = idea.get("pair", "")
+            idea_ticker = idea.get("ticker", "")
             if idea_ticker and idea_ticker in article_tickers:
                 return True
         return False
@@ -230,7 +230,7 @@ class MorningBriefing:
         try:
             with db_session() as conn:
                 return conn.execute(
-                    "SELECT id, title, pair, stage FROM alpha_ideas WHERE status='active' ORDER BY id DESC LIMIT 50"
+                    "SELECT id, title, ticker, stage FROM alpha_ideas WHERE status='active' ORDER BY id DESC LIMIT 50"
                 ).fetchall()
         except Exception:
             return []

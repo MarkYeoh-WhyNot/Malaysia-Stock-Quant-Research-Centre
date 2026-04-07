@@ -1,5 +1,5 @@
 """
-DiversityEngine — ensures balanced KB coverage across 8 Bursa Malaysia research angles.
+DiversityEngine — ensures balanced KB coverage across 9 Bursa Malaysia research angles.
 
 Each angle has 3 Bursa-specific seed queries. check_balance() reports KB doc counts
 per angle; daily_hunt() auto-fills the most under-researched angle.
@@ -11,7 +11,7 @@ from knowledge.ingestion.research_hunter import ResearchHunter
 
 logger = logging.getLogger(__name__)
 
-# 8 research angles — Bursa Malaysia specific seed queries
+# 9 research angles — Bursa Malaysia specific seed queries
 ANGLES = {
     "price_action": {
         "description": "Technical analysis, price momentum, chart patterns on Bursa Malaysia",
@@ -77,6 +77,16 @@ ANGLES = {
             "market microstructure anomalies ASEAN equities",
         ],
     },
+    "statistical_modelling": {
+        "description": "Quantitative models: GARCH, HMM, factor models, ML, cointegration for KLSE",
+        "queries": [
+            "GARCH volatility model Bursa Malaysia equity",
+            "hidden markov regime detection ASEAN stock market",
+            "random matrix theory portfolio optimization emerging markets",
+            "machine learning return prediction Malaysian stocks",
+            "factor model Fama French KLSE",
+        ],
+    },
 }
 
 # Keywords used to infer angle membership from document content/title/tags
@@ -121,6 +131,15 @@ ANGLE_KEYWORDS = {
         "investor behaviour", "investor behavior", "bias", "microstructure",
         "calendar effect", "january effect", "overreaction", "herding",
         "market anomaly", "investor sentiment",
+    ],
+    "statistical_modelling": [
+        "garch", "egarch", "arima", "volatility model", "time series",
+        "hidden markov", "regime detection", "regime switching",
+        "random matrix", "eigenvalue", "minimum spanning tree", "correlation clustering",
+        "factor model", "fama french", "pca", "principal component", "ica",
+        "machine learning", "regression", "bayesian", "kalman filter",
+        "monte carlo", "cointegration", "stationarity", "unit root",
+        "statistical arbitrage", "clustering algorithm",
     ],
 }
 

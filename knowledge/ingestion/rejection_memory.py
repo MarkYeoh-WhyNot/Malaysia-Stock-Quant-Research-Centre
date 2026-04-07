@@ -63,7 +63,7 @@ class RejectionMemory:
         try:
             with db_session() as conn:
                 row = conn.execute(
-                    "SELECT title, hypothesis, pair, factor_formula FROM alpha_ideas WHERE id=?",
+                    "SELECT title, hypothesis, ticker, factor_formula FROM alpha_ideas WHERE id=?",
                     (idea_id,),
                 ).fetchone()
             if not row:

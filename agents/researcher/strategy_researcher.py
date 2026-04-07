@@ -249,6 +249,27 @@ class StrategyResearcher(BaseAgent):
         except Exception as e:
             self.log_daemon("WARN", f"KB context fetch failed (non-blocking): {e}")
 
+        # ── Technique library injection ───────────────────────────────────────
+        technique_context = ""
+        try:
+            from knowledge.ingestion.technique_library import TechniqueLibrary
+            technique_context = TechniqueLibrary().get_relevant_techniques(
+                strategy_type=topic or "",
+                stock_type="blue_chip",
+                holding_period="medium_term",
+                signal_type="price",
+                max_techniques=3,
+            )
+            if technique_context:
+                technique_context = (
+                    "\nAvailable quantitative techniques to consider:\n"
+                    + technique_context
+                    + "\n\nSelect the most appropriate technique for the Bursa Malaysia "
+                    "market context. Justify your technique choice briefly in the hypothesis.\n"
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"TechniqueLibrary unavailable (non-blocking): {e}")
+
         topic_line = f"Focus exclusively on: {topic}" if topic else (
             "Cover a diverse mix: at least one technical, one fundamental/value, "
             "one event-driven, and one sector-rotation idea."
@@ -256,6 +277,7 @@ class StrategyResearcher(BaseAgent):
         prompt = f"""Generate exactly {count} quantitative equity alpha ideas for Bursa Malaysia stocks.
 {kb_context}
 {avoidance_context}
+{technique_context}
 
 {topic_line}
 
@@ -338,14 +360,14 @@ Return a valid JSON array of exactly {count} objects. Each object:
         with db_session() as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
-                  (slug, title, hypothesis, pair, timeframe, factor_formula,
+                  (slug, title, hypothesis, ticker, timeframe, factor_formula,
                    data_sources, stage, status, novelty_score, logic_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?)
             """, (
                 slug,
                 title,
                 idea.get("hypothesis", ""),
-                ticker,                               # stored in `pair` column
+                ticker,                               # stored in `ticker` column
                 idea.get("timeframe", "1d"),
                 idea.get("factor_formula", ""),
                 json.dumps(idea.get("data_sources", [])),
@@ -405,8 +427,9 @@ Return a valid JSON array of exactly {count} objects. Each object:
             row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
         if not row:
             return {"error": f"Idea {idea_id} not found"}
+        row = dict(row)   # convert sqlite3.Row → dict so .get() works everywhere
 
-        ticker     = row["pair"] or "1155.KL"
+        ticker     = row["ticker"] or "1155.KL"
         stock_info = KLCI_BY_SYMBOL.get(ticker, {})
         company    = stock_info.get("name", ticker)
         sector     = stock_info.get("sector", "Unknown")
@@ -455,15 +478,39 @@ Return JSON only:
   "short_selling_required": false
 }}"""
 
-        result = self.call_claude_json(
-            SYSTEM,
-            [{"role": "user", "content": prompt}],
-            model=MODEL_FAST,
-            task_label="gate0_score",
-        )
+        try:
+            result = self.call_claude_json(
+                SYSTEM,
+                [{"role": "user", "content": prompt}],
+                model=MODEL_FAST,
+                task_label="gate0_score",
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"[score_gate0] Claude API call raised exception for idea {idea_id}: {exc}",
+                exc_info=True,
+            )
+            return {"error": str(exc), "novelty_score": 0.0, "logic_score": 0.0,
+                    "feasibility_score": feasibility, "passed": False}
 
-        novelty  = result.get("novelty_score", 0)
-        logic    = result.get("logic_score", 0)
+        # Detect silent parse failure — log raw response so we can see what Claude returned
+        if "error" in result:
+            self.logger.error(
+                f"[score_gate0] JSON parse failed for idea {idea_id} ({ticker}). "
+                f"error={result['error']!r}\n"
+                f"RAW RESPONSE:\n{result.get('raw', '(no raw captured)')[:2000]}"
+            )
+
+        novelty = result.get("novelty_score", result.get("novelty", 0))
+        logic   = result.get("logic_score",   result.get("logic",   0))
+
+        # Log a warning if both scores are suspiciously zero (likely a parse problem)
+        if novelty == 0.0 and logic == 0.0 and "error" not in result:
+            self.logger.warning(
+                f"[score_gate0] Both novelty and logic are 0.0 for idea {idea_id} — "
+                f"possible key mismatch. Full result keys: {list(result.keys())}\n"
+                f"Full result: {result}"
+            )
 
         # Gate 0 requires ALL THREE dimensions
         passed = (
@@ -522,11 +569,12 @@ Return JSON only:
 
     def research_idea(self, idea_id: int) -> dict:
         with db_session() as conn:
-            row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
-        if not row:
+            _row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not _row:
             return {"error": f"Idea {idea_id} not found"}
+        row = dict(_row)   # convert sqlite3.Row → dict so .get() works everywhere
 
-        ticker     = row["pair"] or "1155.KL"
+        ticker     = row["ticker"] or "1155.KL"
         stock_info = KLCI_BY_SYMBOL.get(ticker, {})
         company    = stock_info.get("name", ticker)
         sector     = stock_info.get("sector", "Unknown")
@@ -551,6 +599,46 @@ Return JSON only:
         except Exception as e:
             self.log_daemon("WARN", f"ResearchHunter failed for [{idea_id}]: {e}")
 
+        # ── Technique library — inject full detail for any technique referenced ──
+        technique_detail = ""
+        try:
+            from knowledge.ingestion.technique_library import TechniqueLibrary, TECHNIQUE_LIBRARY
+            lib = TechniqueLibrary()
+            formula_lower = (row["factor_formula"] or "").lower()
+            hypothesis_lower = (row["hypothesis"] or "").lower()
+            combined = formula_lower + " " + hypothesis_lower
+
+            # Detect which techniques are referenced
+            matched = [
+                k for k in TECHNIQUE_LIBRARY
+                if k.replace("_", " ") in combined or k in combined
+            ]
+            if matched:
+                detail_blocks = [lib.format_full_detail(k) for k in matched[:3]]
+                technique_detail = (
+                    "\n\nQUANTITATIVE TECHNIQUE REFERENCE (referenced in this strategy):\n"
+                    + "\n\n".join(detail_blocks)
+                    + "\n\nApply the above technique guidance in your refined signal construction.\n"
+                )
+            else:
+                # No specific technique matched — suggest the most relevant ones
+                row_strategy_type = (row.get("strategy_type") or "").lower()
+                suggestions = lib.get_relevant_techniques(
+                    strategy_type=row_strategy_type,
+                    stock_type="blue_chip",
+                    holding_period="medium_term",
+                    signal_type="price",
+                    max_techniques=2,
+                )
+                if suggestions:
+                    technique_detail = (
+                        "\n\nSUGGESTED QUANTITATIVE TECHNIQUES for this strategy type:\n"
+                        + suggestions
+                        + "\n\nConsider whether any of the above would improve signal quality.\n"
+                    )
+        except Exception as e:
+            self.log_daemon("WARN", f"TechniqueLibrary inject failed for [{idea_id}] (non-blocking): {e}")
+
         prompt = f"""Conduct deep research on this Bursa Malaysia equity strategy.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -560,6 +648,7 @@ Hypothesis: {row['hypothesis']}
 Signal:     {row['factor_formula']}
 Timeframe:  {row['timeframe']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{technique_detail}
 
 Research tasks:
 1. Academic/practitioner evidence — does this factor work in ASEAN/EM equities?

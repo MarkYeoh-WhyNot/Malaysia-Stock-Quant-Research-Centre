@@ -11,6 +11,7 @@ from agents.portfolio_executor.portfolio_executor import PortfolioExecutor
 from agents.red_blue_team.red_blue_team import RedBlueTeam
 from agents.researcher.strategy_researcher import StrategyResearcher
 from agents.risk_monitor.risk_monitor import RiskMonitor
+from config.settings import key_health_check
 from data.database import db_session, init_db
 from knowledge.ingestion.diversity_engine import DiversityEngine
 from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
@@ -38,6 +39,13 @@ class ResearchDaemon:
     def start(self):
         logger.info("OpenClaw Research Daemon starting...")
         init_db()
+        # Security check — log key health without exposing the actual key
+        kh = key_health_check()
+        if kh["issues"]:
+            for issue in kh["issues"]:
+                logger.warning(f"[Security] {issue}")
+        else:
+            logger.info(f"[Security] Key health check passed (key={kh['key_preview']})")
         self.running = True
         signal.signal(signal.SIGINT,  self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
@@ -60,6 +68,16 @@ class ResearchDaemon:
             await asyncio.sleep(max(0, self.scan_interval - elapsed))
 
     async def _scan_and_dispatch(self):
+        # Write scan heartbeat to daemon_logs so the dashboard can track liveness
+        try:
+            with db_session() as conn:
+                conn.execute(
+                    "INSERT INTO daemon_logs (level, source, message) VALUES ('INFO', 'ResearchDaemon', ?)",
+                    (f"Scan cycle #{self.cycle_count}",)
+                )
+        except Exception:
+            pass
+
         health = self.risk_monitor.pipeline_health_report()
         logger.info(
             f"[Daemon] health={health['health']} ideas={health['total_ideas']} "
@@ -134,7 +152,7 @@ class ResearchDaemon:
         """
         with db_session() as conn:
             pending = conn.execute(
-                "SELECT id, title, pair, factor_formula FROM alpha_ideas "
+                "SELECT id, title, ticker, factor_formula FROM alpha_ideas "
                 "WHERE stage='stage2' AND status='active' "
                 "AND id NOT IN (SELECT DISTINCT idea_id FROM backtest_runs) "
                 "LIMIT 3"
@@ -148,7 +166,7 @@ class ResearchDaemon:
                         "UPDATE alpha_ideas SET status='processing', updated_at=datetime('now') WHERE id=?",
                         (row["id"],),
                     )
-                ticker = row["pair"] or "1155.KL"
+                ticker = row["ticker"] or "1155.KL"
                 # Pre-cache 5yr daily bars so BacktestEngineer hits the cache
                 self.data_engineer.fetch_prices(ticker, days=1825, use_cache=True)
                 result = self.backtest_engineer.backtest_idea(row["id"])
@@ -302,7 +320,7 @@ class ResearchDaemon:
 
             # Case B: no backtest run at all
             no_bt = conn.execute(
-                "SELECT id, title, pair FROM alpha_ideas "
+                "SELECT id, title, ticker FROM alpha_ideas "
                 "WHERE stage='stage3' AND status='active' "
                 "AND id NOT IN (SELECT DISTINCT idea_id FROM backtest_runs) "
                 "LIMIT 2"
@@ -322,7 +340,7 @@ class ResearchDaemon:
 
         for row in no_bt:
             try:
-                ticker = row["pair"] or "1155.KL"
+                ticker = row["ticker"] or "1155.KL"
                 self.data_engineer.fetch_prices(ticker, days=1825, use_cache=True)
                 result = self.backtest_engineer.backtest_idea(row["id"])
                 logger.info(

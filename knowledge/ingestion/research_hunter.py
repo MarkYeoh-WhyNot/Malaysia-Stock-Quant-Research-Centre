@@ -143,23 +143,52 @@ Return a JSON array of short query strings (6-10 words each). Example:
 
     # ── Relevance pre-filter ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _score_to_category(score: float) -> str:
+        """Map a relevance score to its 5-tier category label."""
+        if score < 0.20:  return "irrelevant"
+        if score < 0.40:  return "generic"
+        if score < 0.60:  return "partial"
+        if score < 0.80:  return "relevant"
+        return "direct"
+
     def _is_relevant(self, title: str, abstract: str) -> dict:
         """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0-1.0).
 
-        Returns {'relevance': float, 'reason': str}.
-        Defaults to {'relevance': 1.0, 'reason': 'check_failed'} on any error
-        so that ingest is never blocked by a transient API issue.
+        Returns {'relevance': float, 'category': str, 'reason': str}.
+        Category is one of: irrelevant / generic / partial / relevant / direct.
+        Defaults to {'relevance': 1.0, 'category': 'relevant', 'reason': 'check_failed'}
+        on any error so that ingest is never blocked by a transient API issue.
+
+        5-tier scoring:
+          0.00–0.20  irrelevant  — wrong market/asset class, crypto, forex, CFD, non-financial
+          0.20–0.40  generic     — general finance theory, no EM/Asian context
+          0.40–0.60  partial     — ASEAN / emerging-market / Asian equity context
+          0.60–0.80  relevant    — Bursa Malaysia or Malaysian equity specific
+          0.80–1.00  direct      — actionable KLSE intelligence
         """
         prompt = (
-            f"Rate relevance to Bursa Malaysia equity trading: 0.0-1.0\n\n"
+            f"Rate this academic paper's relevance to Bursa Malaysia equity trading.\n\n"
             f"Title: {title}\n"
-            f"Abstract: {abstract[:300]}\n\n"
-            f"0.0-0.3 = not relevant (wrong market, not equities, cybersecurity, "
-            f"general theory unrelated to trading)\n"
-            f"0.3-0.6 = partially relevant (general EM/Asian equity)\n"
-            f"0.6-1.0 = highly relevant (Bursa, KLSE, Malaysian stocks, ASEAN equity "
-            f"markets, palm oil, EPF, emerging market factors applicable to Malaysia)\n\n"
-            f'Return JSON: {{"relevance": 0.0, "reason": "..."}}'
+            f"Abstract: {abstract[:400]}\n\n"
+            f"Use this 5-tier scale:\n\n"
+            f"  0.00–0.20  irrelevant — completely wrong market or asset class\n"
+            f"    Examples: Australian CFD trading, cryptocurrency, forex pairs,\n"
+            f"    US options pricing, bond market mechanics, ML for cybersecurity\n\n"
+            f"  0.20–0.40  generic — general finance, transferable concepts only\n"
+            f"    Examples: General momentum theory, generic valuation frameworks,\n"
+            f"    factor investing with no regional context, portfolio theory\n\n"
+            f"  0.40–0.60  partial — emerging market or Asian market context\n"
+            f"    Examples: ASEAN equity research, Southeast Asia fund flows,\n"
+            f"    EM factor models, Asian market microstructure, China/India/HK equity\n\n"
+            f"  0.60–0.80  relevant — Bursa Malaysia or Malaysian equity specific\n"
+            f"    Examples: KLSE stock returns, Malaysian market anomalies,\n"
+            f"    Bursa market microstructure, BNM policy effects, FBM KLCI factors\n\n"
+            f"  0.80–1.00  direct — actionable KLSE intelligence\n"
+            f"    Examples: Specific KLSE stock analysis, EPF flow studies,\n"
+            f"    CPO-plantation correlation, GLC ownership effects, Bursa volatility\n\n"
+            f"Return JSON only:\n"
+            f'{{"relevance": 0.0, "category": "irrelevant|generic|partial|relevant|direct", "reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
@@ -167,16 +196,21 @@ Return a JSON array of short query strings (6-10 words each). Example:
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
-                max_tokens=80,
+                max_tokens=100,
                 task_label="paper_relevance_check",
             )
+            relevance = float(result.get("relevance", 1.0))
+            raw_cat   = str(result.get("category", ""))
+            category  = raw_cat if raw_cat in {"irrelevant", "generic", "partial", "relevant", "direct"} \
+                        else self._score_to_category(relevance)
             return {
-                "relevance": float(result.get("relevance", 1.0)),
+                "relevance": relevance,
+                "category":  category,
                 "reason":    str(result.get("reason", "")),
             }
         except Exception as e:
             logger.debug(f"Relevance check failed for '{title}': {e}")
-            return {"relevance": 1.0, "reason": "check_failed"}
+            return {"relevance": 1.0, "category": "relevant", "reason": "check_failed"}
 
     # ── Main hunt ─────────────────────────────────────────────────────────────
 
@@ -231,14 +265,16 @@ Return a JSON array of short query strings (6-10 words each). Example:
             if not paper.get("abstract"):
                 continue
             try:
-                # Relevance pre-filter — skip papers below threshold before
-                # paying for an expensive Sonnet summarise call
+                # Relevance pre-filter — only hard-skip 'irrelevant' papers (<0.20)
+                # to avoid paying for a Sonnet summarise call on clearly wrong content.
+                # generic/partial/relevant/direct are all passed to ingest_text() which
+                # applies tier-aware seeding logic.
                 rel = self._is_relevant(paper["title"], paper["abstract"])
-                if rel["relevance"] < 0.40:
+                if rel["category"] == "irrelevant":
                     self.log_daemon(
                         "INFO",
                         f"ResearchHunter: skipped '{paper['title'][:60]}' "
-                        f"(relevance={rel['relevance']:.2f}, reason={rel['reason']})",
+                        f"(irrelevant, score={rel['relevance']:.2f}, reason={rel['reason']})",
                     )
                     continue
 
@@ -247,9 +283,6 @@ Return a JSON array of short query strings (6-10 words each). Example:
                     lines.append(f"Year: {paper['year']}")
                 lines.append(f"\nAbstract:\n{paper['abstract']}")
                 content = "\n".join(lines)
-
-                # Include relevance score in tags for traceability
-                extra_tags = [f"relevance:{rel['relevance']:.2f}"]
 
                 kb.ingest_text(
                     content=content,

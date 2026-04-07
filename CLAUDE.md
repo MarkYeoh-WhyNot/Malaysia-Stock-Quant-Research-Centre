@@ -296,10 +296,11 @@ CORS is open (allow all origins).
 
 ## Architecture Notes (from 2026-04-07 compatibility audit)
 
-### Column naming mismatch
-`alpha_ideas.pair` stores a **stock ticker** (e.g. `1155.KL`), not a currency pair.
-This is a historical naming artifact — do not rename (would break all queries).
-When reading/writing ideas, treat `pair` as the primary ticker field.
+### Column naming — alpha_ideas.ticker (2026-04-07)
+`alpha_ideas.ticker` stores the stock ticker (e.g. `1155.KL`).
+The column was renamed from `pair` to `ticker` via safe SQLite migration in `init_db()`.
+All Python, SQL, and dashboard references updated. Use `ticker` everywhere for alpha_ideas.
+Note: `backtest_runs.pair`, `paper_trades.pair`, and `live_trades.pair` retain the old name (different tables, not renamed).
 
 ### kb_links — doc-to-doc via shared concepts
 `kb_links` has FK constraints on both `source_id` and `target_id` referencing
@@ -365,13 +366,23 @@ Papers scoring < 0.40 are skipped with a log entry: "ResearchHunter: skipped '{t
 `domain` parameter added to `hunt()` so DiversityEngine can set the unified angle directly.
 
 ### Warning Fix 2 — KB domain unification (2026-04-07)
-`VALID_DOMAINS` in `kb_ingester.py` now contains exactly the 8 DiversityEngine angle names.
+`VALID_DOMAINS` in `kb_ingester.py` now contains exactly the 9 DiversityEngine angle names.
 `DOMAIN_TO_ANGLE` maps all legacy domain names to their angle equivalent.
 `_normalise_domain()` used in `ingest_text()` — all incoming docs get a valid angle domain.
 `classify_domain()` now returns angle names and always writes to DB.
 `DiversityEngine.check_balance()` now queries `GROUP BY domain` directly — no keyword heuristics.
 One-time migration: all existing docs migrated to unified angle names (2026-04-07).
-Current distribution: price_action=148, event_driven=2, behavioural=2.
+Distribution after 9-angle expansion (2026-04-07): price_action=146, statistical_modelling=17, event_driven=2, behavioural=2.
+
+### 9th angle — statistical_modelling (2026-04-07)
+Added `statistical_modelling` as the 9th KB research angle covering:
+time series (ARIMA, GARCH, EGARCH), factor models (Fama-French, PCA, ICA), random matrix theory,
+minimum spanning tree/correlation clustering, Hidden Markov Models for regime detection,
+regression for return prediction, Bayesian inference, machine learning for finance,
+statistical arbitrage, cointegration/stationarity, Monte Carlo, and Kalman filters.
+Seed queries: GARCH volatility Bursa Malaysia, HMM regime detection ASEAN, random matrix portfolio optimization EM, ML return prediction Malaysian stocks, Fama-French KLSE.
+17 existing price_action docs reclassified to statistical_modelling via keyword scan.
+`AlphaSeedGenerator` SYSTEM prompt extended to mention these techniques so extracted hypotheses are grounded in the quantitative method.
 
 ### Warning Fix 3 — i3investor brokerage whitelist (2026-04-07)
 `TRUSTED_BROKERAGES` set added to `data/i3investor/scraper.py` (17 trusted publishers).
@@ -398,3 +409,187 @@ Applied in both `generate_ideas()` and `screen_and_generate()`.
 Trade count gate applied in `backtest_idea()` — insufficient trades → overall_pass=False.
 `backtest_runs.trade_count INTEGER` — actual trade count stored per run.
 Failures recorded in `RejectionMemory` with reason_category='insufficient_trades'.
+
+### Minor Fix 1 — alpha_ideas.pair renamed to ticker (2026-04-07)
+Safe SQLite migration `ALTER TABLE alpha_ideas RENAME COLUMN pair TO ticker` in `init_db()`.
+Files updated: `strategy_researcher.py`, `backtest_engineer.py`, `red_blue_team.py`,
+`alpha_seeds.py`, `research_daemon.py`, `telegram_bot.py`, `morning_briefing.py`,
+`dashboard/api/server.py` (SQL, Pydantic models, API response key `tickers`),
+`dashboard/ui/index.html` (column headers, JS `.ticker` refs).
+Note: `backtest_runs.pair`, `paper_trades.pair`, `live_trades.pair` retain old name.
+
+### Minor Fix 2 — SQLite WAL mode hardened (2026-04-07)
+`get_connection()` now sets four pragmas on every connection: `journal_mode=WAL`,
+`synchronous=NORMAL`, `cache_size=10000`, `temp_store=MEMORY`.
+`sqlite3.connect(..., timeout=30)` — 30s lock timeout before OperationalError.
+Prevents "database locked" errors when daemon, API, and Telegram bot write simultaneously.
+
+### Minor Fix 3 — API key rotation reminder (2026-04-07)
+`key_health_check()` in `config/settings.py` — checks ANTHROPIC_API_KEY format and
+reads `.key_rotation_date` to warn if key not rotated in > 30 days (creates the file on
+first run). Never logs the full key — only the first 8 characters as a preview.
+Called in `ResearchDaemon.start()` (logs WARN for issues, INFO if healthy).
+Included in `/api/health` response as `key_health: {key_preview, healthy, issues}`.
+
+### Minor Fix 4 — Mobile responsive dashboard (2026-04-07)
+`@media (max-width:768px)` CSS block in `dashboard/ui/index.html`:
+sidebar slides in from left with CSS transition, hamburger `#mobile-menu-btn` button
+(fixed top-left), `#mobile-overlay` darkens background and closes sidebar on tap.
+JS: `toggleSidebar()`, `closeSidebar()`, nav link auto-close on mobile.
+Stat cards drop to 2-column grid; `.row` panels stack; tables scroll horizontally.
+
+---
+
+## SYSTEM DIRECTION — OPENCLAW NORTH STAR
+
+```
+═══════════════════════════════════════════════════════
+OPENCLAW — SYSTEM DIRECTION
+Bursa Malaysia Quantitative Equity Research System
+Last updated: April 2026
+═══════════════════════════════════════════════════════
+```
+
+### CORE PURPOSE
+Find genuine, statistically robust alpha factors in Bursa Malaysia equity markets.
+Prove them cross-sectionally. Deploy them safely with human oversight at every
+capital decision point.
+
+### DESIGN PHILOSOPHY
+Quality over quantity — always. 10 robust, well-validated strategies beats 300
+hastily generated noise ideas. Every component must earn its place. The system
+should get smarter every day, not just bigger.
+
+### WHAT WE ARE BUILDING
+A three-layer system:
+- **Layer 1 — Knowledge:** Continuously growing KB of Bursa-specific research, ingested
+  from quality sources, classified into 9 research angles, automatically generating
+  alpha hypotheses.
+- **Layer 2 — Research Pipeline:** Ideas flow from Gate 0 through cross-sectional
+  validation, Red-Blue debate, and backtesting before any human decision is required.
+- **Layer 3 — Deployment:** Paper trading proves live viability before real capital is
+  committed. Human gates before every capital decision.
+
+### WHAT WE AVOID
+- **Quantity over quality:** Never flood the pipeline with unvalidated ideas just to look busy
+- **Single-stock bias:** A factor that works on one stock is luck. A factor that works on 15+ stocks is alpha.
+- **Garbage KB:** Every KB document must be Bursa-relevant (relevance score >= 0.40). No generic theory books.
+- **Overfitting:** Minimum 30 trades required. Train/val gap > 30% is automatic rejection.
+- **Pairs trading:** Bursa short-selling is restricted. Long-only strategies only.
+- **Automated capital deployment:** Human approval required at Gate 3→4 and Gate 4→5. No exceptions.
+- **Context window abuse:** One focused task per Claude Code session. Start each session with /clear.
+
+### SUCCESS METRICS (in order of importance)
+1. First idea reaches Stage 3 with IC > 0.05 across 15+ stocks
+2. First idea completes 30-day paper trade with Sharpe >= 1.0
+3. First live strategy deployed with positive alpha after costs
+4. KB reaches 50 quality docs across all 9 research angles
+5. Daily budget stays under $10 while pipeline processes meaningful ideas (not noise)
+
+### THE 9 RESEARCH ANGLES
+Every KB document and every alpha idea must map to one:
+
+| # | Angle | Description |
+|---|-------|-------------|
+| 1 | `price_action` | Technical signals, momentum, mean reversion |
+| 2 | `fundamental` | PE, ROE, earnings, valuation, dividends |
+| 3 | `event_driven` | PEAD, dividend capture, announcements |
+| 4 | `institutional` | EPF, KWAP, GLC, foreign fund flows |
+| 5 | `macro` | OPR, BNM, GDP, inflation, MYR, global macro |
+| 6 | `commodity` | CPO, palm oil, crude oil, aluminium, tin |
+| 7 | `sector_rotation` | Sector cycles, thematic investing |
+| 8 | `behavioural` | Retail sentiment, overreaction, anomalies |
+| 9 | `statistical_modelling` | GARCH, HMM, factor models, ML |
+
+### BURSA MALAYSIA CONSTRAINTS (never violate these)
+- Long-only strategies only (short-selling heavily restricted)
+- T+3 settlement — affects short-term strategy feasibility
+- Minimum lot size: 100 shares (affects small-cap liquidity)
+- Stamp duty: 0.15% buy-side, capped RM200 (real cost)
+- Brokerage: ~0.08% per side minimum
+- Trading hours: 9:00–12:30 and 14:30–17:00 MYT only
+- Circuit breakers: halt if stock moves >30% in a day
+- EPF dominates: ~15% of market cap, rebalancing is predictable
+- OPR sensitivity: banking stocks move with BNM rate decisions
+- CPO correlation: plantation stocks follow palm oil futures
+
+### GATE THRESHOLDS (current, may be tuned over time)
+- **Gate 0:** novelty >= 0.60 AND logic >= 0.70 AND feasibility >= 0.60
+- **Stage 2:** Sharpe >= 1.1 (MEDIUM_TERM), train/val gap <= 30%
+- **Cross-sectional:** mean IC > 0.05, IC t-stat > 1.5, positive IC on > 15/30 KLCI stocks
+- **Stage 4A:** Sharpe >= 1.0 over 30 days, max drawdown <= 15%
+
+### MINIMUM TRADE COUNTS BY HOLDING PERIOD
+| Class | Min Trades |
+|-------|-----------|
+| INTRADAY | 100 (flag as indicative only) |
+| SHORT_TERM | 50 (1–10 days) |
+| MEDIUM_TERM | 30 (10–60 days) |
+| LONG_TERM | 15 (>60 days) |
+
+### TRANSACTION COST MODEL (Bursa Malaysia)
+| Component | Rate |
+|-----------|------|
+| Commission | 0.08% per side |
+| Stamp duty | 0.15% buy-side, capped RM200 per contract |
+| Clearing | 0.03% per side, capped RM1,000 |
+| Slippage | BLUE_CHIP=0.05%, MID_CAP=0.25%, SMALL_CAP=0.75% |
+| Liquidity floor | Reject if avg daily volume × price < RM500,000 |
+
+### DATA SOURCES (approved)
+- **Yahoo Finance .KL:** price history, fundamentals (free)
+- **KLSE Screener:** fundamentals, screening (subscribed)
+- **i3investor:** brokerage research (whitelisted sources only)
+- **Semantic Scholar + arXiv:** academic papers (free)
+- **Bursa Malaysia website:** announcements, corporate actions
+- **BNM website:** OPR decisions, monetary policy
+- **Manual /kb ingestion:** any Bursa-relevant content you find
+
+### SLUG CONVENTIONS
+| Source | Format | Example |
+|--------|--------|---------|
+| Regular ideas | `YYYY-MM-DD-{title-slugified}` | `2026-04-07-maybank-dividend-capture` |
+| Seed ideas | `seed-YYYY-MM-DD-{title-slugified}` | `seed-2026-04-07-momentum-klse` |
+| KB documents | `YYYY-MM-DD-{title-slugified}` | `2026-04-07-epf-ownership-dynamics` |
+
+### DEVELOPMENT RULES
+1. Fix Gate 0 before generating any ideas
+2. Build KB before running /generate at scale
+3. One Claude Code session = one focused task
+4. Always /clear between sessions
+5. Always read CLAUDE.md at session start
+6. Push to GitHub after every significant change
+7. Never let AlphaSeedGenerator re-process seeded docs
+8. Never ingest docs with relevance < 0.40
+9. Never generate ideas before KB has >= 5 docs per angle
+10. Always test changes manually before restarting daemon
+
+### KNOWN ISSUES LOG (update as fixed)
+| Status | Issue |
+|--------|-------|
+| ✅ FIXED | `load_dotenv()` not called — all API keys were empty |
+| ✅ FIXED | Backtest infinite loop — status not set to processing |
+| ✅ FIXED | `_link_document_concept()` FK bug — links not created |
+| ✅ FIXED | FX contamination — strategy_researcher had forex prompts |
+| ✅ FIXED | KB garbage ingestion — no relevance filter existed |
+| ✅ FIXED | Gate 0 feasibility missing — only novelty+logic scored |
+| ✅ FIXED | Rejection memory missing — system blind to past failures |
+| ✅ FIXED | Red-Blue debate not Bursa-grounded — generic debate |
+| ✅ FIXED | Formula verification missing — code not checked vs text |
+| ✅ FIXED | Domain classification inconsistent — two systems existed |
+| ✅ FIXED | Gate 0 scoring bug — novelty=0.00, logic=0.00 (JSON parse failure + silent fallback to 0.0) |
+| ⏳ PENDING | Cross-sectional validation fully wired into pipeline |
+| ⏳ PENDING | Broker connection for paper/live trading |
+| ⏳ PENDING | SSL/HTTPS for dashboard |
+| ⏳ PENDING | D3 knowledge graph (when KB hits 200+ docs) |
+
+### CURRENT SYSTEM STATE
+| Item | Value |
+|------|-------|
+| Database | `/opt/openclaw/app/data/openclaw.db` |
+| Services | `openclaw-api` (8001), `openclaw-daemon`, `openclaw-telegram` |
+| Venv | `/opt/openclaw/venv` |
+| GitHub | `https://github.com/markyks030611-max/yks_quant` |
+| Daily budget | $20 (current spend ~$4–5/day) |
+| KB target | 50 quality docs across 9 angles |
+| Ideas target | 3–5 high-quality ideas per angle (45 total max) |

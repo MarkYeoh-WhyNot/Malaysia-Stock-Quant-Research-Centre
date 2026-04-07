@@ -9,9 +9,12 @@ logger = logging.getLogger(__name__)
 
 def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA cache_size=10000")
+    conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -63,7 +66,7 @@ def init_db(db_path: Path = DB_PATH):
             slug TEXT UNIQUE NOT NULL,
             title TEXT NOT NULL,
             hypothesis TEXT,
-            pair TEXT,
+            ticker TEXT,
             timeframe TEXT,
             factor_formula TEXT,
             data_sources TEXT,
@@ -175,6 +178,13 @@ def init_db(db_path: Path = DB_PATH):
             logger.info("Migration applied: kb_documents.seeded column added")
         except Exception:
             pass  # column already exists — safe to ignore
+
+        # Minor fix 1: rename alpha_ideas.pair → ticker
+        try:
+            conn.execute("ALTER TABLE alpha_ideas RENAME COLUMN pair TO ticker")
+            logger.info("Migration applied: alpha_ideas.pair renamed to ticker")
+        except Exception:
+            pass  # column already renamed — safe to ignore
 
         # Fix 2: rejection_reason on alpha_ideas
         try:
