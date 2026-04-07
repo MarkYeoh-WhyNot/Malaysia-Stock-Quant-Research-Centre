@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  openclaw-api:
+    image: python:3.11-slim
+    container_name: yks-openclaw-api
+    working_dir: /app
+    volumes:
+      - /opt/openclaw/app:/app
+      - /opt/openclaw/data:/app/data
+      - /opt/openclaw/logs:/app/logs
+    command: /app/venv/bin/uvicorn dashboard.api.server:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - /opt/openclaw/app/.env
+    restart: unless-stopped
+
+  openclaw-daemon:
+    image: python:3.11-slim
+    container_name: yks-openclaw-daemon
+    working_dir: /app
+    volumes:
+      - /opt/openclaw/app:/app
+      - /opt/openclaw/data:/app/data
+      - /opt/openclaw/logs:/app/logs
+    command: /app/venv/bin/python scripts/research_daemon.py
+    environment:
+      - PYTHONPATH=/app
+    env_file:
+      - /opt/openclaw/app/.env
+    restart: unless-stopped
+    depends_on:
+      - openclaw-api

@@ -1,0 +1,33 @@
+# OpenClaw Dependencies — Bursa Malaysia / KLSE Edition
+
+# AI
+anthropic>=0.40.0
+
+# Web framework (dashboard API)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# HTTP client (async)
+aiohttp>=3.10.0
+
+# Data processing
+numpy>=1.26.0
+pandas>=2.2.0
+pyarrow>=14.0.0
+
+# Yahoo Finance price data (Bursa Malaysia .KL tickers)
+yfinance>=0.2.40
+
+# Web scraping (KLSE Screener — klsescreener.com, i3investor.com)
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+requests>=2.32.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Telegram bot
+python-telegram-bot[job-queue]>=21.0
+
+# Pydantic (FastAPI models)
+pydantic>=2.0.0

@@ -1,0 +1,174 @@
+import sqlite3
+import logging
+from pathlib import Path
+from contextlib import contextmanager
+from datetime import datetime
+from config.settings import DB_PATH
+
+logger = logging.getLogger(__name__)
+
+def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
+
+@contextmanager
+def db_session(db_path: Path = DB_PATH):
+    conn = get_connection(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def init_db(db_path: Path = DB_PATH):
+    with db_session(db_path) as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS kb_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            title TEXT,
+            domain TEXT NOT NULL,
+            content TEXT,
+            summary TEXT,
+            source_url TEXT,
+            status TEXT DEFAULT 'unread',
+            tags TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS kb_concepts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            description TEXT,
+            domain TEXT,
+            count INTEGER DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS kb_links (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id INTEGER REFERENCES kb_documents(id),
+            target_id INTEGER REFERENCES kb_documents(id),
+            relation TEXT,
+            weight REAL DEFAULT 1.0
+        );
+        CREATE TABLE IF NOT EXISTS alpha_ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            hypothesis TEXT,
+            pair TEXT,
+            timeframe TEXT,
+            factor_formula TEXT,
+            data_sources TEXT,
+            stage TEXT DEFAULT 'gate0',
+            status TEXT DEFAULT 'pending',
+            novelty_score REAL,
+            logic_score REAL,
+            research_score REAL,
+            backtest_sharpe REAL,
+            backtest_dd REAL,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS pipeline_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER REFERENCES alpha_ideas(id),
+            stage TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            agent TEXT,
+            notes TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS gate_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER REFERENCES alpha_ideas(id),
+            gate TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            decided_by TEXT,
+            rationale TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS backtest_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER REFERENCES alpha_ideas(id),
+            run_type TEXT,
+            pair TEXT,
+            timeframe TEXT,
+            factor_formula TEXT,
+            train_sharpe REAL,
+            val_sharpe REAL,
+            test_sharpe REAL,
+            train_dd REAL,
+            val_dd REAL,
+            test_dd REAL,
+            train_val_gap REAL,
+            total_trades INTEGER,
+            win_rate REAL,
+            profit_factor REAL,
+            params TEXT,
+            result_data TEXT,
+            passed INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER REFERENCES alpha_ideas(id),
+            pair TEXT,
+            direction TEXT,
+            entry_price REAL,
+            exit_price REAL,
+            units REAL,
+            pnl REAL,
+            signal TEXT,
+            opened_at TEXT,
+            closed_at TEXT,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS live_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER REFERENCES alpha_ideas(id),
+            oanda_order_id TEXT,
+            oanda_trade_id TEXT,
+            pair TEXT,
+            direction TEXT,
+            entry_price REAL,
+            exit_price REAL,
+            units REAL,
+            pnl REAL,
+            opened_at TEXT,
+            closed_at TEXT,
+            status TEXT DEFAULT 'open'
+        );
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model TEXT NOT NULL,
+            agent TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER,
+            cost_usd REAL,
+            task TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS daemon_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            level TEXT NOT NULL,
+            source TEXT,
+            message TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_kb_domain   ON kb_documents(domain);
+        CREATE INDEX IF NOT EXISTS idx_ideas_stage ON alpha_ideas(stage);
+        CREATE INDEX IF NOT EXISTS idx_logs_level  ON daemon_logs(level);
+        """)
+    logger.info(f"Database initialized at {db_path}")
+
+if __name__ == "__main__":
+    init_db()
+    print(f"Database initialized at {DB_PATH}")
