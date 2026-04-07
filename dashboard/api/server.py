@@ -263,8 +263,8 @@ async def trigger_backtest(body: BacktestTrigger):
 class SandboxBody(BaseModel):
     title: str
     hypothesis: str = ""
-    pair: str = "EUR_USD"
-    timeframe: str = "H1"
+    pair: str = "1155.KL"
+    timeframe: str = "1d"
     factor_formula: str
 
 
@@ -312,10 +312,10 @@ def paper_trades(idea_id: Optional[int] = None, status: Optional[str] = None, li
         """, params + [limit]).fetchall()
         stats = conn.execute("""
             SELECT COUNT(*) as total,
-                   SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) as open_count,
-                   SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) as closed_count,
-                   COALESCE(SUM(CASE WHEN status='closed' THEN pnl ELSE 0 END),0) as total_pnl,
-                   COALESCE(SUM(CASE WHEN status='closed' AND pnl>0 THEN 1 ELSE 0 END),0) as wins
+                   COALESCE(SUM(CASE WHEN status='open' THEN 1 ELSE 0 END), 0) as open_count,
+                   COALESCE(SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END), 0) as closed_count,
+                   COALESCE(SUM(CASE WHEN status='closed' THEN pnl ELSE 0 END), 0) as total_pnl,
+                   COALESCE(SUM(CASE WHEN status='closed' AND pnl>0 THEN 1 ELSE 0 END), 0) as wins
             FROM paper_trades
         """).fetchone()
     return {

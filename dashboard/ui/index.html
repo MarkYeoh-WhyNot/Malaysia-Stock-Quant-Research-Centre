@@ -392,7 +392,7 @@ svg text{font-family:'Courier New',monospace}
           <button class="btn btn-sm" onclick="loadBacktestRuns()">↻ Refresh</button>
         </div>
         <div class="tbl-wrap-lg"><table>
-          <thead><tr><th>ID</th><th>Idea</th><th>Pair</th><th>TF</th><th>Train Sharpe</th><th>Val Sharpe</th><th>Test Sharpe</th><th>Test DD</th><th>Win Rate</th><th>Trades</th><th>Result</th><th>Date</th></tr></thead>
+          <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>TF</th><th>Train Sharpe</th><th>Val Sharpe</th><th>Test Sharpe</th><th>Test DD</th><th>Win Rate</th><th>Trades</th><th>Result</th><th>Date</th></tr></thead>
           <tbody id="bt-runs-table"></tbody>
         </table></div>
       </div>
@@ -416,29 +416,42 @@ svg text{font-family:'Courier New',monospace}
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label>Pair</label>
+            <label>Stock</label>
             <select id="sb-pair" style="width:100%">
-              <option>EUR_USD</option><option>GBP_USD</option><option>USD_JPY</option>
-              <option>AUD_USD</option><option>USD_CAD</option><option>NZD_USD</option>
-              <option>USD_CHF</option><option>EUR_GBP</option><option>EUR_JPY</option><option>GBP_JPY</option>
+              <option value="1155.KL">1155.KL — Maybank</option>
+              <option value="1023.KL">1023.KL — CIMB</option>
+              <option value="1295.KL">1295.KL — Public Bank</option>
+              <option value="5285.KL">5285.KL — Sime Darby Plantation</option>
+              <option value="5347.KL">5347.KL — Tenaga Nasional</option>
+              <option value="4863.KL">4863.KL — Telekom Malaysia</option>
+              <option value="6012.KL">6012.KL — Maxis</option>
+              <option value="1066.KL">1066.KL — RHB Bank</option>
+              <option value="5168.KL">5168.KL — Hartalega</option>
+              <option value="5225.KL">5225.KL — IHH Healthcare</option>
+              <option value="6033.KL">6033.KL — Petronas Gas</option>
+              <option value="5183.KL">5183.KL — Petronas Chemicals</option>
+              <option value="7277.KL">7277.KL — Dialog Group</option>
+              <option value="5819.KL">5819.KL — Hong Leong Bank</option>
+              <option value="8869.KL">8869.KL — Press Metal</option>
             </select>
           </div>
           <div class="form-group" style="flex:1">
             <label>Timeframe</label>
             <select id="sb-tf" style="width:100%">
-              <option>H1</option><option>H4</option><option>D</option><option>M30</option><option>M15</option>
+              <option value="1d">1d (Daily)</option>
+              <option value="1wk">1wk (Weekly)</option>
             </select>
           </div>
         </div>
         <div class="form-group" style="margin-bottom:10px">
           <label>Factor Formula</label>
-          <textarea id="sb-formula" rows="4" placeholder="Describe the signal logic, e.g.:&#10;&#10;EMA(20) crosses above EMA(50) → long&#10;RSI(14) < 30 → long entry&#10;Bollinger band mean-reversion&#10;Momentum: 20-bar return > 0 → long"></textarea>
+          <textarea id="sb-formula" rows="4" placeholder="Describe the signal logic, e.g.:&#10;&#10;SMA(20) crosses above SMA(50) on 1155.KL → long&#10;RSI(14) &lt; 30 on 5285.KL — oversold plantation&#10;P/B &lt; 1.0 on banking sector stocks&#10;5 days before ex-date on high-yield stocks"></textarea>
         </div>
         <button class="btn btn-cyan" onclick="runSandbox()" id="sb-run-btn" style="width:100%">
           🧪 Run Backtest
         </button>
         <div style="margin-top:8px;font-size:10px;color:var(--muted)">
-          Saves idea to DB, fetches 2yr OANDA data, runs train/val/test split.
+          Saves idea to DB, fetches 5yr Yahoo Finance .KL data, runs train/val/test split.
         </div>
       </div>
     </div>
@@ -454,13 +467,16 @@ svg text{font-family:'Courier New',monospace}
         <table>
           <thead><tr><th>Signal Type</th><th>Example Formula</th><th>Best For</th></tr></thead>
           <tbody>
-            <tr><td style="color:var(--cyan)">sma_crossover</td><td style="color:var(--muted2)">SMA(20) crosses SMA(50)</td><td>Trending markets</td></tr>
+            <tr><td style="color:var(--cyan)">sma_crossover</td><td style="color:var(--muted2)">SMA(20) crosses SMA(50) on 1155.KL</td><td>Trending KLCI stocks</td></tr>
             <tr><td style="color:var(--cyan)">ema_crossover</td><td style="color:var(--muted2)">EMA(12) / EMA(26) crossover</td><td>Faster trend following</td></tr>
-            <tr><td style="color:var(--cyan)">rsi</td><td style="color:var(--muted2)">RSI(14) — mean reversion at 30/70</td><td>Range-bound markets</td></tr>
+            <tr><td style="color:var(--cyan)">rsi</td><td style="color:var(--muted2)">RSI(14) &lt; 30 on 5285.KL — oversold plantation</td><td>Oversold KLSE stocks</td></tr>
             <tr><td style="color:var(--cyan)">bollinger</td><td style="color:var(--muted2)">Price below BB lower → long</td><td>Mean reversion</td></tr>
-            <tr><td style="color:var(--cyan)">momentum</td><td style="color:var(--muted2)">20-bar return direction</td><td>Trending, short-term</td></tr>
+            <tr><td style="color:var(--cyan)">momentum</td><td style="color:var(--muted2)">20-day return on KLCI constituents</td><td>Trend following</td></tr>
             <tr><td style="color:var(--cyan)">macd</td><td style="color:var(--muted2)">MACD line crosses signal</td><td>Trend confirmation</td></tr>
-            <tr><td style="color:var(--cyan)">carry</td><td style="color:var(--muted2)">Interest rate differential</td><td>G10 position trades</td></tr>
+            <tr><td style="color:var(--cyan)">value</td><td style="color:var(--muted2)">P/B &lt; 1.0 on banking sector stocks</td><td>Low P/B or P/E mean reversion</td></tr>
+            <tr><td style="color:var(--cyan)">dividend</td><td style="color:var(--muted2)">5 days before ex-date on high-yield stocks</td><td>Pre ex-date momentum</td></tr>
+            <tr><td style="color:var(--cyan)">earnings</td><td style="color:var(--muted2)">Post-quarterly results drift on 5347.KL</td><td>Post earnings drift (PEAD)</td></tr>
+            <tr><td style="color:var(--cyan)">cpo_correlation</td><td style="color:var(--muted2)">CPO price momentum → plantation longs</td><td>CPO price vs plantation stocks</td></tr>
           </tbody>
         </table>
       </div>
@@ -482,11 +498,23 @@ svg text{font-family:'Courier New',monospace}
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label>Pair</label>
+            <label>Stock</label>
             <select id="pt-pair" style="width:100%">
-              <option>EUR_USD</option><option>GBP_USD</option><option>USD_JPY</option>
-              <option>AUD_USD</option><option>USD_CAD</option><option>NZD_USD</option>
-              <option>USD_CHF</option><option>EUR_GBP</option><option>EUR_JPY</option><option>GBP_JPY</option>
+              <option value="1155.KL">1155.KL — Maybank</option>
+              <option value="1023.KL">1023.KL — CIMB</option>
+              <option value="1295.KL">1295.KL — Public Bank</option>
+              <option value="5285.KL">5285.KL — Sime Darby Plantation</option>
+              <option value="5347.KL">5347.KL — Tenaga Nasional</option>
+              <option value="4863.KL">4863.KL — Telekom Malaysia</option>
+              <option value="6012.KL">6012.KL — Maxis</option>
+              <option value="1066.KL">1066.KL — RHB Bank</option>
+              <option value="5168.KL">5168.KL — Hartalega</option>
+              <option value="5225.KL">5225.KL — IHH Healthcare</option>
+              <option value="6033.KL">6033.KL — Petronas Gas</option>
+              <option value="5183.KL">5183.KL — Petronas Chemicals</option>
+              <option value="7277.KL">7277.KL — Dialog Group</option>
+              <option value="5819.KL">5819.KL — Hong Leong Bank</option>
+              <option value="8869.KL">8869.KL — Press Metal</option>
             </select>
           </div>
           <div class="form-group" style="flex:1">
@@ -526,7 +554,7 @@ svg text{font-family:'Courier New',monospace}
             <button class="btn btn-sm" onclick="loadPaperTrades()">↻ Refresh</button>
           </div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>ID</th><th>Idea</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Units</th><th>Signal</th><th>Opened</th><th></th></tr></thead>
+            <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>Dir</th><th>Entry</th><th>Units</th><th>Signal</th><th>Opened</th><th></th></tr></thead>
             <tbody id="pt-open-table"></tbody>
           </table></div>
         </div>
@@ -536,7 +564,7 @@ svg text{font-family:'Courier New',monospace}
         <div class="panel" style="margin-top:0">
           <div class="panel-head"><span class="panel-title">Closed Paper Trades</span></div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>ID</th><th>Idea</th><th>Pair</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Units</th><th>PnL</th><th>Opened</th><th>Closed</th></tr></thead>
+            <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Units</th><th>PnL (MYR)</th><th>Opened</th><th>Closed</th></tr></thead>
             <tbody id="pt-closed-table"></tbody>
           </table></div>
         </div>
@@ -551,8 +579,8 @@ svg text{font-family:'Courier New',monospace}
 
   <div class="tabs">
     <div class="tab active" onclick="switchTab('kb','search-tab',this)">Search</div>
-    <div class="tab" onclick="switchTab('kb','docs-tab',this)">Documents</div>
-    <div class="tab" onclick="switchTab('kb','concepts-tab',this)">Concepts</div>
+    <div class="tab" onclick="switchTab('kb','docs-tab',this);loadKBDocs()">Documents</div>
+    <div class="tab" onclick="switchTab('kb','concepts-tab',this);loadKBConcepts()">Concepts</div>
     <div class="tab" onclick="switchTab('kb','ingest-tab',this)">Ingest</div>
   </div>
 
@@ -561,7 +589,7 @@ svg text{font-family:'Courier New',monospace}
       <div class="form-row">
         <div class="form-group" style="flex:1">
           <label>Search Query</label>
-          <input type="text" id="kb-q" placeholder="e.g. carry trade momentum regime…" style="width:100%" onkeydown="if(event.key==='Enter')searchKB()">
+          <input type="text" id="kb-q" placeholder="e.g. momentum Bursa Malaysia EPF flow…" style="width:100%" onkeydown="if(event.key==='Enter')searchKB()">
         </div>
         <div class="form-group">
           <label>Domain</label>
@@ -584,13 +612,11 @@ svg text{font-family:'Courier New',monospace}
         <div style="display:flex;gap:8px">
           <select id="kb-docs-domain" onchange="loadKBDocs()" style="font-size:10px;padding:3px 6px">
             <option value="">All Domains</option>
-            <option>fx</option><option>macro</option><option>technical</option>
-            <option>fundamental</option><option>risk</option><option>research</option>
           </select>
         </div>
       </div>
       <div class="tbl-wrap-lg"><table>
-        <thead><tr><th>ID</th><th>Title</th><th>Domain</th><th>Summary</th><th>Tags</th><th>Source</th><th>Created</th></tr></thead>
+        <thead><tr><th>ID</th><th>Title</th><th>Domain</th><th>Summary</th><th>Created</th></tr></thead>
         <tbody id="kb-docs-table"></tbody>
       </table></div>
     </div>
@@ -1151,7 +1177,7 @@ async function triggerBacktest() {
   const btn = document.getElementById('bt-trigger-btn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Running…';
-  document.getElementById('bt-trigger-result').innerHTML = '<span style="color:var(--muted)">Fetching 2yr OANDA data and running train/val/test split… this takes ~30s</span>';
+  document.getElementById('bt-trigger-result').innerHTML = '<span style="color:var(--muted)">Fetching 5yr Yahoo Finance .KL data and running train/val/test split… this takes ~30s</span>';
   const r = await apiPost('/backtest/trigger', {idea_id: id});
   btn.disabled = false;
   btn.innerHTML = '▶ Run Backtest';
@@ -1213,8 +1239,8 @@ async function loadPaperTrades() {
   const s = d.stats;
   const winRate = s.closed_count > 0 ? ((s.wins / s.closed_count) * 100).toFixed(1) + '%' : '—';
   document.getElementById('pt-stats').innerHTML = `
-    <div class="stat-card"><div class="val" style="color:var(--cyan)">${s.open_count}</div><div class="lbl">Open Trades</div></div>
-    <div class="stat-card"><div class="val">${s.closed_count}</div><div class="lbl">Closed Trades</div></div>
+    <div class="stat-card"><div class="val" style="color:var(--cyan)">${s.open_count ?? 0}</div><div class="lbl">Open Trades</div></div>
+    <div class="stat-card"><div class="val">${s.closed_count ?? 0}</div><div class="lbl">Closed Trades</div></div>
     <div class="stat-card"><div class="val" style="color:${s.total_pnl>0?'var(--green)':'var(--red)'}">${s.total_pnl?.toFixed(4)||'0'}</div><div class="lbl">Total PnL</div></div>
     <div class="stat-card"><div class="val" style="color:var(--yellow)">${winRate}</div><div class="lbl">Win Rate</div></div>
   `;
@@ -1279,13 +1305,21 @@ async function closePaperTrade(id) {
 // ── KB Explorer ────────────────────────────────────────────────────────────
 async function loadKBStats() {
   const d = await apiFetch('/kb/stats');
-  if (!d) return;
+  if (!d) { loadKBDocs(); return; }
   document.getElementById('kb-stats-cards').innerHTML = `
     <div class="stat-card"><div class="val" style="color:var(--cyan)">${d.total_documents}</div><div class="lbl">Documents</div></div>
     <div class="stat-card"><div class="val" style="color:var(--purple)">${d.total_concepts}</div><div class="lbl">Concepts</div></div>
     <div class="stat-card"><div class="val" style="color:var(--blue)">${d.total_links}</div><div class="lbl">Links</div></div>
     <div class="stat-card"><div class="val" style="color:var(--muted2)">${Object.keys(d.by_domain||{}).length}</div><div class="lbl">Domains</div></div>
   `;
+  // Populate domain dropdown dynamically from API
+  const domains = Object.keys(d.by_domain || {}).sort();
+  const dd = document.getElementById('kb-docs-domain');
+  if (dd) {
+    dd.innerHTML = '<option value="">All Domains</option>' +
+      domains.map(dm => `<option value="${esc(dm)}">${esc(dm)}</option>`).join('');
+  }
+  loadKBDocs();
 }
 
 async function searchKB() {
@@ -1316,17 +1350,17 @@ async function loadKBDocs() {
   const d = await apiFetch(`/kb/documents?domain=${domain}&limit=50`);
   if (!d) return;
   document.getElementById('kb-doc-count').textContent = d.total;
-  document.getElementById('kb-docs-table').innerHTML = d.documents.map(r =>
-    `<tr>
+  document.getElementById('kb-docs-table').innerHTML = (d.documents||[]).map(r => {
+    const sumRaw = r.summary || '';
+    const summary = sumRaw.length > 80 ? sumRaw.slice(0, 80) + '…' : sumRaw || '—';
+    return `<tr>
        <td style="color:var(--muted)">${r.id}</td>
-       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--cyan)">${esc(r.title)}</td>
-       <td><span class="badge stage" style="font-size:9px">${r.domain}</span></td>
-       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted2);font-size:10px">${esc(r.summary||'—')}</td>
-       <td style="font-size:9px;color:var(--purple)">${(JSON.parse(r.tags||'[]')||[]).slice(0,3).join(', ')}</td>
-       <td style="font-size:10px">${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" style="color:var(--muted)">↗</a>` : '—'}</td>
+       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--cyan)">${esc(r.title)}</td>
+       <td><span class="badge stage" style="font-size:9px">${esc(r.domain)}</span></td>
+       <td style="max-width:280px;color:var(--muted2);font-size:10px">${esc(summary)}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
-     </tr>`
-  ).join('') || '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No documents yet — use the Ingest tab to add research</td></tr>';
+     </tr>`;
+  }).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:20px">No documents yet — use the Ingest tab to add research</td></tr>';
 }
 
 async function loadKBConcepts() {

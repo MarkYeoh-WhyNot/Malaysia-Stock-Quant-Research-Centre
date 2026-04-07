@@ -264,49 +264,54 @@ Return JSON:
 
         overall_pass = gate3_pass
 
-        with db_session() as conn:
-            conn.execute("""
-                INSERT INTO backtest_runs
-                  (idea_id, run_type, pair, timeframe, factor_formula,
-                   train_sharpe, val_sharpe, test_sharpe,
-                   train_dd, val_dd, test_dd,
-                   train_val_gap, total_trades, win_rate, profit_factor,
-                   params, result_data, passed)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                idea_id, "klse_daily", symbol, interval, row["factor_formula"],
-                train_r["sharpe"], val_r["sharpe"], test_r["sharpe"],
-                train_r["max_dd"], val_r["max_dd"],  test_r["max_dd"],
-                round(train_val_gap, 3), test_r["total_trades"],
-                test_r["win_rate"], test_r["profit_factor"],
-                json.dumps(params), json.dumps(results),
-                1 if overall_pass else 0,
-            ))
+        try:
+            with db_session() as conn:
+                conn.execute("""
+                    INSERT INTO backtest_runs
+                      (idea_id, run_type, pair, timeframe, factor_formula,
+                       train_sharpe, val_sharpe, test_sharpe,
+                       train_dd, val_dd, test_dd,
+                       train_val_gap, total_trades, win_rate, profit_factor,
+                       params, result_data, passed)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (
+                    idea_id, "klse_daily", symbol, interval, row["factor_formula"],
+                    train_r["sharpe"], val_r["sharpe"], test_r["sharpe"],
+                    train_r["max_dd"], val_r["max_dd"],  test_r["max_dd"],
+                    round(train_val_gap, 3), test_r["total_trades"],
+                    test_r["win_rate"], test_r["profit_factor"],
+                    json.dumps(params), json.dumps(results),
+                    1 if overall_pass else 0,
+                ))
 
-            new_stage  = "stage3" if overall_pass else "stage2"
-            new_status = "active"  if overall_pass else "rejected"
-            conn.execute("""
-                UPDATE alpha_ideas
-                SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?, updated_at=datetime('now')
-                WHERE id=?
-            """, (test_r["sharpe"], test_r["max_dd"], new_stage, new_status, idea_id))
+                new_stage  = "stage3" if overall_pass else "stage2"
+                new_status = "active"  if overall_pass else "rejected"
+                conn.execute("""
+                    UPDATE alpha_ideas
+                    SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?, updated_at=datetime('now')
+                    WHERE id=?
+                """, (test_r["sharpe"], test_r["max_dd"], new_stage, new_status, idea_id))
 
-            conn.execute("""
-                INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
-                VALUES (?, 'stage2', ?, 'BacktestEngineer', ?)
-            """, (idea_id,
-                  "advanced" if overall_pass else "rejected",
-                  f"Train={train_r['sharpe']:.2f} Val={val_r['sharpe']:.2f} "
-                  f"Test={test_r['sharpe']:.2f} DD={test_r['max_dd']:.1%} "
-                  f"AnnRet={test_r.get('ann_return',0):.1%}"))
+                conn.execute("""
+                    INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
+                    VALUES (?, 'stage2', ?, 'BacktestEngineer', ?)
+                """, (idea_id,
+                      "advanced" if overall_pass else "rejected",
+                      f"Train={train_r['sharpe']:.2f} Val={val_r['sharpe']:.2f} "
+                      f"Test={test_r['sharpe']:.2f} DD={test_r['max_dd']:.1%} "
+                      f"AnnRet={test_r.get('ann_return',0):.1%}"))
 
-            conn.execute("""
-                INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
-                VALUES (?, 'gate2_3', ?, 'BacktestEngineer', ?)
-            """, (idea_id,
-                  "approve" if overall_pass else "reject",
-                  f"G2={'PASS' if gate2_pass else 'FAIL'} G3={'PASS' if gate3_pass else 'FAIL'} "
-                  f"gap={train_val_gap:.2f}"))
+                conn.execute("""
+                    INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
+                    VALUES (?, 'gate2_3', ?, 'BacktestEngineer', ?)
+                """, (idea_id,
+                      "approve" if overall_pass else "reject",
+                      f"G2={'PASS' if gate2_pass else 'FAIL'} G3={'PASS' if gate3_pass else 'FAIL'} "
+                      f"gap={train_val_gap:.2f}"))
+            self.log_daemon("INFO", f"Backtest saved for idea {idea_id} — pass={overall_pass}")
+        except Exception as e:
+            self.log_daemon("ERROR", f"Backtest save FAILED for idea {idea_id}: {e}")
+            raise
 
         self.log_daemon(
             "INFO" if overall_pass else "WARN",

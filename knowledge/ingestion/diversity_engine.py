@@ -79,12 +79,58 @@ ANGLES = {
     },
 }
 
+# Keywords used to infer angle membership from document content/title/tags
+ANGLE_KEYWORDS = {
+    "price_action": [
+        "momentum", "mean reversion", "mean-reversion", "technical", "moving average",
+        "rsi", "breakout", "trend", "macd", "bollinger", "price action", "chart pattern",
+        "support", "resistance", "crossover", "oscillator",
+    ],
+    "fundamental": [
+        "value", "earnings", "book value", "p/e", "p/b", "roe", "fundamental",
+        "dividend yield", "revenue", "balance sheet", "cash flow", "quality", "valuation",
+        "earnings quality", "price-to-book", "return on equity",
+    ],
+    "event_driven": [
+        "pead", "earnings drift", "post-earnings", "dividend capture", "corporate event",
+        "announcement", "earnings surprise", "ex-dividend", "rights issue", "bonus issue",
+        "earnings announcement", "event study",
+    ],
+    "institutional": [
+        "epf", "kwap", "institutional", "glc", "government-linked", "pension fund",
+        "sovereign wealth", "foreign ownership", "msci", "passive fund", "index rebalancing",
+        "institutional flows", "ownership structure",
+    ],
+    "macro": [
+        "opr", "bank negara", "bnm", "interest rate", "monetary policy", "macroeconomic",
+        "gdp", "inflation", "central bank", "rate cycle", "rate sensitivity", "nim",
+        "macroeconomics", "economic cycle",
+    ],
+    "commodity": [
+        "cpo", "palm oil", "crude oil", "commodity", "plantation", "energy sector",
+        "tin", "rubber", "commodity equity", "commodity correlation", "resource",
+        "crude palm oil", "plantation stock",
+    ],
+    "sector_rotation": [
+        "sector rotation", "sector momentum", "industry momentum", "cyclical", "defensive",
+        "banking sector", "telco", "utilities", "reit", "sector switching",
+        "sector performance", "industry rotation",
+    ],
+    "behavioural": [
+        "sentiment", "behavioural", "behavioral", "anomaly", "anomalies",
+        "investor behaviour", "investor behavior", "bias", "microstructure",
+        "calendar effect", "january effect", "overreaction", "herding",
+        "market anomaly", "investor sentiment",
+    ],
+}
+
 
 class DiversityEngine:
     """
     Tracks and fills KB coverage across 8 Bursa Malaysia research angles.
-    Coverage is measured by counting kb_documents whose source_url was set
-    by a DiversityEngine hunt (prefix 'diversity_hunt:<angle>').
+    Coverage is measured by:
+      1. kb_documents whose source_url was set by DiversityEngine (prefix 'diversity_hunt:<angle>')
+      2. kb_documents whose title/summary/tags match angle keywords (for legacy untagged docs)
     """
 
     # ── Coverage check ────────────────────────────────────────────────────────
@@ -92,6 +138,8 @@ class DiversityEngine:
     def check_balance(self) -> dict:
         """
         Count KB docs per angle and return a coverage report.
+        Counts docs tagged via diversity_hunt source_url AND docs matching
+        angle keywords in title/summary/tags (for legacy untagged documents).
 
         Returns:
             {
@@ -104,19 +152,102 @@ class DiversityEngine:
         coverage = {}
         with db_session() as conn:
             for angle in ANGLES:
+                # Count docs tagged by diversity_hunt source_url
                 row = conn.execute(
                     "SELECT COUNT(*) AS n FROM kb_documents WHERE source_url LIKE ?",
                     (f"diversity_hunt:{angle}%",),
                 ).fetchone()
-                coverage[angle] = row["n"] if row else 0
+                tagged_count = row["n"] if row else 0
+
+                # Also count untagged docs matching angle keywords
+                keywords = ANGLE_KEYWORDS.get(angle, [])
+                keyword_count = 0
+                if keywords:
+                    conditions = " OR ".join([
+                        "(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ?)"
+                        for _ in keywords
+                    ])
+                    params = []
+                    for kw in keywords:
+                        like = f"%{kw.lower()}%"
+                        params.extend([like, like, like])
+                    # Exclude already-tagged docs to avoid double-counting
+                    params.append(f"diversity_hunt:{angle}%")
+                    sql = (
+                        f"SELECT COUNT(*) AS n FROM kb_documents "
+                        f"WHERE ({conditions}) "
+                        f"AND (source_url IS NULL OR source_url = '' OR source_url NOT LIKE ?)"
+                    )
+                    kw_row = conn.execute(sql, params).fetchone()
+                    keyword_count = kw_row["n"] if kw_row else 0
+
+                coverage[angle] = tagged_count + keyword_count
 
         least_covered = min(coverage, key=coverage.get)
         return {
-            "coverage":     coverage,
+            "coverage":      coverage,
             "least_covered": least_covered,
-            "total_docs":   sum(coverage.values()),
-            "all_angles":   list(ANGLES.keys()),
+            "total_docs":    sum(coverage.values()),
+            "all_angles":    list(ANGLES.keys()),
         }
+
+    # ── Retag existing docs ───────────────────────────────────────────────────
+
+    def retag_existing_docs(self) -> dict:
+        """
+        Scan all KB documents that lack a diversity_hunt source_url tag and
+        assign the best-matching angle based on title/summary/tags keyword matching.
+
+        Updates source_url to 'diversity_hunt:<angle>' for matched documents.
+        Documents with no keyword match are left unchanged.
+
+        Returns:
+            {"tagged": int, "skipped": int, "by_angle": {angle: count}}
+        """
+        tagged = 0
+        skipped = 0
+        by_angle: dict = {angle: 0 for angle in ANGLES}
+
+        with db_session() as conn:
+            rows = conn.execute(
+                "SELECT id, title, summary, tags FROM kb_documents "
+                "WHERE source_url IS NULL OR source_url = '' OR source_url NOT LIKE 'diversity_hunt:%'"
+            ).fetchall()
+
+            for row in rows:
+                text = " ".join([
+                    (row["title"] or ""),
+                    (row["summary"] or ""),
+                    (row["tags"] or ""),
+                ]).lower()
+
+                best_angle = None
+                best_score = 0
+
+                for angle, keywords in ANGLE_KEYWORDS.items():
+                    score = sum(1 for kw in keywords if kw.lower() in text)
+                    if score > best_score:
+                        best_score = score
+                        best_angle = angle
+
+                if best_angle and best_score > 0:
+                    conn.execute(
+                        "UPDATE kb_documents SET source_url=? WHERE id=?",
+                        (f"diversity_hunt:{best_angle}", row["id"]),
+                    )
+                    by_angle[best_angle] += 1
+                    tagged += 1
+                    logger.info(
+                        f"[DiversityEngine] Retagged doc #{row['id']} → {best_angle} (score={best_score})"
+                    )
+                else:
+                    skipped += 1
+                    logger.debug(f"[DiversityEngine] No angle match for doc #{row['id']}, skipping")
+
+        logger.info(
+            f"[DiversityEngine] retag_existing_docs complete: tagged={tagged}, skipped={skipped}, by_angle={by_angle}"
+        )
+        return {"tagged": tagged, "skipped": skipped, "by_angle": by_angle}
 
     # ── Fill a specific angle ─────────────────────────────────────────────────
 

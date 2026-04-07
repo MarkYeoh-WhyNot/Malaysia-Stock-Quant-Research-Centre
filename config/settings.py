@@ -1,12 +1,15 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent.parent
+load_dotenv(BASE_DIR / ".env", override=False)
 
 # ── AI ────────────────────────────────────────────────────────────────────────
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
-MODEL_FAST          = "claude-haiku-4-5-20251001"
+ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
+SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+MODEL_FAST               = "claude-haiku-4-5-20251001"
 MODEL_MAIN          = "claude-sonnet-4-6"
 MODEL_HEAVY         = "claude-opus-4-6"
 AI_DAILY_BUDGET_USD = float(os.getenv("AI_DAILY_BUDGET_USD", "50"))

@@ -3,7 +3,7 @@ ResearchHunter — fetch academic papers from Semantic Scholar and arXiv,
 ingest abstracts into the OpenClaw knowledge base.
 
 Sources:
-  - Semantic Scholar Graph API (no key required)
+  - Semantic Scholar Graph API (API key required; falls back to arXiv if absent)
   - arXiv q-fin section (no key required)
 """
 import logging
@@ -13,7 +13,7 @@ from typing import Optional
 import requests
 
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST
+from config.settings import MODEL_FAST, SEMANTIC_SCHOLAR_API_KEY
 from knowledge.ingestion.kb_ingester import KBIngester
 
 logger = logging.getLogger(__name__)
@@ -73,12 +73,18 @@ Return a JSON array of short query strings (6-10 words each). Example:
     # ── Semantic Scholar ──────────────────────────────────────────────────────
 
     def _search_semantic_scholar(self, query: str) -> list:
+        if not SEMANTIC_SCHOLAR_API_KEY:
+            return []
         try:
+            headers = {
+                "User-Agent": "OpenClaw/1.0 research-bot",
+                "x-api-key": SEMANTIC_SCHOLAR_API_KEY,
+            }
             resp = requests.get(
                 SEMANTIC_SCHOLAR_URL,
                 params={"query": query, "fields": "title,abstract,year,openAccessPdf", "limit": 5},
                 timeout=15,
-                headers={"User-Agent": "OpenClaw/1.0 research-bot"},
+                headers=headers,
             )
             resp.raise_for_status()
             data  = resp.json()
@@ -94,7 +100,7 @@ Return a JSON array of short query strings (6-10 words each). Example:
                 })
             return papers
         except Exception as e:
-            logger.warning(f"Semantic Scholar search failed for '{query}': {e}")
+            logger.debug(f"Semantic Scholar search failed for '{query}': {e}")
             return []
 
     # ── arXiv ─────────────────────────────────────────────────────────────────
@@ -151,7 +157,8 @@ Return a JSON array of short query strings (6-10 words each). Example:
             {"papers_found": int, "papers_ingested": int, "titles": [...], "queries": [...]}
         """
         queries = self._generate_queries(topic, context)
-        self.log_daemon("INFO", f"ResearchHunter hunting '{topic}' with {len(queries)} queries")
+        sources = "Semantic Scholar + arXiv" if SEMANTIC_SCHOLAR_API_KEY else "arXiv only (no SEMANTIC_SCHOLAR_API_KEY)"
+        self.log_daemon("INFO", f"ResearchHunter hunting '{topic}' with {len(queries)} queries [{sources}]")
 
         seen_titles: set = set()
         all_papers: list = []

@@ -113,7 +113,9 @@ class ResearchDaemon:
         """Run BacktestEngineer on stage2/active ideas that have no backtest run yet.
 
         DataEngineer pre-caches the price data; BacktestEngineer reads from that cache.
-        On pass: idea advances to stage3. On fail: idea stays in stage2/rejected.
+        On pass: idea advances to stage3. On fail: idea is rejected.
+        Ideas are set to status='processing' before the backtest starts to prevent
+        re-queueing if the daemon cycles while a long backtest is running.
         """
         with db_session() as conn:
             pending = conn.execute(
@@ -125,6 +127,12 @@ class ResearchDaemon:
 
         for row in pending:
             try:
+                # Mark as processing so the next daemon cycle skips this idea
+                with db_session() as conn:
+                    conn.execute(
+                        "UPDATE alpha_ideas SET status='processing', updated_at=datetime('now') WHERE id=?",
+                        (row["id"],),
+                    )
                 ticker = row["pair"] or "1155.KL"
                 # Pre-cache 5yr daily bars so BacktestEngineer hits the cache
                 self.data_engineer.fetch_prices(ticker, days=1825, use_cache=True)
@@ -138,6 +146,13 @@ class ResearchDaemon:
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"[Stage2] Error {row['id']}: {e}")
+                # Restore to active so it can be retried next cycle (after the bug is fixed)
+                with db_session() as conn:
+                    conn.execute(
+                        "UPDATE alpha_ideas SET status='active', updated_at=datetime('now') "
+                        "WHERE id=? AND status='processing'",
+                        (row["id"],),
+                    )
 
     # ── Red-Blue adversarial review ───────────────────────────────────────────
 
