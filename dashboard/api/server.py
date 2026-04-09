@@ -7,7 +7,7 @@ from typing import Optional
 
 _PROGRESS_FILE = "/tmp/openclaw_progress.json"
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -218,11 +218,32 @@ def analytics():
 def get_ideas(stage: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
     with db_session() as conn:
         where, params = [], []
-        if stage:  where.append("stage=?");  params.append(stage)
-        if status: where.append("status=?"); params.append(status)
+        if stage:  where.append("ai.stage=?");  params.append(stage)
+        if status: where.append("ai.status=?"); params.append(status)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
-        ideas  = conn.execute(f"SELECT * FROM alpha_ideas {clause} ORDER BY id DESC LIMIT ?", params + [limit]).fetchall()
-        total  = conn.execute(f"SELECT COUNT(*) as n FROM alpha_ideas {clause}", params).fetchone()["n"]
+        # LEFT JOIN latest backtest_run to expose QC metrics in the ideas table
+        ideas = conn.execute(f"""
+            SELECT ai.*,
+                br.sharpe_net       AS bt_sharpe_net,
+                br.sharpe_gross     AS bt_sharpe_gross,
+                br.sharpe_oos       AS bt_sharpe_oos,
+                br.trade_count      AS bt_trade_count,
+                br.regimes_positive AS bt_regimes_positive,
+                br.sanity_flags     AS bt_sanity_flags
+            FROM alpha_ideas ai
+            LEFT JOIN (
+                SELECT idea_id, sharpe_net, sharpe_gross, sharpe_oos,
+                       trade_count, regimes_positive, sanity_flags,
+                       MAX(id) AS latest_id
+                FROM backtest_runs
+                GROUP BY idea_id
+            ) br ON br.idea_id = ai.id
+            {clause}
+            ORDER BY ai.id DESC LIMIT ?
+        """, params + [limit]).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) as n FROM alpha_ideas ai {clause}", params
+        ).fetchone()["n"]
     return {"total": total, "ideas": [dict(r) for r in ideas]}
 
 
@@ -718,6 +739,123 @@ async def trigger_backtest(body: BacktestTrigger):
     return result
 
 
+# ─── Backtest Lab — Detail, List, Decision ────────────────────────────────────
+
+@app.get("/api/backtest/list")
+def backtest_list():
+    """List ideas that have at least one backtest run (most recent run per idea)."""
+    with db_session() as conn:
+        rows = conn.execute("""
+            SELECT ai.id, ai.title, ai.ticker, ai.timeframe, ai.stage, ai.status,
+                   br.id AS bt_id, br.sharpe_gross, br.sharpe_net,
+                   br.sharpe_is, br.sharpe_oos, br.oos_degradation,
+                   br.trade_count, br.regimes_positive, br.passed,
+                   br.verdict, br.sanity_flags, br.holding_period_class,
+                   br.test_dd, br.win_rate,
+                   br.created_at AS bt_date
+            FROM alpha_ideas ai
+            JOIN (
+                SELECT idea_id, MAX(id) AS latest_id
+                FROM backtest_runs GROUP BY idea_id
+            ) latest ON latest.idea_id = ai.id
+            JOIN backtest_runs br ON br.id = latest.latest_id
+            ORDER BY br.id DESC
+        """).fetchall()
+    return {"ideas": [dict(r) for r in rows], "total": len(rows)}
+
+
+def _build_bt_verdict(bt: dict) -> tuple:
+    sn  = bt.get("sharpe_net")  or 0.0
+    so  = bt.get("sharpe_oos")  or 0.0
+    rp  = bt.get("regimes_positive")
+    tc  = bt.get("trade_count") or 0
+    dd  = bt.get("test_dd")     or bt.get("val_dd") or 0.0
+    flags = bt.get("sanity_flags") or ""
+    passed = bt.get("passed", 0)
+    if passed:
+        parts = [f"Net Sharpe {sn:.2f} clears threshold"]
+        if so > 0:              parts.append(f"OOS Sharpe {so:.2f} positive")
+        if rp and rp >= 2:     parts.append(f"Robust across {rp}/3 vol regimes")
+        if tc >= 30:            parts.append(f"{tc} trades (adequate sample)")
+        return "PASS", "; ".join(parts)
+    else:
+        issues = []
+        if sn < 1.0:           issues.append(f"Net Sharpe {sn:.2f} < 1.0")
+        if so < 0:             issues.append(f"OOS Sharpe {so:.2f} negative (overfitting risk)")
+        if rp is not None and rp < 2: issues.append(f"Only {rp}/3 regimes positive")
+        if tc < 30:            issues.append(f"Only {tc} trades (need ≥30)")
+        if dd > 0.25:          issues.append(f"Drawdown {dd:.1%} > 25%")
+        if flags:              issues.append(f"Sanity: {flags}")
+        return "FAIL", "; ".join(issues) if issues else "Failed quality gates"
+
+
+@app.get("/api/backtest/{idea_id}")
+def get_backtest_detail(idea_id: int):
+    """Full backtest detail: idea + all runs + equity series + computed verdict."""
+    with db_session() as conn:
+        idea = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        idea = dict(idea)
+        runs = conn.execute(
+            "SELECT * FROM backtest_runs WHERE idea_id=? ORDER BY id DESC", (idea_id,)
+        ).fetchall()
+        runs = [dict(r) for r in runs]
+        series = conn.execute(
+            "SELECT date, strategy_pct, benchmark_pct, drawdown_pct, is_oos "
+            "FROM backtest_series WHERE idea_id=? ORDER BY date", (idea_id,)
+        ).fetchall()
+        series = [dict(r) for r in series]
+    latest = runs[0] if runs else {}
+    verdict = latest.get("verdict") or ""
+    verdict_reason = latest.get("verdict_reason") or ""
+    if not verdict and latest:
+        verdict, verdict_reason = _build_bt_verdict(latest)
+    return {
+        "idea": idea, "runs": runs, "latest": latest,
+        "series": series, "verdict": verdict, "verdict_reason": verdict_reason,
+    }
+
+
+class BtDecisionBody(BaseModel):
+    decision: str   # "approve" or "reject"
+    notes: str = ""
+
+
+@app.post("/api/backtest/{idea_id}/decision")
+def backtest_decision(idea_id: int, body: BtDecisionBody):
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision must be 'approve' or 'reject'")
+    with db_session() as conn:
+        idea = conn.execute("SELECT id, stage FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        rationale = body.notes or (
+            "Human approval via Backtest Lab" if body.decision == "approve"
+            else "Human rejection via Backtest Lab"
+        )
+        conn.execute("""
+            UPDATE backtest_runs SET verdict=?, verdict_reason=?
+            WHERE id=(SELECT MAX(id) FROM backtest_runs WHERE idea_id=?)
+        """, (body.decision.upper(), rationale, idea_id))
+        conn.execute("""
+            INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
+            VALUES (?, 'gate3', ?, 'dashboard', ?)
+        """, (idea_id, body.decision, rationale))
+        if body.decision == "approve":
+            conn.execute("""
+                UPDATE alpha_ideas
+                SET stage='stage4a', status='active', updated_at=datetime('now')
+                WHERE id=?
+            """, (idea_id,))
+            conn.execute("""
+                INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
+                VALUES (?, 'stage4a', 'advanced', 'dashboard',
+                        'Backtest approved — advancing to paper trading')
+            """, (idea_id,))
+    return {"ok": True, "idea_id": idea_id, "decision": body.decision}
+
+
 # ─── Factor Sandbox ───────────────────────────────────────────────────────────
 
 class SandboxBody(BaseModel):
@@ -919,6 +1057,117 @@ async def kb_ingest_url(body: KBIngestURLBody):
         from knowledge.ingestion.kb_ingester import KBIngester
         return KBIngester().run({"action": "ingest_url", "url": body.url, "title": body.title, "domain": body.domain})
     return await _in_thread(_run)
+
+
+@app.post("/api/kb/ingest-pdf")
+async def kb_ingest_pdf(file: UploadFile = File(...)):
+    import io
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
+
+    pdf_bytes = await file.read()
+    if len(pdf_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    def _run():
+        import pdfplumber
+        from knowledge.ingestion.kb_ingester import KBIngester
+
+        # Extract text from all pages, cap at 50 000 chars
+        text_parts = []
+        title = ""
+        try:
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text() or ""
+                    text_parts.append(page_text)
+                    # Use first non-empty line of page 0 as title fallback
+                    if i == 0 and not title:
+                        for line in page_text.splitlines():
+                            line = line.strip()
+                            if len(line) > 5:
+                                title = line[:120]
+                                break
+        except Exception as e:
+            return {"error": f"PDF extraction failed: {e}"}
+
+        full_text = "\n\n".join(text_parts)[:50000]
+        if not full_text.strip():
+            return {"error": "Could not extract any text from PDF"}
+
+        # Fall back to filename (without extension) if no title found on page 1
+        if not title:
+            title = file.filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+
+        source_url = f"pdf_upload:{file.filename}"
+        return KBIngester().ingest_text(content=full_text, title=title, source_url=source_url)
+
+    return await _in_thread(_run)
+
+
+# ─── KB Management (delete / reassign) ──────────────────────────────────────
+
+_KB_VALID_DOMAINS = {
+    "price_action", "fundamental", "event_driven", "institutional",
+    "macro", "commodity", "sector_rotation", "behavioural", "statistical_modelling",
+}
+
+
+@app.delete("/api/kb/document/{doc_id}")
+def kb_delete_document(doc_id: int):
+    with db_session() as conn:
+        row = conn.execute("SELECT id, title FROM kb_documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        conn.execute("DELETE FROM kb_links WHERE source_id=? OR target_id=?", (doc_id, doc_id))
+        conn.execute("DELETE FROM kb_documents WHERE id=?", (doc_id,))
+    return {"deleted": True, "doc_id": doc_id}
+
+
+class KBBulkDeleteBody(BaseModel):
+    doc_ids: list
+
+
+@app.delete("/api/kb/documents/bulk")
+def kb_delete_bulk(body: KBBulkDeleteBody):
+    ids = [int(i) for i in body.doc_ids if str(i).lstrip("-").isdigit()]
+    if not ids:
+        return {"deleted": 0, "doc_ids": []}
+    placeholders = ",".join("?" for _ in ids)
+    with db_session() as conn:
+        for doc_id in ids:
+            conn.execute("DELETE FROM kb_links WHERE source_id=? OR target_id=?", (doc_id, doc_id))
+        conn.execute(f"DELETE FROM kb_documents WHERE id IN ({placeholders})", ids)
+    return {"deleted": len(ids), "doc_ids": ids}
+
+
+class KBDomainUpdateBody(BaseModel):
+    domain: str
+
+
+@app.patch("/api/kb/document/{doc_id}/domain")
+def kb_update_domain(doc_id: int, body: KBDomainUpdateBody):
+    if body.domain not in _KB_VALID_DOMAINS:
+        raise HTTPException(status_code=400, detail=f"Invalid domain: {body.domain}")
+    with db_session() as conn:
+        row = conn.execute("SELECT id FROM kb_documents WHERE id=?", (doc_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        conn.execute(
+            "UPDATE kb_documents SET domain=?, updated_at=datetime('now') WHERE id=?",
+            (body.domain, doc_id),
+        )
+    return {"updated": True, "doc_id": doc_id, "domain": body.domain}
+
+
+@app.delete("/api/kb/concept/{concept_id}")
+def kb_delete_concept(concept_id: int):
+    with db_session() as conn:
+        row = conn.execute("SELECT id FROM kb_concepts WHERE id=?", (concept_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Concept not found")
+        conn.execute("DELETE FROM kb_concepts WHERE id=?", (concept_id,))
+    return {"deleted": True, "concept_id": concept_id}
 
 
 # ─── Logs & Usage ────────────────────────────────────────────────────────────

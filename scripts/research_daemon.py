@@ -150,10 +150,31 @@ class ResearchDaemon:
         Ideas are set to status='processing' before the backtest starts to prevent
         re-queueing if the daemon cycles while a long backtest is running.
         """
+        # ── Stuck idea detector ───────────────────────────────────────────────
+        # Reset ideas stuck in 'processing' (daemon restart mid-backtest) or
+        # 'active' (stale, >30 min untouched) back to 'pending' so they are retried.
+        with db_session() as conn:
+            cur = conn.execute(
+                "UPDATE alpha_ideas SET status='pending', updated_at=datetime('now') "
+                "WHERE stage='stage2' AND status IN ('processing', 'active') "
+                "AND updated_at < datetime('now', '-30 minutes')"
+            )
+            stuck_count = cur.rowcount
+        if stuck_count:
+            logger.warning(f"[Stage2] Unstuck {stuck_count} idea(s) older than 30 min → reset to pending")
+            try:
+                with db_session() as conn:
+                    conn.execute(
+                        "INSERT INTO daemon_logs (level, source, message) VALUES ('WARN', 'ResearchDaemon', ?)",
+                        (f"[Stage2] Unstuck {stuck_count} idea(s) in processing/active > 30 min — reset to pending",)
+                    )
+            except Exception:
+                pass
+
         with db_session() as conn:
             pending = conn.execute(
                 "SELECT id, title, ticker, factor_formula FROM alpha_ideas "
-                "WHERE stage='stage2' AND status='active' "
+                "WHERE stage='stage2' AND status IN ('active', 'pending') "
                 "AND id NOT IN (SELECT DISTINCT idea_id FROM backtest_runs) "
                 "LIMIT 3"
             ).fetchall()
@@ -170,6 +191,9 @@ class ResearchDaemon:
                 # Pre-cache 5yr daily bars so BacktestEngineer hits the cache
                 self.data_engineer.fetch_prices(ticker, days=1825, use_cache=True)
                 result = self.backtest_engineer.backtest_idea(row["id"])
+                # Surface error returns from backtest as exceptions so the except block handles them
+                if result.get("error"):
+                    raise RuntimeError(f"Backtest returned error: {result['error']}")
                 logger.info(
                     f"[Stage2] {'PASS' if result.get('gate3_pass') else 'FAIL'}: "
                     f"{row['title'][:50]} "
@@ -261,13 +285,25 @@ class ResearchDaemon:
 
                 await asyncio.sleep(2)
             except Exception as e:
-                logger.error(f"[Stage2] Error {row['id']}: {e}")
-                # Restore to active so it can be retried next cycle (after the bug is fixed)
+                import traceback as _tb
+                err_detail = _tb.format_exc()
+                logger.error(f"[Stage2] Error idea={row['id']}: {e}\n{err_detail}")
+                # Log to daemon_logs for dashboard visibility
+                try:
+                    with db_session() as conn:
+                        conn.execute(
+                            "INSERT INTO daemon_logs (level, source, message) VALUES ('ERROR', 'ResearchDaemon', ?)",
+                            (f"[Stage2] Backtest failed idea={row['id']} '{row['title'][:60]}': {str(e)[:400]}",)
+                        )
+                except Exception:
+                    pass
+                # Mark idea as failed so it doesn't loop endlessly
                 with db_session() as conn:
                     conn.execute(
-                        "UPDATE alpha_ideas SET status='active', updated_at=datetime('now') "
+                        "UPDATE alpha_ideas "
+                        "SET status='failed', rejection_reason=?, updated_at=datetime('now') "
                         "WHERE id=? AND status='processing'",
-                        (row["id"],),
+                        (f"Backtest exception: {str(e)[:500]}", row["id"]),
                     )
 
     # ── Red-Blue adversarial review ───────────────────────────────────────────

@@ -14,6 +14,7 @@ aiohttp>=3.10.0
 numpy>=1.26.0
 pandas>=2.2.0
 pyarrow>=14.0.0
+scipy>=1.11.0
 
 # Yahoo Finance price data (Bursa Malaysia .KL tickers)
 yfinance>=0.2.40

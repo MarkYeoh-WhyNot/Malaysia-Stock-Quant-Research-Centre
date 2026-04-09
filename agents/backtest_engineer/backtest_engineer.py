@@ -6,9 +6,16 @@ import pandas as pd
 from agents.base_agent import BaseAgent
 from config.settings import MODEL_FAST, MODEL_MAIN, GATE_CONFIG, KLCI_BY_SYMBOL, DEFAULT_SYMBOLS
 from data.database import db_session
-from data.yahoo.client import get_historical_data, BARS_PER_YEAR
+from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
+
+# ── Bursa Malaysia realistic transaction cost model (QC3) ────────────────────
+# Applied once per completed round-trip trade (open + close).
+_BT_BROKERAGE       = 0.0020   # 0.20% per side (online broker)
+_BT_STAMP_DUTY      = 0.0015   # 0.15% per side (capped MYR 1000)
+_BT_SLIPPAGE        = 0.0010   # 0.10% market impact estimate
+_BT_ROUND_TRIP_COST = (_BT_BROKERAGE + _BT_STAMP_DUTY + _BT_SLIPPAGE) * 2  # 0.0090
 
 SYSTEM = """You are a quantitative backtesting engineer specialising in Bursa Malaysia equities.
 Parse equity strategy descriptions into structured signal parameters for vectorised backtesting.
@@ -174,52 +181,272 @@ Return JSON:
     # ── Performance metrics ───────────────────────────────────────────────────
 
     def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str) -> dict:
-        close = df["close"].values
-        sig   = signals.fillna(0).values
+        """Compute performance with QC1 lookahead guard and QC3 realistic costs.
 
-        # Execute at next-bar open (shift signal by 1)
-        sig_shifted     = np.roll(sig, 1)
-        sig_shifted[0]  = 0.0
+        QC1 — Lookahead bias guard:
+          Signal computed on day T may only trigger a trade at T+1 open.
+          Enforced by pd.Series.shift(1) — signal_shifted[t] = signal[t-1].
+          signal_shifted[0] is forced to 0 (no position at start).
 
-        bar_returns     = np.diff(close) / np.where(close[:-1] != 0, close[:-1], 1e-9)
-        # Bursa transaction cost: ~0.1% brokerage + 0.03% stamp duty each way
-        TRANSACTION_COST = 0.0013
-        signal_changes  = np.abs(np.diff(sig_shifted))
-        net_returns     = sig_shifted[1:] * bar_returns - signal_changes * TRANSACTION_COST
+        QC3 — Realistic Bursa transaction costs:
+          BROKERAGE=0.20% + STAMP_DUTY=0.15% + SLIPPAGE=0.10% per side,
+          applied as a round-trip deduction on every position change.
+          Returns both sharpe_gross (before costs) and sharpe_net (after costs).
+        """
+        close = df["close"]
+        sig   = signals.fillna(0)
+
+        # ── QC1: strict 1-bar signal delay ────────────────────────────────────
+        signal_shifted = sig.shift(1).fillna(0)
+        assert float(signal_shifted.iloc[0]) == 0.0, \
+            "Lookahead guard failure: signal_shifted[0] != 0"
+
+        bar_returns    = close.pct_change().fillna(0)
+
+        # Gross returns (no costs): position held at T earns return from T→T+1
+        gross_bar     = signal_shifted * bar_returns
+        gross_returns = gross_bar.values[1:]   # drop bar 0 (always 0 after shift)
+
+        # ── QC3: subtract round-trip cost on every position change ────────────
+        signal_changes = np.abs(np.diff(signal_shifted.values))
+        net_returns    = gross_returns - signal_changes * _BT_ROUND_TRIP_COST
 
         n = len(net_returns)
+        _empty = {
+            "sharpe": 0.0, "sharpe_gross": 0.0, "sharpe_net": 0.0,
+            "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0,
+            "total_trades": 0, "ann_return": 0.0,
+        }
         if n < 20 or np.std(net_returns) < 1e-10:
-            return {"sharpe": 0.0, "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0, "total_trades": 0}
+            return _empty
 
-        # Annualised Sharpe
-        ann   = BARS_PER_YEAR.get(interval, 252)
-        sharpe = (np.mean(net_returns) / np.std(net_returns)) * np.sqrt(ann)
+        ann         = BARS_PER_YEAR.get(interval, 252)
+        g_std       = float(np.std(gross_returns))
+        n_std       = float(np.std(net_returns))
+        sharpe_gross = round(float(np.mean(gross_returns) / g_std * np.sqrt(ann)), 3) if g_std > 1e-10 else 0.0
+        sharpe_net   = round(float(np.mean(net_returns)   / n_std * np.sqrt(ann)), 3) if n_std > 1e-10 else 0.0
 
-        # Max drawdown
-        cum   = np.cumprod(1 + np.clip(net_returns, -0.5, 0.5))
-        peak  = np.maximum.accumulate(cum)
-        dd    = (peak - cum) / np.where(peak != 0, peak, 1e-9)
+        # Max drawdown (on net equity curve)
+        cum    = np.cumprod(1 + np.clip(net_returns, -0.5, 0.5))
+        peak   = np.maximum.accumulate(cum)
+        dd     = (peak - cum) / np.where(peak != 0, peak, 1e-9)
         max_dd = float(dd.max())
 
-        # Win rate and profit factor
-        pos  = net_returns[net_returns > 0]
-        neg  = net_returns[net_returns < 0]
-        nz   = net_returns[net_returns != 0]
-        win_rate = len(pos) / max(len(nz), 1)
-        gross_win  = float(pos.sum()) if len(pos) > 0 else 0.0
-        gross_loss = float(abs(neg.sum())) if len(neg) > 0 else 1e-9
+        # Win rate / profit factor
+        pos           = net_returns[net_returns > 0]
+        neg           = net_returns[net_returns < 0]
+        nz            = net_returns[net_returns != 0]
+        win_rate      = len(pos) / max(len(nz), 1)
+        gross_win     = float(pos.sum())         if len(pos) > 0 else 0.0
+        gross_loss    = float(abs(neg.sum()))    if len(neg) > 0 else 1e-9
         profit_factor = gross_win / gross_loss
-
-        total_trades = int(np.sum(np.abs(np.diff(sig_shifted)) > 0))
+        total_trades  = int(np.sum(signal_changes > 0))
 
         return {
-            "sharpe":        round(float(sharpe), 3),
+            "sharpe":        sharpe_net,          # backward-compat: sharpe == net
+            "sharpe_gross":  sharpe_gross,
+            "sharpe_net":    sharpe_net,
             "max_dd":        round(max_dd, 4),
             "win_rate":      round(win_rate, 4),
             "profit_factor": round(float(profit_factor), 3),
             "total_trades":  total_trades,
             "ann_return":    round(float(np.mean(net_returns)) * ann, 4),
         }
+
+    # ── QC2: Walk-forward IS / OOS validation ────────────────────────────────
+
+    def _compute_walk_forward(self, df: pd.DataFrame, params: dict, interval: str) -> dict:
+        """Split full dataset 70/30 and compute Sharpe separately for IS and OOS periods.
+
+        Returns sharpe_is, sharpe_oos, oos_degradation (fraction drop from IS to OOS).
+        """
+        n        = len(df)
+        split_at = int(n * 0.70)
+        is_df    = df.iloc[:split_at]
+        oos_df   = df.iloc[split_at:]
+
+        if len(is_df) < 60 or len(oos_df) < 20:
+            return {"sharpe_is": 0.0, "sharpe_oos": 0.0, "oos_degradation": 0.0}
+
+        is_perf  = self._compute_performance(is_df,  self._compute_signals(is_df,  params), interval)
+        oos_perf = self._compute_performance(oos_df, self._compute_signals(oos_df, params), interval)
+
+        sharpe_is  = is_perf["sharpe_net"]
+        sharpe_oos = oos_perf["sharpe_net"]
+        # Degradation: how much (as a fraction) OOS drops below IS
+        deg = (sharpe_is - sharpe_oos) / max(abs(sharpe_is), 1e-9) if sharpe_is > 0 else 0.0
+
+        return {
+            "sharpe_is":       round(sharpe_is, 3),
+            "sharpe_oos":      round(sharpe_oos, 3),
+            "oos_degradation": round(deg, 3),
+        }
+
+    # ── QC5: Regime stress test ───────────────────────────────────────────────
+
+    def _compute_regimes(self, df: pd.DataFrame, params: dict, interval: str) -> dict:
+        """Split the backtest period into 3 volatility regimes and compute Sharpe for each.
+
+        Regimes are defined by the stock's own 60-day rolling annualised volatility
+        (a reliable proxy for market regime in KLSE where single stocks are highly
+        correlated with the index).  Signals are computed on the full series so
+        indicator look-backs are valid; only the return attribution is masked by regime.
+        """
+        if len(df) < 80:
+            return {
+                "sharpe_low_vol": 0.0, "sharpe_mid_vol": 0.0,
+                "sharpe_high_vol": 0.0, "regimes_positive": 0,
+            }
+
+        close      = df["close"]
+        daily_ret  = close.pct_change()
+        rolling_vol = daily_ret.rolling(60).std() * np.sqrt(252)  # annualised
+
+        # Signals on full series (so MAs etc. have full context)
+        sig          = self._compute_signals(df, params)
+        sig_shifted  = sig.shift(1).fillna(0)
+
+        # Per-bar net return (same cost model as _compute_performance)
+        cost_bar     = sig_shifted.diff().abs() * _BT_ROUND_TRIP_COST
+        net_bar      = (sig_shifted * daily_ret - cost_bar).fillna(0)
+
+        valid_vol = rolling_vol.dropna()
+        if len(valid_vol) < 30:
+            return {
+                "sharpe_low_vol": 0.0, "sharpe_mid_vol": 0.0,
+                "sharpe_high_vol": 0.0, "regimes_positive": 0,
+            }
+
+        p33 = float(valid_vol.quantile(0.33))
+        p66 = float(valid_vol.quantile(0.66))
+        ann = BARS_PER_YEAR.get(interval, 252)
+
+        regime_sharpes: dict[str, float] = {}
+        for name, mask in (
+            ("low_vol",  rolling_vol <= p33),
+            ("mid_vol",  (rolling_vol > p33) & (rolling_vol <= p66)),
+            ("high_vol", rolling_vol > p66),
+        ):
+            r = net_bar[mask & rolling_vol.notna()]
+            if len(r) < 10:
+                regime_sharpes[name] = 0.0
+                continue
+            std = float(r.std())
+            regime_sharpes[name] = round(float(r.mean() / std * np.sqrt(ann)), 3) if std > 1e-10 else 0.0
+
+        regimes_positive = sum(1 for v in regime_sharpes.values() if v > 0)
+
+        return {
+            "sharpe_low_vol":   regime_sharpes.get("low_vol",  0.0),
+            "sharpe_mid_vol":   regime_sharpes.get("mid_vol",  0.0),
+            "sharpe_high_vol":  regime_sharpes.get("high_vol", 0.0),
+            "regimes_positive": regimes_positive,
+        }
+
+    # ── Backtest sanity flags ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_sanity_flags(
+        sharpe_gross: float, max_dd: float, win_rate: float,
+        trade_count: int, timeframe: str,
+    ) -> list:
+        """Return a list of human-readable sanity warnings for suspicious results."""
+        flags = []
+        if sharpe_gross > 2.0:
+            flags.append(f"Suspiciously high Sharpe: gross={sharpe_gross:.2f}")
+        if max_dd < 0.02:
+            flags.append(f"Suspiciously low drawdown: {max_dd:.1%}")
+        if win_rate > 0.70:
+            flags.append(f"Suspiciously high win rate: {win_rate:.1%}")
+        if trade_count > 500 and timeframe == "1d":
+            flags.append(f"Too many trades for daily strategy: {trade_count}")
+        return flags
+
+    # ── Data requirements pre-check ──────────────────────────────────────────
+
+    # Keywords in factor_formula / hypothesis that signal unavailable data.
+    # Any match → backtest is blocked before fetching a single price bar.
+    _UNAVAILABLE_DATA_SIGNALS = [
+        "dividend yield", "ttm yield", "dividend ttm",
+        "klci yield", "constituent weight",
+        "spread mean", "spread std", "spread zscore", "yield spread",
+        "blended yield", "basket yield", "reference yield",
+        "corporate announcement", "dividend cut", "dividend suspension",
+        "bursa announcement", "pdmr", "ex-date", "ex-dividend date",
+        "payout ratio", "earnings yield", "free cash flow yield",
+        "book value", "price to book", "price-to-book", "p/b ratio", "p/b:",
+        "roe", "return on equity", "debt equity", "debt-to-equity", "der",
+        "earnings per share", "eps forecast", "analyst consensus",
+        "bloomberg", "refinitiv", "institutional ownership",
+        "short interest", "options", "implied volatility",
+        "net profit margin", "gross margin",
+        "quarterly result", "quarterly earnings",
+        "dividend declared", "dividend history",
+        "nim expansion", "net interest margin",
+        "book value per share", "bvps",
+        "price earnings", "pe ratio", "p/e ratio",
+        "market cap weighted", "market-cap-weighted",
+    ]
+
+    # Keywords that signal purely OHLCV-based formulas — safe to proceed.
+    _AVAILABLE_DATA_SIGNALS = [
+        "close", "open", "high", "low", "volume",
+        "moving average", "simple moving average", "exponential moving average",
+        "sma", "ema", "wma",
+        "rsi", "relative strength index",
+        "macd", "signal line",
+        "bollinger band", "bollinger",
+        "atr", "average true range",
+        "momentum", "rate of change", "roc",
+        "returns", "daily return", "price return",
+        "volatility", "rolling std", "rolling volatility",
+        "52-week high", "52-week low", "52w high", "52w low",
+        "price", "ohlcv", "bar", "candle",
+        "volume surge", "volume breakout", "volume ratio",
+        "crossover", "cross above", "cross below",
+        "stochastic", "williams %r", "cci", "adx",
+        "donchian", "keltner", "ichimoku",
+        "vwap", "obv", "on-balance volume",
+    ]
+
+    def check_data_requirements(self, idea: dict) -> dict:
+        """Pre-check whether the idea's factor formula can be backtested with
+        available Yahoo Finance OHLCV data.
+
+        Returns a dict:
+          {"blocked": bool, "matched": list[str], "reason": str}
+
+        If blocked=True the backtest must NOT run. The caller is responsible for
+        updating the DB and returning a failure result.
+        """
+        formula   = (idea.get("factor_formula") or "").lower()
+        hypothesis = (idea.get("hypothesis")     or "").lower()
+        combined  = formula + " " + hypothesis
+
+        # 1. Scan for unavailable-data keywords
+        matched = [kw for kw in self._UNAVAILABLE_DATA_SIGNALS if kw in combined]
+        if not matched:
+            return {"blocked": False, "matched": [], "reason": ""}
+
+        # 2. Check whether ALL matched terms are clearly overridden by OHLCV context.
+        #    Heuristic: if the formula also mentions several OHLCV terms, the
+        #    unavailable keyword may be coincidental (e.g. "momentum" mentioned
+        #    alongside "eps"). Only block when the formula relies on the term as a
+        #    primary driver (matched in factor_formula alone, not just hypothesis).
+        formula_only_matches = [kw for kw in matched if kw in formula]
+        if not formula_only_matches:
+            # Keywords appear in hypothesis text only — warn but don't block
+            return {"blocked": False, "matched": matched, "reason": ""}
+
+        reason = (
+            f"Factor formula requires fundamental data not available via Yahoo Finance "
+            f"price feed: {', '.join(formula_only_matches)}. "
+            f"Add a fundamental data source (Bursa announcements, financial statements API) "
+            f"before backtesting this strategy. "
+            f"Rewrite the factor_formula to use ONLY daily OHLCV signals "
+            f"(price, volume, moving averages, RSI, MACD, Bollinger Bands, ATR, momentum)."
+        )
+        return {"blocked": True, "matched": formula_only_matches, "reason": reason}
 
     # ── Spearman correlation (no scipy needed) ────────────────────────────────
 
@@ -552,13 +779,68 @@ Return JSON only:
 
     # ── Main backtest pipeline ────────────────────────────────────────────────
 
-    def backtest_idea(self, idea_id: int) -> dict:
+    def _run_backtest(self, idea_id: int) -> dict:
         with db_session() as conn:
             row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
         if not row:
             return {"error": f"Idea {idea_id} not found"}
 
-        symbol   = row["ticker"] or "1155.KL"
+        # ── DATA REQUIREMENTS PRE-CHECK ──────────────────────────────────────
+        # Reject ideas whose factor_formula relies on fundamental/announcement
+        # data unavailable from Yahoo Finance OHLCV before touching the network.
+        data_check = self.check_data_requirements(dict(row))
+        if data_check["blocked"]:
+            reason = data_check["reason"]
+            self.log_daemon(
+                "WARN",
+                f"Backtest [{idea_id}] DATA PRE-CHECK FAILED: "
+                f"formula requires unavailable data — {data_check['matched']}",
+            )
+            with db_session() as conn:
+                conn.execute("""
+                    INSERT INTO backtest_runs
+                      (idea_id, run_type, pair, timeframe, factor_formula,
+                       train_sharpe, val_sharpe, test_sharpe,
+                       train_dd, val_dd, test_dd,
+                       train_val_gap, total_trades, win_rate, profit_factor,
+                       params, result_data, passed,
+                       needs_review, verification_note,
+                       sharpe_gross, sharpe_net,
+                       sharpe_is, sharpe_oos, oos_degradation,
+                       regimes_positive, sanity_flags,
+                       verdict, verdict_reason)
+                    VALUES (?,?,?,?,?,0,0,0,1,1,1,0,0,0,0,'{}','{}',0,1,?,0,0,0,0,0,0,NULL,'REJECTED',?)
+                """, (
+                    idea_id, "data_precheck",
+                    row["ticker"] or "", row["timeframe"] or "1d",
+                    row["factor_formula"] or "",
+                    reason, reason,
+                ))
+                conn.execute("""
+                    UPDATE alpha_ideas
+                    SET status='rejected', rejection_reason=?, updated_at=datetime('now')
+                    WHERE id=?
+                """, (reason[:500], idea_id))
+                conn.execute("""
+                    INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
+                    VALUES (?, 'stage2', 'rejected', 'BacktestEngineer', ?)
+                """, (idea_id, f"DATA PRE-CHECK: {reason[:300]}"))
+                conn.execute("""
+                    INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
+                    VALUES (?, 'gate2_data', 'reject', 'BacktestEngineer', ?)
+                """, (idea_id, reason[:500]))
+            self._clear_progress(idea_id)
+            return {
+                "gate3_pass": False,
+                "error": "data_requirements_not_met",
+                "verdict": "REJECTED",
+                "verdict_reason": reason,
+                "matched_keywords": data_check["matched"],
+                "idea_id": idea_id,
+            }
+
+        # Extract primary .KL ticker — handles sector descriptions and comma-separated lists
+        symbol   = extract_tickers(row["ticker"] or "1155.KL")[0]
         interval = row["timeframe"] or "1d"
         stock    = KLCI_BY_SYMBOL.get(symbol, {})
 
@@ -576,9 +858,11 @@ Return JSON only:
 
         # Fetch 5 years of daily data for robust train/val/test split
         df = self._fetch_prices(symbol, interval, days=1825)
-        if df.empty or len(df) < 150:
-            self.log_daemon("WARN", f"Insufficient data [{idea_id}]: {len(df)} bars for {symbol}")
-            return {"error": "Insufficient historical data", "idea_id": idea_id, "symbol": symbol}
+        # QC4: minimum 252 bars (1 year) required for any statistically meaningful backtest
+        if df.empty or len(df) < 252:
+            msg = f"Insufficient history ({len(df)} bars) — need minimum 252 bars (1yr)"
+            self.log_daemon("WARN", f"[{idea_id}] {msg}")
+            return {"error": msg, "idea_id": idea_id, "symbol": symbol}
 
         self._log_progress(idea_id, 30, f"Computing factor signals ({symbol})")
         # Classify holding period for appropriate thresholds and warnings
@@ -611,28 +895,45 @@ Return JSON only:
         for split_name, split_df in (("train", train_df), ("val", val_df), ("test", test_df)):
             if len(split_df) < 40:
                 results[split_name] = {
-                    "sharpe": 0.0, "max_dd": 1.0, "win_rate": 0.0,
-                    "profit_factor": 0.0, "total_trades": 0, "ann_return": 0.0,
+                    "sharpe": 0.0, "sharpe_gross": 0.0, "sharpe_net": 0.0,
+                    "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0,
+                    "total_trades": 0, "ann_return": 0.0,
                 }
                 continue
             sig = self._compute_signals(split_df, params)
             results[split_name] = self._compute_performance(split_df, sig, interval)
 
-        self._log_progress(idea_id, 70, "Computing Sharpe and drawdown")
+        self._log_progress(idea_id, 65, "Walk-forward IS/OOS and regime stress test")
+
+        # ── QC2: Walk-forward IS/OOS validation ──────────────────────────────
+        wf            = self._compute_walk_forward(df, params, interval)
+        sharpe_is     = wf["sharpe_is"]
+        sharpe_oos    = wf["sharpe_oos"]
+        oos_deg       = wf["oos_degradation"]
+
+        # ── QC5: Regime stress test ───────────────────────────────────────────
+        reg              = self._compute_regimes(df, params, interval)
+        regimes_positive = reg["regimes_positive"]
+
+        self._log_progress(idea_id, 80, "Computing Sharpe and drawdown")
         train_r = results["train"]
         val_r   = results["val"]
         test_r  = results["test"]
         train_val_gap = abs(train_r["sharpe"] - val_r["sharpe"])
+
+        # Extract gross / net Sharpe for the test period
+        test_sharpe_net   = test_r["sharpe_net"]
+        test_sharpe_gross = test_r["sharpe_gross"]
 
         # Per holding-period-class thresholds
         sharpe_threshold = self._SHARPE_THRESHOLDS.get(hp_class, GATE_CONFIG.stage3_min_sharpe)
         min_trades       = self._MIN_TRADES.get(hp_class, 30)
         actual_trades    = test_r.get("total_trades", 0)
 
-        # Gate 2 — in-sample quality
+        # Gate 2 — in-sample quality (use net Sharpe throughout)
         gate2_pass = (
-            train_r["sharpe"] >= sharpe_threshold
-            and val_r["sharpe"]   >= sharpe_threshold
+            train_r["sharpe_net"] >= sharpe_threshold
+            and val_r["sharpe_net"]   >= sharpe_threshold
             and train_r["max_dd"] <= GATE_CONFIG.stage3_max_drawdown
             and val_r["max_dd"]   <= GATE_CONFIG.stage3_max_drawdown
             and train_val_gap     <= GATE_CONFIG.stage3_max_train_val_gap
@@ -641,37 +942,80 @@ Return JSON only:
         # Gate 3 — out-of-sample test
         gate3_pass = (
             gate2_pass
-            and test_r["sharpe"]  >= sharpe_threshold
+            and test_sharpe_net   >= sharpe_threshold
             and test_r["max_dd"]  <= GATE_CONFIG.stage3_max_drawdown
         )
 
-        # Fix 6 — minimum trade count gate
+        # QC4: minimum trade count (per holding-period class)
         trade_count_pass = actual_trades >= min_trades
         trade_count_note = ""
         if not trade_count_pass:
             trade_count_note = (
-                f"Insufficient trades: {actual_trades} found, minimum {min_trades} "
-                f"for {hp_class} strategies. Statistical significance requires more signals."
+                f"Insufficient trades ({actual_trades}) for statistical significance "
+                f"— need minimum {min_trades} for {hp_class} strategies"
             )
             self.log_daemon(
                 "WARN",
                 f"Backtest [{idea_id}] trade count gate FAILED: "
                 f"{actual_trades} trades < {min_trades} minimum for {hp_class}",
             )
-            # Record in rejection memory
             try:
                 from knowledge.ingestion.rejection_memory import RejectionMemory
                 RejectionMemory().record_rejection(idea_id, trade_count_note, "stage2_trades")
             except Exception:
                 pass
 
-        overall_pass = gate3_pass and trade_count_pass
+        # QC3: cost sensitivity gate
+        cost_pass = True
+        cost_note = ""
+        if test_sharpe_net < 0.4:
+            cost_pass = False
+            cost_note = (f"Net Sharpe after Bursa transaction costs too low: "
+                         f"{test_sharpe_net:.2f} < 0.40 minimum")
+        elif test_sharpe_gross - test_sharpe_net > 0.8:
+            cost_pass = False
+            cost_note = (f"Strategy is cost-sensitive — gross Sharpe {test_sharpe_gross:.2f} "
+                         f"degrades to net {test_sharpe_net:.2f} after Bursa transaction costs")
+        if not cost_pass:
+            self.log_daemon("WARN", f"Backtest [{idea_id}] cost gate FAILED: {cost_note}")
+
+        # QC2: OOS degradation gate
+        oos_pass = True
+        oos_note = ""
+        if sharpe_is > 0 and sharpe_oos < 0.5 * sharpe_is:
+            oos_pass = False
+            oos_note = (f"OOS Sharpe degradation: IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
+                        f"— likely overfitted")
+        if sharpe_oos < 0.3:
+            oos_pass = False
+            oos_note = oos_note or f"OOS Sharpe {sharpe_oos:.2f} < 0.30 absolute floor"
+        if not oos_pass:
+            self.log_daemon("WARN", f"Backtest [{idea_id}] OOS gate FAILED: {oos_note}")
+
+        # QC5: regime robustness gate
+        regime_pass = regimes_positive >= 2
+        regime_note = ""
+        if not regime_pass:
+            regime_note = (f"Strategy only works in {regimes_positive}/3 volatility regimes "
+                           f"— not robust enough")
+            self.log_daemon("WARN", f"Backtest [{idea_id}] regime gate FAILED: {regime_note}")
+
+        # ── Sanity flags (warn but do not auto-reject) ────────────────────────
+        sanity_flags = self._detect_sanity_flags(
+            test_sharpe_gross, test_r["max_dd"], test_r["win_rate"], actual_trades, interval,
+        )
+        for flag in sanity_flags:
+            self.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
+
+        overall_pass = gate3_pass and trade_count_pass and cost_pass and oos_pass and regime_pass
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
 
         run_id = None
         try:
             with db_session() as conn:
-                full_note = " | ".join(filter(None, [verification_note, trade_count_note]))
+                full_note = " | ".join(filter(None, [
+                    verification_note, trade_count_note, cost_note, oos_note, regime_note,
+                ]))
                 conn.execute("""
                     INSERT INTO backtest_runs
                       (idea_id, run_type, pair, timeframe, factor_formula,
@@ -679,18 +1023,27 @@ Return JSON only:
                        train_dd, val_dd, test_dd,
                        train_val_gap, total_trades, win_rate, profit_factor,
                        params, result_data, passed, needs_review, verification_note,
-                       holding_period_class, trade_count)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       holding_period_class, trade_count,
+                       sharpe_gross, sharpe_net,
+                       sharpe_is, sharpe_oos, oos_degradation,
+                       sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
+                       regimes_positive, sanity_flags)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     idea_id, "klse_daily", symbol, interval, row["factor_formula"],
-                    train_r["sharpe"], val_r["sharpe"], test_r["sharpe"],
-                    train_r["max_dd"], val_r["max_dd"],  test_r["max_dd"],
+                    train_r["sharpe_net"], val_r["sharpe_net"], test_sharpe_net,
+                    train_r["max_dd"], val_r["max_dd"], test_r["max_dd"],
                     round(train_val_gap, 3), test_r["total_trades"],
                     test_r["win_rate"], test_r["profit_factor"],
                     json.dumps(params), json.dumps(results),
                     1 if overall_pass else 0,
                     needs_review, full_note or None,
                     hp_class, actual_trades,
+                    test_sharpe_gross, test_sharpe_net,
+                    sharpe_is, sharpe_oos, oos_deg,
+                    reg["sharpe_low_vol"], reg["sharpe_mid_vol"], reg["sharpe_high_vol"],
+                    regimes_positive,
+                    json.dumps(sanity_flags) if sanity_flags else None,
                 ))
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",
@@ -699,19 +1052,22 @@ Return JSON only:
 
                 new_stage  = "stage3" if overall_pass else "stage2"
                 new_status = "active"  if overall_pass else "rejected"
+                # Store net Sharpe as the primary backtest metric
                 conn.execute("""
                     UPDATE alpha_ideas
                     SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?, updated_at=datetime('now')
                     WHERE id=?
-                """, (test_r["sharpe"], test_r["max_dd"], new_stage, new_status, idea_id))
+                """, (test_sharpe_net, test_r["max_dd"], new_stage, new_status, idea_id))
 
                 conn.execute("""
                     INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
                     VALUES (?, 'stage2', ?, 'BacktestEngineer', ?)
                 """, (idea_id,
                       "advanced" if overall_pass else "rejected",
-                      f"Train={train_r['sharpe']:.2f} Val={val_r['sharpe']:.2f} "
-                      f"Test={test_r['sharpe']:.2f} DD={test_r['max_dd']:.1%} "
+                      f"Train(net)={train_r['sharpe_net']:.2f} Val={val_r['sharpe_net']:.2f} "
+                      f"Test(net)={test_sharpe_net:.2f} Test(gross)={test_sharpe_gross:.2f} "
+                      f"IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
+                      f"DD={test_r['max_dd']:.1%} Regimes={regimes_positive}/3 "
                       f"AnnRet={test_r.get('ann_return',0):.1%}"))
 
                 conn.execute("""
@@ -719,7 +1075,11 @@ Return JSON only:
                     VALUES (?, 'gate2_3', ?, 'BacktestEngineer', ?)
                 """, (idea_id,
                       "approve" if overall_pass else "reject",
-                      f"G2={'PASS' if gate2_pass else 'FAIL'} G3={'PASS' if gate3_pass else 'FAIL'} "
+                      f"G2={'PASS' if gate2_pass else 'FAIL'} "
+                      f"G3={'PASS' if gate3_pass else 'FAIL'} "
+                      f"cost={'PASS' if cost_pass else 'FAIL'} "
+                      f"oos={'PASS' if oos_pass else 'FAIL'} "
+                      f"regime={'PASS' if regime_pass else 'FAIL'} "
                       f"gap={train_val_gap:.2f}"))
             self.log_daemon("INFO", f"Backtest saved for idea {idea_id} — pass={overall_pass}")
         except Exception as e:
@@ -731,7 +1091,8 @@ Return JSON only:
         self.log_daemon(
             "INFO" if overall_pass else "WARN",
             f"Backtest [{idea_id}] {symbol} {'PASSED' if overall_pass else 'FAILED'} "
-            f"train={train_r['sharpe']} val={val_r['sharpe']} test={test_r['sharpe']}",
+            f"net={test_sharpe_net:.2f} gross={test_sharpe_gross:.2f} "
+            f"IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} regimes={regimes_positive}/3",
         )
         hp_warnings = []
         if hp_class == "INTRADAY":
@@ -742,6 +1103,8 @@ Return JSON only:
             )
         if not trade_count_pass:
             hp_warnings.append(trade_count_note)
+        if sanity_flags:
+            hp_warnings.extend(sanity_flags)
 
         return {
             "idea_id":             idea_id,
@@ -752,9 +1115,16 @@ Return JSON only:
             "gate2_pass":          gate2_pass,
             "gate3_pass":          gate3_pass,
             "trade_count_pass":    trade_count_pass,
+            "cost_pass":           cost_pass,
+            "oos_pass":            oos_pass,
+            "regime_pass":         regime_pass,
             "train":               train_r,
             "val":                 val_r,
             "test":                test_r,
+            "sharpe_is":           sharpe_is,
+            "sharpe_oos":          sharpe_oos,
+            "oos_degradation":     oos_deg,
+            "regimes":             reg,
             "train_val_gap":       round(train_val_gap, 3),
             "params":              params,
             "bars_total":          len(df),
@@ -764,8 +1134,51 @@ Return JSON only:
             "holding_period_class": hp_class,
             "actual_trades":       actual_trades,
             "min_trades_required": min_trades,
+            "sanity_flags":        sanity_flags,
             "hp_warnings":         hp_warnings,
         }
+
+    def backtest_idea(self, idea_id: int) -> dict:
+        """Public wrapper: 10-minute timeout + full exception safety around _run_backtest.
+
+        SIGALRM timeout is only installed when called from the main thread
+        (signal.alarm is not available in worker threads — guard avoids ValueError).
+        """
+        import signal as _sig
+        import threading
+        import traceback as _tb
+
+        in_main_thread = (threading.current_thread() is threading.main_thread())
+
+        def _timeout_handler(signum, frame):
+            raise TimeoutError(f"Backtest [{idea_id}] exceeded 10-minute timeout — aborting")
+
+        if in_main_thread:
+            _old = _sig.signal(_sig.SIGALRM, _timeout_handler)
+            _sig.alarm(600)
+
+        try:
+            return self._run_backtest(idea_id)
+        except TimeoutError as exc:
+            msg = str(exc)
+            self.log_daemon("ERROR", msg)
+            self._clear_progress(idea_id)
+            return {
+                "error": msg, "idea_id": idea_id,
+                "gate2_pass": False, "gate3_pass": False, "timeout": True,
+            }
+        except Exception as exc:
+            msg = f"Backtest [{idea_id}] unhandled exception: {exc}"
+            self.log_daemon("ERROR", msg + "\n" + _tb.format_exc())
+            self._clear_progress(idea_id)
+            return {
+                "error": msg, "idea_id": idea_id,
+                "gate2_pass": False, "gate3_pass": False,
+            }
+        finally:
+            if in_main_thread:
+                _sig.alarm(0)
+                _sig.signal(_sig.SIGALRM, _old)
 
     # ── run() ─────────────────────────────────────────────────────────────────
 

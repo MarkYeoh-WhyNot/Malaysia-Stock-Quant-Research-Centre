@@ -6,7 +6,7 @@ import pandas as pd
 from agents.base_agent import BaseAgent
 from config.settings import MODEL_FAST, BASE_DIR, DEFAULT_SYMBOLS
 from data.database import db_session
-from data.yahoo.client import get_historical_data, get_latest_prices, get_multi_info, BARS_PER_YEAR
+from data.yahoo.client import extract_tickers, get_historical_data, get_latest_prices, get_multi_info, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,21 @@ class DataEngineer(BaseAgent):
         """
         Fetch OHLCV for a Bursa Malaysia stock (Yahoo Finance .KL ticker).
         Caches to parquet; default stale threshold is 12h (adequate for daily bars).
+
+        Accepts dirty ticker strings such as sector descriptions or comma-separated lists
+        (e.g. "Healthcare sector (e.g., 5225.KL, 5878.KL)") — the first valid .KL code
+        is extracted and used as the primary ticker.
         """
+        # Sanitize: extract the primary .KL ticker from any description string
+        candidates = extract_tickers(symbol)
+        primary = candidates[0]
+        if primary != symbol:
+            self.log_daemon(
+                "INFO",
+                f"DataEngineer: ticker sanitized '{symbol[:80]}' → '{primary}'",
+            )
+        symbol = primary
+
         path = self._cache_path(symbol, interval)
         if use_cache and not self._is_stale(path):
             df = self._load_cache(path)

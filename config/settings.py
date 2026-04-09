@@ -10,6 +10,7 @@ load_dotenv(BASE_DIR / ".env", override=False)
 # ── AI ────────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
 SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+BRAVE_SEARCH_API_KEY     = os.getenv("BRAVE_SEARCH_API_KEY", "")
 MODEL_FAST               = "claude-haiku-4-5-20251001"
 MODEL_MAIN          = "claude-sonnet-4-6"
 MODEL_HEAVY         = "claude-opus-4-6"
@@ -91,8 +92,8 @@ class GateConfig:
     # Gate 0 — initial idea quality
     gate0_min_novelty_score: float      = 0.6
     gate0_min_logic_score: float        = 0.7
-    # Stage 1 — deep research
-    stage1_min_research_score: float    = 0.65
+    # Stage 1 — deep research (score is 0.0–10.0; 6.5 ≈ "solid KLSE evidence")
+    stage1_min_research_score: float    = 6.5
     # Stage 2/3 — backtesting (slightly relaxed vs FX — equities have lower Sharpe norms)
     stage3_min_sharpe: float            = 0.8
     stage3_max_train_val_gap: float     = 0.35

@@ -4,9 +4,11 @@ import logging
 import re
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 import aiohttp
+import requests as _requests
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST, MODEL_MAIN
+from config.settings import MODEL_FAST, MODEL_MAIN, BRAVE_SEARCH_API_KEY
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,9 @@ INFER_DOMAINS = [
 ]
 
 
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
 def _normalise_domain(domain: str) -> str:
     """Map any domain string to a valid unified angle name. Returns 'price_action' as default."""
     if domain in VALID_DOMAINS:
@@ -80,6 +85,62 @@ def _normalise_domain(domain: str) -> str:
     if mapped is not None:
         return mapped
     return "price_action"   # safe default for unknown domains
+
+
+class BraveSearchFetcher:
+    """Fetches web search results from the Brave Search API for KB ingestion."""
+
+    def __init__(self, api_key: str = ""):
+        self.api_key = api_key or BRAVE_SEARCH_API_KEY
+
+    def search_and_extract(self, query: str, num_results: int = 3) -> list:
+        """Search Brave and return list of {title, url, description, content}.
+
+        Each item's 'content' combines the description and extra_snippets fields
+        so it can be passed directly to KBIngester.ingest_text().
+        Returns [] if the API key is missing or the request fails.
+        """
+        if not self.api_key:
+            logger.warning("BraveSearchFetcher: BRAVE_SEARCH_API_KEY not set")
+            return []
+        try:
+            resp = _requests.get(
+                BRAVE_SEARCH_URL,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
+                    "X-Subscription-Token": self.api_key,
+                },
+                params={
+                    "q": query,
+                    "count": num_results,
+                    "text_decorations": "false",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            logger.warning(f"BraveSearchFetcher: request failed for '{query}': {e}")
+            return []
+
+        results = []
+        for item in data.get("web", {}).get("results", [])[:num_results]:
+            title    = item.get("title", "").strip()
+            url      = item.get("url", "")
+            desc     = item.get("description", "").strip()
+            snippets = item.get("extra_snippets", [])
+
+            content_parts = []
+            if desc:
+                content_parts.append(desc)
+            content_parts.extend(s for s in snippets if s)
+            content = "\n\n".join(content_parts)
+
+            if title and content:
+                results.append({"title": title, "url": url, "description": desc, "content": content})
+
+        return results
 
 
 class KBIngester(BaseAgent):
@@ -92,7 +153,18 @@ class KBIngester(BaseAgent):
     # ------------------------------------------------------------------
 
     async def _fetch_url(self, url: str, timeout: int = 30) -> str:
-        headers = {"User-Agent": "Mozilla/5.0 (compatible; OpenClaw/1.0; research-bot)"}
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "DNT": "1",
+            "Connection": "keep-alive",
+        }
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
                 resp.raise_for_status()
@@ -109,6 +181,36 @@ class KBIngester(BaseAgent):
         text = re.sub(r"&[a-zA-Z]+;", " ", text)
         text = re.sub(r"\s{3,}", "\n\n", text)
         return text.strip()
+
+    def _brave_fallback(self, url: str, title: str = "", domain: str = "other",
+                        original_error: str = "") -> dict:
+        """Fallback: use Brave Search when direct URL fetch fails.
+
+        Builds a query from the supplied title or the URL path segments,
+        ingests the top result, and returns a standard ingest dict with
+        'brave_fallback': True and 'original_url' set.
+        Returns {'error': ..., 'brave_fallback': True} if Brave also fails.
+        """
+        if title:
+            query = title
+        else:
+            parsed    = urlparse(url)
+            path_parts = [p for p in parsed.path.split("/") if p and len(p) > 3]
+            query      = f"{parsed.netloc} {' '.join(path_parts[:3])}".strip()
+
+        self.log_daemon("INFO", f"KB: Brave fallback for '{query}' (original error: {original_error})")
+        fetcher = BraveSearchFetcher()
+        results = fetcher.search_and_extract(query, num_results=1)
+
+        if not results:
+            return {"error": f"URL fetch failed ({original_error}) and Brave fallback found no results",
+                    "url": url, "brave_fallback": True}
+
+        r      = results[0]
+        result = self.ingest_text(r["content"], r["title"], domain, source_url=r["url"])
+        result["brave_fallback"] = True
+        result["original_url"]   = url
+        return result
 
     @staticmethod
     def _slug(title: str) -> str:
@@ -325,7 +427,9 @@ Return JSON:
 
     def ingest_text(self, content: str, title: str, domain: str = "other",
                     source_url: str = "") -> dict:
-        domain = _normalise_domain(domain)
+        # Track whether we need Claude to classify the domain after summarisation
+        needs_classification = (domain == "other" or domain not in VALID_DOMAINS)
+        domain = _normalise_domain(domain)  # safe fallback for non-'other' unknowns
         slug = self._slug(title)
 
         # ── Layer 1: relevance gate ─────────────────────────────────────────────
@@ -354,6 +458,11 @@ Return JSON:
         # Use category as the DB status so process_undigested() can filter intelligently
         doc_status = relevance_category  # irrelevant / generic / partial / relevant / direct
         doc_id = self._upsert_document(slug, title, domain, content, summary, source_url, tags, doc_status)
+
+        # ── Auto-classify domain if it was 'other' or unrecognised ─────────────
+        # classify_domain() calls Claude Haiku and writes the result back to DB.
+        if needs_classification:
+            domain = self.classify_domain(doc_id, title, summary)
 
         concept_ids = []
         for c in concepts:
@@ -422,9 +531,13 @@ Return JSON:
         self.log_daemon("INFO", f"Ingesting URL: {url}")
         try:
             raw = await self._fetch_url(url)
+        except aiohttp.ClientResponseError as e:
+            log_level = "INFO" if 400 <= e.status < 500 else "WARN"
+            self.log_daemon(log_level, f"URL fetch failed (HTTP {e.status}): {url} — trying Brave fallback")
+            return self._brave_fallback(url, title, domain, original_error=f"HTTP {e.status}")
         except Exception as e:
-            self.log_daemon("WARN", f"URL fetch failed: {url} — {e}")
-            return {"error": str(e), "url": url}
+            self.log_daemon("WARN", f"URL fetch failed: {url} — {e} — trying Brave fallback")
+            return self._brave_fallback(url, title, domain, original_error=str(e))
 
         content = self._strip_html(raw) if "<html" in raw.lower() else raw
         if not title:

@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
 
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from data.database import db_session, init_db
 from agents.researcher.strategy_researcher import StrategyResearcher
@@ -41,7 +41,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/research `<idea_id>` — hunt academic papers for an idea\n\n"
         "*Market Data*\n"
         "/briefing — send morning briefing now\n"
-        "/dividends — ex-dividend dates in next 14 days\n\n"
+        "/dividends — ex-dividend dates in next 14 days\n"
+        "/epf — EPF ownership tracker: accumulating/distributing stocks\n"
+        "/analyst — analyst coverage initiations last 7 days\n"
+        "/cpo — CPO lag signal report for plantation stocks\n\n"
         "*Knowledge Base*\n"
         "/kb `<url|text>` — ingest a URL or text into knowledge base\n"
         "/search `<query>` — full-text search across KB documents\n"
@@ -155,14 +158,82 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     if not ctx.args:
         await update.message.reply_text(
-            "Usage:\n/kb https\\://some-url.com\n/kb Some text to ingest into knowledge base"
+            "Usage:\n"
+            "/kb https\\://some-url.com — ingest URL (Brave fallback on failure)\n"
+            "/kb topic words — search Brave for articles on topic, ingest top 3"
         )
         return
 
     arg = " ".join(ctx.args)
     kb  = KBIngester()
 
-    if arg.startswith("http"):
+    _CAT_ICON = {
+        "irrelevant": "🟥",
+        "generic":    "🟨",
+        "partial":    "🟧",
+        "relevant":   "🟩",
+        "direct":     "🟦",
+    }
+    _CAT_ACTION = {
+        "irrelevant": "saved, NOT seeded — wrong market/asset class",
+        "generic":    "saved, NOT seeded — transferable concepts only",
+        "partial":    "saved, seeded with confidence cap 0.65 — ASEAN/EM context",
+        "relevant":   "saved, seeded — Bursa-specific",
+        "direct":     "saved, seeded (priority) — actionable KLSE intelligence",
+    }
+
+    # ── Non-URL: Brave topic search ──────────────────────────────────────────
+    if not arg.startswith("http"):
+        from knowledge.ingestion.kb_ingester import BraveSearchFetcher
+        from config.settings import BRAVE_SEARCH_API_KEY
+
+        if not BRAVE_SEARCH_API_KEY:
+            # No Brave key — fall back to raw text ingest
+            await update.message.reply_text(
+                "📥 Ingesting text into knowledge base...\n_(~20 seconds)_",
+                parse_mode="Markdown"
+            )
+            try:
+                result = kb.ingest_text(arg, title="Telegram input")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Error: {e}")
+                return
+            # Fall through to the standard single-result display
+        else:
+            await update.message.reply_text(
+                f"🔍 Searching Brave for: _{arg[:60]}_\n_(finding and ingesting top 3 articles, ~30–45s)_",
+                parse_mode="Markdown",
+            )
+            fetcher     = BraveSearchFetcher()
+            brave_items = fetcher.search_and_extract(arg, num_results=3)
+
+            if not brave_items:
+                await update.message.reply_text(
+                    f"❌ Brave Search found no results for: _{arg[:60]}_\n"
+                    f"Try a more specific query or provide a direct URL.",
+                    parse_mode="Markdown",
+                )
+                return
+
+            ingested = []
+            for item in brave_items:
+                try:
+                    res = kb.ingest_text(item["content"], item["title"], source_url=item["url"])
+                    ingested.append((item["title"], item["url"], res))
+                except Exception as e:
+                    logger.warning(f"Brave ingest failed for '{item['title']}': {e}")
+
+            lines = [f"✅ *Brave Search → KB*: _{arg[:50]}_\n"]
+            lines.append(f"Found `{len(brave_items)}` results, ingested `{len(ingested)}`:\n")
+            for title, url, res in ingested:
+                cat  = res.get("relevance_category", "?")
+                icon = _CAT_ICON.get(cat, "⬜")
+                lines.append(f"{icon} [{res.get('doc_id')}] {title[:55]}")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+    # ── URL ingestion (with automatic Brave fallback) ────────────────────────
+    else:
         await update.message.reply_text(
             f"📥 Fetching and ingesting URL...\n`{arg[:80]}`\n_(~20–30 seconds)_",
             parse_mode="Markdown"
@@ -172,18 +243,18 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {e}")
             return
-    else:
-        await update.message.reply_text(
-            "📥 Ingesting text into knowledge base...\n_(~20 seconds)_",
-            parse_mode="Markdown"
-        )
-        try:
-            result = kb.ingest_text(arg, title="Telegram input")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Error: {e}")
-            return
 
-    if "error" in result:
+    # ── Handle Brave fallback notification ───────────────────────────────────
+    brave_fallback = result.get("brave_fallback", False)
+    if brave_fallback and "error" in result:
+        await update.message.reply_text(
+            f"❌ Direct fetch failed and Brave Search fallback also returned no results.\n"
+            f"URL: `{arg[:80]}`",
+            parse_mode="Markdown",
+        )
+        return
+
+    if "error" in result and not brave_fallback:
         await update.message.reply_text(f"❌ Ingest failed: {result['error']}")
         return
 
@@ -212,22 +283,6 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     relevance_category = result.get("relevance_category", "")
     relevance_reason   = result.get("relevance_reason", "")
 
-    # 5-tier colour coding
-    _CAT_ICON = {
-        "irrelevant": "🟥",
-        "generic":    "🟨",
-        "partial":    "🟧",
-        "relevant":   "🟩",
-        "direct":     "🟦",
-    }
-    _CAT_ACTION = {
-        "irrelevant": "saved, NOT seeded — wrong market/asset class",
-        "generic":    "saved, NOT seeded — transferable concepts only",
-        "partial":    "saved, seeded with confidence cap 0.65 — ASEAN/EM context",
-        "relevant":   "saved, seeded — Bursa-specific",
-        "direct":     "saved, seeded (priority) — actionable KLSE intelligence",
-    }
-
     if relevance_score is not None:
         icon   = _CAT_ICON.get(relevance_category, "⬜")
         action = _CAT_ACTION.get(relevance_category, "")
@@ -239,8 +294,11 @@ async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         rel_label = "`n/a`"
 
+    header = "✅ *KB Ingestion Complete*"
+    if brave_fallback:
+        header += " _(via Brave Search — direct fetch failed)_"
     lines = [
-        "✅ *KB Ingestion Complete*\n",
+        f"{header}\n",
         f"Doc ID:     `{result['doc_id']}`",
         f"Title:      *{result['title'][:60]}*",
         f"Domain:     {domain_label}",
@@ -455,6 +513,228 @@ async def cmd_arsenal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {e}")
 
 
+async def handle_pdf_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update): return
+    doc = update.message.document
+    if not doc or doc.mime_type != "application/pdf":
+        await update.message.reply_text("Only PDF files are supported for KB ingestion.")
+        return
+
+    filename = doc.file_name or "upload.pdf"
+    await update.message.reply_text(
+        f"📄 Downloading `{filename}`…\n_(extracting text and ingesting, ~20–30 seconds)_",
+        parse_mode="Markdown",
+    )
+
+    try:
+        import io
+        import pdfplumber
+
+        tg_file = await ctx.bot.get_file(doc.file_id)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        buf.seek(0)
+
+        text_parts = []
+        title = ""
+        with pdfplumber.open(buf) as pdf:
+            for i, page in enumerate(pdf.pages):
+                page_text = page.extract_text() or ""
+                text_parts.append(page_text)
+                if i == 0 and not title:
+                    for line in page_text.splitlines():
+                        line = line.strip()
+                        if len(line) > 5:
+                            title = line[:120]
+                            break
+
+        full_text = "\n\n".join(text_parts)[:50000]
+        if not full_text.strip():
+            await update.message.reply_text("❌ Could not extract any text from the PDF.")
+            return
+
+        if not title:
+            title = filename.rsplit(".", 1)[0].replace("_", " ").replace("-", " ").title()
+
+        kb = KBIngester()
+        result = kb.ingest_text(content=full_text, title=title, source_url=f"pdf_upload:{filename}")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error processing PDF: {e}")
+        return
+
+    if "error" in result:
+        await update.message.reply_text(f"❌ Ingest failed: {result['error']}")
+        return
+
+    # Auto-classify domain if needed
+    domain = result.get("domain", "other")
+    domain_inferred = False
+    if domain == "other":
+        try:
+            inferred = kb.classify_domain(result["doc_id"], result["title"], result.get("summary", ""))
+            if inferred != "other":
+                domain = inferred
+                domain_inferred = True
+        except Exception as e:
+            logger.warning(f"Domain inference failed: {e}")
+
+    summary = result.get("summary", "") or ""
+    snippet = (summary[:200] + "…") if len(summary) > 200 else summary
+    tags = result.get("tags", [])
+    domain_label = f"`{domain}`" + (" _(auto-classified)_" if domain_inferred else "")
+
+    relevance_score    = result.get("relevance_score")
+    relevance_category = result.get("relevance_category", "")
+    relevance_reason   = result.get("relevance_reason", "")
+
+    _CAT_ICON = {"irrelevant":"🟥","generic":"🟨","partial":"🟧","relevant":"🟩","direct":"🟦"}
+    _CAT_ACTION = {
+        "irrelevant": "saved, NOT seeded — wrong market/asset class",
+        "generic":    "saved, NOT seeded — transferable concepts only",
+        "partial":    "saved, seeded with confidence cap 0.65 — ASEAN/EM context",
+        "relevant":   "saved, seeded — Bursa-specific",
+        "direct":     "saved, seeded (priority) — actionable KLSE intelligence",
+    }
+
+    if relevance_score is not None:
+        icon   = _CAT_ICON.get(relevance_category, "⬜")
+        action = _CAT_ACTION.get(relevance_category, "")
+        rel_label = (
+            f"{icon} `{relevance_score:.2f}` — *{relevance_category}*\n"
+            f"_{relevance_reason[:100]}_\n"
+            f"↳ _{action}_"
+        )
+    else:
+        rel_label = "`n/a`"
+
+    lines = [
+        "✅ *PDF Ingested into KB*\n",
+        f"File:       `{filename}`",
+        f"Doc ID:     `{result['doc_id']}`",
+        f"Title:      *{result['title'][:60]}*",
+        f"Domain:     {domain_label}",
+        f"Relevance:  {rel_label}",
+        f"Concepts:   `{result['concepts_extracted']}`",
+        f"Tags:       `{', '.join(tags[:6]) or 'none'}`",
+    ]
+    if snippet:
+        lines.append(f"\n_{snippet}_")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_analyst(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Analyst coverage initiation monitor — last 7 days of coverage events."""
+    if not is_allowed(update): return
+    await update.message.reply_text("🔬 Fetching analyst coverage events... (may take 30s)")
+    try:
+        from data.analyst.coverage_monitor import AnalystCoverageMonitor
+        mon    = AnalystCoverageMonitor()
+        # Refresh data then build report
+        mon.fetch_new_reports(days_back=1)
+        events = mon.recent_events(days=7)
+
+        lines = [
+            "🔬 *Analyst Coverage Monitor* (last 7 days)",
+            f"_{events['cutoff_date']} → now · {events['total']} records_\n",
+        ]
+
+        if events["first_coverage"]:
+            lines.append("🆕 *FIRST COVERAGE:*")
+            for e in events["first_coverage"][:6]:
+                tp_str = f" TP:RM{e['target_price']:.2f}" if e.get("target_price") else ""
+                lines.append(
+                    f"  • *{e.get('company', e['ticker'])}* `{e['ticker']}` — "
+                    f"{e['analyst_house']}{tp_str} _{e['date']}_"
+                )
+            lines.append("")
+
+        if events["upgrades"]:
+            lines.append("📈 *UPGRADES:*")
+            for e in events["upgrades"][:5]:
+                tp_str = f" TP:RM{e['target_price']:.2f}" if e.get("target_price") else ""
+                lines.append(
+                    f"  • *{e.get('company', e['ticker'])}* — "
+                    f"{e['analyst_house']}{tp_str}"
+                )
+            lines.append("")
+
+        if events["downgrades"]:
+            lines.append("📉 *DOWNGRADES:*")
+            for e in events["downgrades"][:5]:
+                lines.append(
+                    f"  • *{e.get('company', e['ticker'])}* — {e['analyst_house']}"
+                )
+            lines.append("")
+
+        if events["maintains"]:
+            maint_names = ", ".join(
+                f"`{e['ticker']}`" for e in events["maintains"][:6]
+            )
+            lines.append(f"→ *Maintained:* {maint_names}")
+            lines.append("")
+
+        if events["total"] == 0:
+            lines.append(
+                "_No analyst coverage events in DB yet. Data accumulates over time "
+                "as the monitor scrapes Brave Search and i3investor._\n"
+                "_Run /analyst again in a few hours, or use /kb to manually ingest "
+                "a Bursa analyst report URL._"
+            )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("cmd_analyst failed")
+        await update.message.reply_text(f"❌ Analyst monitor error: {e}")
+
+
+async def cmd_cpo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """CPO lag signal report for plantation stocks."""
+    if not is_allowed(update): return
+    await update.message.reply_text("🌴 Running CPO lag analysis... (may take 30s)")
+    try:
+        from data.cpo.cpo_signal import CPOSignalGenerator
+        gen     = CPOSignalGenerator()
+        signals = gen.daily_scan()
+
+        from data.cpo.mpob_scraper import MPOBScraper
+        scraper = MPOBScraper()
+        try:
+            price_info = scraper.fetch_daily_cpo_price()
+            cpo_line   = f"CPO spot: *{price_info['price_myr_per_tonne']:.2f} MYR/t* ({price_info['date']})"
+        except Exception:
+            cpo_line = "_CPO price unavailable_"
+
+        lines = ["🌴 *CPO Plantation Lag Signal Report*\n", cpo_line, ""]
+
+        for sig in signals:
+            ticker    = sig.get("ticker", "")
+            company   = sig.get("company", ticker)
+            lag       = sig.get("best_lag_days", 0)
+            corr      = sig.get("best_lag_corr", 0.0)
+            direction = sig.get("predicted_direction", "neutral")
+            sig_flag  = "✅" if sig.get("is_significant") else "·"
+
+            if sig.get("error"):
+                lines.append(f"{sig_flag} `{ticker}` _{sig['error'][:40]}_")
+                continue
+
+            dir_icon = {"up": "📈", "down": "📉", "neutral": "→"}.get(direction, "→")
+            lines.append(
+                f"{sig_flag} *{company}* `{ticker}` — lag {lag}d corr {corr:+.3f} "
+                f"{dir_icon} {direction}"
+            )
+
+        sig_count = sum(1 for s in signals if s.get("is_significant"))
+        lines.append(f"\n_{len(signals)} tickers · {sig_count} significant signals_")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("cmd_cpo failed")
+        await update.message.reply_text(f"❌ CPO signal error: {e}")
+
+
 async def cmd_diversity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     try:
@@ -472,6 +752,78 @@ async def cmd_diversity(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_epf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """EPF Accumulation Tracker — shows EPF ownership movements across KLCI."""
+    if not is_allowed(update): return
+    await update.message.reply_text("🏛️ Fetching EPF ownership data... (may take 30s)")
+    try:
+        from data.epf.epf_signal import EPFSignalGenerator
+        gen    = EPFSignalGenerator()
+        report = gen.weekly_report()
+
+        acc  = report["accumulating"]
+        dist = report["distributing"]
+        stbl = report["stable"]
+        nd   = report["no_data"]
+
+        lines = [
+            f"🏛️ *EPF Accumulation Tracker*",
+            f"_{report['generated_at']} · {report['disclosures_fetched']} disclosures fetched_\n",
+        ]
+
+        if acc:
+            acc_names = []
+            for e in acc[:8]:
+                strength_icon = "🔥" if e["signal_strength"] == "strong" else "📈"
+                pct_str = f"{e['current_pct']:.1f}%" if e["current_pct"] else ""
+                chg_str = f"{e['total_change_4q']:+.2f}%" if e["total_change_4q"] else ""
+                acc_names.append(
+                    f"  {strength_icon} *{e['company']}* `{e['ticker']}`"
+                    + (f" {pct_str} ({chg_str})" if pct_str else "")
+                )
+            lines.append(f"▲ *Accumulating* ({len(acc)} stocks):")
+            lines.extend(acc_names)
+            lines.append("")
+
+        if dist:
+            dist_names = []
+            for e in dist[:6]:
+                pct_str = f"{e['current_pct']:.1f}%" if e["current_pct"] else ""
+                chg_str = f"{e['total_change_4q']:+.2f}%" if e["total_change_4q"] else ""
+                dist_names.append(
+                    f"  📉 *{e['company']}* `{e['ticker']}`"
+                    + (f" {pct_str} ({chg_str})" if pct_str else "")
+                )
+            lines.append(f"▼ *Distributing* ({len(dist)} stocks):")
+            lines.extend(dist_names)
+            lines.append("")
+
+        if stbl:
+            stbl_names = ", ".join(f"`{e['ticker']}`" for e in stbl[:8])
+            lines.append(f"→ *Stable:* {stbl_names}")
+            if len(stbl) > 8:
+                lines.append(f"  _(+{len(stbl)-8} more)_")
+            lines.append("")
+
+        if nd:
+            lines.append(
+                f"_No EPF disclosure data for {len(nd)} stocks — "
+                f"run /epf again to refresh from Bursa_"
+            )
+
+        if not acc and not dist and not stbl:
+            lines.append(
+                "_No EPF data in database yet. The tracker scrapes Bursa disclosures "
+                "via Brave Search — data accumulates over time._\n"
+                "_Try /kb with a Bursa EPF announcement URL to seed data manually._"
+            )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        logger.exception("cmd_epf failed")
+        await update.message.reply_text(f"❌ EPF tracker error: {e}")
 
 def main():
     if not BOT_TOKEN:
@@ -493,6 +845,35 @@ def main():
     app.add_handler(CommandHandler("arsenal",   cmd_arsenal))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
     app.add_handler(CommandHandler("digest",    cmd_digest))
+    app.add_handler(CommandHandler("epf",       cmd_epf))
+    app.add_handler(CommandHandler("analyst",   cmd_analyst))
+    app.add_handler(CommandHandler("cpo",       cmd_cpo))
+    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf_document))
+
+    # Register bot command menu (shows up in Telegram UI autocomplete)
+    async def _set_commands(application):
+        await application.bot.set_my_commands([
+            BotCommand("start",     "Help & command list"),
+            BotCommand("status",    "Pipeline health report"),
+            BotCommand("ideas",     "Last 8 active alpha ideas"),
+            BotCommand("spend",     "AI cost breakdown today"),
+            BotCommand("generate",  "Generate KLCI equity ideas"),
+            BotCommand("screen",    "Scrape KLSE data + generate ideas"),
+            BotCommand("briefing",  "Send morning briefing now"),
+            BotCommand("dividends", "Ex-dividend dates next 14 days"),
+            BotCommand("epf",       "EPF ownership tracker"),
+            BotCommand("analyst",   "Analyst coverage initiations"),
+            BotCommand("cpo",       "CPO plantation lag signals"),
+            BotCommand("kb",        "Ingest URL or text into KB"),
+            BotCommand("search",    "Search knowledge base"),
+            BotCommand("diversity", "KB coverage by research angle"),
+            BotCommand("research",  "Hunt academic papers for an idea"),
+            BotCommand("digest",    "Generate ideas from KB documents"),
+            BotCommand("arsenal",   "Quantitative techniques list"),
+        ])
+        logger.info("Telegram bot command menu registered")
+
+    app.post_init = _set_commands
     logger.info(f"Telegram bot starting (admin={ADMIN_CHAT})")
     app.run_polling(drop_pending_updates=True)
 

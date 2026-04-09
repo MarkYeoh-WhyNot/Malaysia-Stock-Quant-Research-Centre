@@ -214,6 +214,13 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass
 
+        # price_based_proxy: OHLCV redirect for data-unavailability rejections
+        try:
+            conn.execute("ALTER TABLE alpha_ideas ADD COLUMN price_based_proxy TEXT")
+            logger.info("Migration applied: alpha_ideas.price_based_proxy column added")
+        except Exception:
+            pass
+
         # Fix 5: needs_review + verification_note on backtest_runs
         try:
             conn.execute("ALTER TABLE backtest_runs ADD COLUMN needs_review INTEGER DEFAULT 0")
@@ -239,6 +246,138 @@ def init_db(db_path: Path = DB_PATH):
             logger.info("Migration applied: backtest_runs.trade_count column added")
         except Exception:
             pass
+
+        # QC3: gross/net sharpe split
+        for _col in ("sharpe_gross REAL", "sharpe_net REAL"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
+        # QC2: walk-forward IS/OOS columns
+        for _col in ("sharpe_is REAL", "sharpe_oos REAL", "oos_degradation REAL"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
+        # QC5: regime stress test columns
+        for _col in ("sharpe_low_vol REAL", "sharpe_mid_vol REAL",
+                     "sharpe_high_vol REAL", "regimes_positive INTEGER"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
+        # Sanity flags
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN sanity_flags TEXT")
+            logger.info("Migration applied: backtest_runs.sanity_flags added")
+        except Exception:
+            pass
+
+        # Backtest Lab: verdict + verdict_reason on backtest_runs
+        for _col in ("verdict TEXT", "verdict_reason TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
+        # Backtest Lab: equity curve / drawdown series cache
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_series (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                idea_id      INTEGER NOT NULL,
+                date         TEXT NOT NULL,
+                strategy_pct REAL,
+                benchmark_pct REAL,
+                drawdown_pct  REAL,
+                is_oos       INTEGER DEFAULT 0,
+                created_at   TEXT DEFAULT (datetime('now')),
+                UNIQUE(idea_id, date)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bs_idea ON backtest_series(idea_id)"
+        )
+
+        # CPO module: daily CPO spot price cache
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS cpo_prices (
+            date       TEXT PRIMARY KEY,
+            price      REAL NOT NULL,
+            source     TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cpo_date ON cpo_prices(date)"
+        )
+
+        # EPF module: institutional ownership tracker
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS epf_holdings (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker      TEXT NOT NULL,
+            company     TEXT,
+            date        TEXT NOT NULL,
+            epf_pct     REAL NOT NULL,
+            prev_pct    REAL,
+            change_pct  REAL,
+            direction   TEXT DEFAULT 'stable',
+            source      TEXT,
+            created_at  TEXT DEFAULT (datetime('now')),
+            UNIQUE(ticker, date)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_epf_ticker ON epf_holdings(ticker)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_epf_date ON epf_holdings(date)"
+        )
+
+        # Analyst module: coverage initiation tracker
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS analyst_coverage_history (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker          TEXT NOT NULL,
+            company         TEXT,
+            analyst_house   TEXT NOT NULL,
+            report_type     TEXT NOT NULL,
+            target_price    REAL,
+            date            TEXT NOT NULL,
+            is_first_coverage INTEGER DEFAULT 0,
+            created_at      TEXT DEFAULT (datetime('now')),
+            UNIQUE(ticker, analyst_house, date)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cov_ticker "
+            "ON analyst_coverage_history(ticker)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cov_date "
+            "ON analyst_coverage_history(date)"
+        )
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS analyst_alerts (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker        TEXT NOT NULL,
+            analyst_house TEXT,
+            alert_type    TEXT NOT NULL,
+            date          TEXT NOT NULL,
+            idea_id       INTEGER,
+            created_at    TEXT DEFAULT (datetime('now'))
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_alert_ticker ON analyst_alerts(ticker)"
+        )
     logger.info(f"Database initialized at {db_path}")
 
 if __name__ == "__main__":

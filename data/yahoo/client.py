@@ -223,6 +223,30 @@ def get_multi_info(symbols: list) -> list:
 # Historical data with days parameter (OANDA-compatible interface)
 # ---------------------------------------------------------------------------
 
+def extract_tickers(raw: str) -> list:
+    """Extract valid Bursa ticker codes from any string.
+
+    Handles inputs like:
+      - "5225.KL"                                       → ["5225.KL"]
+      - "Healthcare sector (e.g., 5225.KL, 5878.KL)"   → ["5225.KL", "5878.KL"]
+      - "IHH Healthcare 5225.KL"                        → ["5225.KL"]
+      - "5225.KL,5878.KL,7081.KL"                       → ["5225.KL", "5878.KL", "7081.KL"]
+
+    Falls back to [raw.strip()] when no .KL codes are found (preserves caller's
+    ability to detect failure and fall through to a default).
+    """
+    import re as _re
+    tickers = _re.findall(r'\b\d{4,5}\.KL\b', raw)
+    if tickers:
+        # Deduplicate while preserving order
+        seen: list = []
+        for t in tickers:
+            if t not in seen:
+                seen.append(t)
+        return seen
+    return [raw.strip()]
+
+
 def get_historical_data(symbol: str, interval: str = "1d", days: int = 730) -> pd.DataFrame:
     """
     Fetch historical OHLCV matching the OANDA client interface signature.

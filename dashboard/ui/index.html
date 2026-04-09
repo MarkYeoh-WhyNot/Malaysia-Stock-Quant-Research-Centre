@@ -75,6 +75,17 @@ btn,.btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);
 .btn-cyan{border-color:var(--cyan);color:var(--cyan)}
 .btn-cyan:hover{background:#0c3a44}
 .btn-sm{padding:2px 8px;font-size:10px}
+.btn-amber{border-color:#d97706;color:#d97706}.btn-amber:hover{background:#451a03}
+.btn-amber.active{background:#451a03;border-color:#f59e0b;color:#f59e0b}
+
+/* ── KB Review Mode ── */
+.kb-review-row td:first-child{border-left:3px solid var(--red)}
+.kb-review-row:hover td{background:#2a1515}
+.domain-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:9px;font-weight:bold;background:#1e2d4a;color:var(--blue);cursor:pointer;white-space:nowrap;border:1px solid transparent;transition:border-color .12s}
+.domain-pill:hover{border-color:var(--blue)}
+.domain-select{font-size:9px;padding:1px 4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer}
+.kb-del-btn{padding:1px 7px;font-size:9px;border-radius:10px;background:#450a0a;border:1px solid var(--red);color:var(--red);cursor:pointer;white-space:nowrap;transition:background .12s}
+.kb-del-btn:hover{background:#7f1d1d}
 
 /* ── Forms ── */
 .form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end}
@@ -207,6 +218,7 @@ svg text{font-family:'Courier New',monospace}
 
 /* ── Spinner ── */
 .spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--cyan);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px}
+.dz-hover{border-color:var(--cyan)!important;color:var(--cyan)!important}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* ── Activity animations ── */
@@ -316,9 +328,37 @@ svg text{font-family:'Courier New',monospace}
   /* Log stream shorter on mobile */
   #log-stream{height:180px!important}
 }
+
+/* ── #tt float tooltip ── */
+#tt{
+  position:fixed;z-index:99999;background:#1e2d4a;color:#e2e8f0;
+  border:1px solid #334;border-radius:5px;padding:7px 11px;
+  font-size:11px;line-height:1.5;pointer-events:none;
+  opacity:0;transition:opacity .15s ease;max-width:240px;
+  white-space:normal;word-wrap:break-word;
+  font-family:'Courier New',monospace;left:-9999px;top:-9999px
+}
+#tt.show{opacity:1!important}
+#tt.wide{max-width:320px}
+#tt .tt-title{color:var(--cyan);font-weight:bold;margin-bottom:4px;
+  font-size:9px;text-transform:uppercase;letter-spacing:.8px}
+#tt .tt-body{color:var(--muted2)}
+
+/* ── [data-tip] CSS tooltip ── */
+[data-tip]{position:relative;cursor:help}
+[data-tip]::after{
+  content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;
+  transform:translateX(-50%);background:#1e2d4a;color:#e2e8f0;padding:5px 9px;
+  border-radius:4px;font-size:10px;white-space:normal;max-width:240px;text-align:left;
+  pointer-events:none;opacity:0;transition:opacity .15s;border:1px solid #334;z-index:200;
+  line-height:1.45;font-weight:normal;letter-spacing:0
+}
+[data-tip]:hover::after{opacity:1}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
 <body>
+<div id="tt"><div class="tt-title" id="tt-title"></div><div class="tt-body" id="tt-body"></div></div>
 
 <button id="mobile-menu-btn" onclick="toggleSidebar()">☰</button>
 <div id="mobile-overlay" onclick="closeSidebar()"></div>
@@ -712,7 +752,7 @@ svg text{font-family:'Courier New',monospace}
       </div>
     </div>
     <div class="tbl-wrap-lg"><table>
-      <thead><tr><th>ID</th><th>Title</th><th>Ticker</th><th>TF</th><th>Stage</th><th>Status</th><th>Novelty</th><th>Logic</th><th>Research</th><th>BT Sharpe</th><th>BT DD</th><th>Created</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>Title</th><th>Ticker</th><th>TF</th><th>Stage</th><th>Status</th><th>Novelty</th><th>Logic</th><th>Research</th><th>Sharpe (net)</th><th>Sharpe (gross)</th><th>OOS Sharpe</th><th>DD</th><th>Trades</th><th>Regimes</th><th>Created</th><th></th></tr></thead>
       <tbody id="ideas-table"></tbody>
     </table></div>
   </div>
@@ -720,33 +760,156 @@ svg text{font-family:'Courier New',monospace}
 
 <!-- ── Backtest Lab ───────────────────────────────────────────────────────── -->
 <div id="page-backtest-lab" class="page">
-  <div class="row">
-    <div class="col" style="max-width:300px">
-      <div class="panel">
-        <div class="panel-head"><span class="panel-title">Trigger Backtest</span></div>
-        <div class="form-group" style="margin-bottom:8px">
-          <label>Idea ID</label>
-          <input type="number" id="bt-idea-id" placeholder="e.g. 42" style="width:100%">
-        </div>
-        <button class="btn btn-cyan" onclick="triggerBacktest()" id="bt-trigger-btn" style="width:100%">
-          ▶ Run Backtest
-        </button>
-        <div id="bt-trigger-result" style="margin-top:10px;font-size:11px"></div>
-      </div>
-    </div>
-    <div class="col">
-      <div class="panel">
-        <div class="panel-head">
-          <span class="panel-title">Backtest Runs (<span id="bt-run-count">0</span>)</span>
-          <button class="btn btn-sm" onclick="loadBacktestRuns()">↻ Refresh</button>
-        </div>
-        <div class="tbl-wrap-lg"><table>
-          <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>TF</th><th>Train Sharpe</th><th>Val Sharpe</th><th>Test Sharpe</th><th>Test DD</th><th>Win Rate</th><th>Trades</th><th>Result</th><th>Date</th></tr></thead>
-          <tbody id="bt-runs-table"></tbody>
-        </table></div>
-      </div>
+
+  <!-- 1. SELECTOR BAR -->
+  <div class="panel" style="margin-bottom:10px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="panel-title" style="white-space:nowrap">🔬 BACKTEST LAB</span>
+      <select id="btl-select" style="flex:1;max-width:420px" onchange="loadBtlDetail(this.value)">
+        <option value="">— Select idea to inspect —</option>
+      </select>
+      <button class="btn btn-sm" onclick="loadBacktestLab()">↻ Refresh</button>
+      <button class="btn btn-sm btn-cyan" id="btl-trigger-btn" onclick="btlTriggerBacktest()" style="display:none">▶ Re-run</button>
     </div>
   </div>
+
+  <!-- 2. HEADER CARD -->
+  <div id="btl-header" class="panel" style="display:none;margin-bottom:10px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+      <div>
+        <div id="btl-title" style="font-size:15px;font-weight:bold;color:var(--cyan)"></div>
+        <div id="btl-meta" style="color:var(--muted2);font-size:11px;margin-top:3px"></div>
+      </div>
+      <div id="btl-verdict-badge" style="font-size:20px;font-weight:bold;padding:6px 20px;border-radius:6px">PENDING</div>
+    </div>
+    <div id="btl-hypothesis" style="color:var(--muted2);font-size:11px;margin-top:10px;padding:8px;background:var(--bg3);border-radius:4px;border-left:3px solid var(--border)"></div>
+  </div>
+
+  <!-- 3–9. METRICS + CHARTS + VERDICT (hidden until idea selected) -->
+  <div id="btl-metrics" style="display:none">
+
+    <!-- 3. METRIC CARDS -->
+    <div class="stat-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
+      <div class="stat-card" data-tip="Sharpe after 0.90% round-trip Bursa cost: brokerage + stamp duty + slippage × 2">
+        <div class="val" id="btl-sn">—</div><div class="lbl">Net Sharpe</div></div>
+      <div class="stat-card" data-tip="Gross Sharpe before transaction costs — compare to Net to see cost drag">
+        <div class="val" id="btl-sg">—</div><div class="lbl">Gross Sharpe</div></div>
+      <div class="stat-card" data-tip="Out-of-sample Sharpe from 70/30 IS/OOS walk-forward split. Must be > 0 to pass.">
+        <div class="val" id="btl-so">—</div><div class="lbl">OOS Sharpe</div></div>
+      <div class="stat-card" data-tip="Maximum peak-to-trough drawdown in the test period. Gate: < 25%.">
+        <div class="val" id="btl-dd">—</div><div class="lbl">Max Drawdown</div></div>
+      <div class="stat-card" data-tip="Total trade signals in the test period. Minimum 30 required for statistical validity.">
+        <div class="val" id="btl-tc">—</div><div class="lbl">Trades</div></div>
+      <div class="stat-card" data-tip="Fraction of closed trades with positive return.">
+        <div class="val" id="btl-wr">—</div><div class="lbl">Win Rate</div></div>
+    </div>
+
+    <!-- 4. IS/OOS SPLIT BAR -->
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-head"><span class="panel-title">Walk-Forward IS / OOS Split (70 / 30)</span></div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:160px;background:var(--bg3);border-radius:4px;overflow:hidden;height:22px;position:relative">
+          <div style="position:absolute;inset:0;display:flex">
+            <div style="flex:7;background:var(--blue);opacity:.6"></div>
+            <div style="flex:3;background:var(--purple);opacity:.6"></div>
+          </div>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:bold;gap:8px">
+            <span>IS 70%</span><span style="opacity:.5">|</span><span>OOS 30%</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:16px;font-size:11px;flex-wrap:wrap">
+          <span><span style="color:var(--blue)">●</span> IS Sharpe: <b id="btl-is" style="color:var(--text)">—</b></span>
+          <span><span style="color:var(--purple)">●</span> OOS Sharpe: <b id="btl-oos" style="color:var(--text)">—</b></span>
+          <span style="color:var(--muted)">Degradation: <b id="btl-deg" style="color:var(--yellow)">—</b></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 5. CHARTS (3 tabs) -->
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-head">
+        <span class="panel-title">Performance Charts</span>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-sm" id="btl-tab-eq" onclick="btlTab('equity')" style="color:var(--cyan)">Equity Curve</button>
+          <button class="btn btn-sm" id="btl-tab-mo" onclick="btlTab('monthly')">Monthly Returns</button>
+          <button class="btn btn-sm" id="btl-tab-dd" onclick="btlTab('drawdown')">Drawdown</button>
+        </div>
+      </div>
+      <div id="btl-chart-equity"  style="height:220px;position:relative"><canvas id="btl-canvas-equity"></canvas></div>
+      <div id="btl-chart-monthly" style="height:220px;position:relative;display:none"><canvas id="btl-canvas-monthly"></canvas></div>
+      <div id="btl-chart-drawdown" style="height:220px;position:relative;display:none"><canvas id="btl-canvas-drawdown"></canvas></div>
+      <div id="btl-no-series" style="display:none;color:var(--muted);text-align:center;padding:48px;font-size:11px">
+        No equity series cached — run a new backtest to populate charts.
+      </div>
+    </div>
+
+    <!-- 6. REGIME STRESS + 7. QUALITY FLAGS -->
+    <div class="row" style="margin-bottom:10px">
+      <div class="col">
+        <div class="panel" style="height:100%">
+          <div class="panel-head"><span class="panel-title">Regime Stress Test</span></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center">
+            <div style="background:var(--bg3);padding:12px;border-radius:4px">
+              <div id="btl-r-low"  class="val" style="font-size:20px">—</div>
+              <div class="lbl">Low Vol</div>
+              <div style="color:var(--muted);font-size:10px">σ &lt; 33rd pct</div>
+            </div>
+            <div style="background:var(--bg3);padding:12px;border-radius:4px">
+              <div id="btl-r-mid"  class="val" style="font-size:20px">—</div>
+              <div class="lbl">Mid Vol</div>
+              <div style="color:var(--muted);font-size:10px">33–67th pct</div>
+            </div>
+            <div style="background:var(--bg3);padding:12px;border-radius:4px">
+              <div id="btl-r-high" class="val" style="font-size:20px">—</div>
+              <div class="lbl">High Vol</div>
+              <div style="color:var(--muted);font-size:10px">σ &gt; 67th pct</div>
+            </div>
+          </div>
+          <div style="text-align:center;margin-top:10px;font-size:11px;color:var(--muted2)">
+            Positive regimes: <span id="btl-rp" style="font-weight:bold">—</span>/3 &nbsp;(need ≥ 2 to pass)
+          </div>
+        </div>
+      </div>
+      <div class="col">
+        <div class="panel" style="height:100%">
+          <div class="panel-head"><span class="panel-title">Quality Flags</span></div>
+          <div id="btl-flags"><div style="color:var(--muted);font-size:11px">Loading…</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 8. BACKTEST RUN HISTORY TABLE -->
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-head"><span class="panel-title">Backtest Run History</span></div>
+      <div class="tbl-wrap-lg"><table>
+        <thead><tr>
+          <th>Run</th><th>Net Sharpe</th><th>Gross Sharpe</th><th>IS Sharpe</th>
+          <th>OOS Sharpe</th><th>Max DD</th><th>Trades</th><th>Win Rate</th>
+          <th>Regimes</th><th>HP Class</th><th>Passed</th><th>Date</th>
+        </tr></thead>
+        <tbody id="btl-runs-table"></tbody>
+      </table></div>
+    </div>
+
+    <!-- 9. AI VERDICT + HUMAN DECISION -->
+    <div class="panel">
+      <div class="panel-head"><span class="panel-title">Verdict &amp; Human Decision</span></div>
+      <div id="btl-verdict-reason" style="color:var(--muted2);font-size:11px;margin-bottom:12px;padding:8px;background:var(--bg3);border-radius:4px;line-height:1.6"></div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input type="text" id="btl-decision-notes" placeholder="Notes for gate record (optional)" style="flex:1;max-width:360px">
+        <button class="btn btn-sm btn-green" onclick="btlDecide('approve')">✔ Approve → Stage 4A</button>
+        <button class="btn btn-sm btn-red" onclick="btlDecide('reject')">✗ Reject</button>
+      </div>
+    </div>
+
+  </div><!-- /#btl-metrics -->
+
+  <!-- EMPTY STATE -->
+  <div id="btl-empty" class="panel" style="text-align:center;padding:48px;color:var(--muted)">
+    Select an idea above to inspect its backtest results.<br>
+    Use the <b style="color:var(--muted2)">Gate Review Queue</b> to trigger new backtests.
+  </div>
+
 </div>
 
 <!-- ── Factor Sandbox ─────────────────────────────────────────────────────── -->
@@ -957,15 +1120,23 @@ svg text{font-family:'Courier New',monospace}
   <div id="kb-docs-tab" class="tab-content">
     <div class="panel" style="margin-top:0">
       <div class="panel-head">
-        <span class="panel-title">Documents (<span id="kb-doc-count">0</span>)</span>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span class="panel-title">Documents (<span id="kb-doc-count">0</span>)</span>
+          <button id="kb-review-btn" class="btn btn-sm btn-amber" onclick="toggleKBReviewMode()">Review Mode OFF</button>
+          <button id="kb-bulk-del-btn" class="btn btn-sm btn-red" onclick="bulkDeleteKBDocs()" style="display:none">✕ Delete Selected (0)</button>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
           <select id="kb-docs-domain" onchange="loadKBDocs()" style="font-size:10px;padding:3px 6px">
             <option value="">All Domains</option>
           </select>
         </div>
       </div>
-      <div class="tbl-wrap-lg"><table>
-        <thead><tr><th>ID</th><th>Title</th><th>Domain</th><th>Summary</th><th>Created</th></tr></thead>
+      <div class="tbl-wrap-lg"><table id="kb-docs-tbl">
+        <thead><tr>
+          <th id="kb-th-check" style="display:none;width:28px"><input type="checkbox" id="kb-select-all" onchange="kbSelectAll(this.checked)" title="Select all"></th>
+          <th>ID</th><th>Title</th><th>Domain</th><th>Summary</th><th>Created</th>
+          <th id="kb-th-actions" style="display:none">Actions</th>
+        </tr></thead>
         <tbody id="kb-docs-table"></tbody>
       </table></div>
     </div>
@@ -979,13 +1150,38 @@ svg text{font-family:'Courier New',monospace}
       </div>
       <div id="kb-concepts-cloud" style="margin-bottom:12px"></div>
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Concept</th><th>Domain</th><th>Description</th><th>Frequency</th></tr></thead>
+        <thead><tr><th>Concept</th><th>Domain</th><th>Description</th><th>Frequency</th><th></th></tr></thead>
         <tbody id="kb-concepts-table"></tbody>
       </table></div>
     </div>
   </div>
 
   <div id="kb-ingest-tab" class="tab-content">
+    <!-- PDF Upload -->
+    <div class="panel" style="margin-top:0;margin-bottom:14px" id="pdf-upload-zone">
+      <div class="panel-head"><span class="panel-title">📄 Ingest PDF</span></div>
+      <div id="pdf-dropzone" onclick="document.getElementById('pdf-file-input').click()"
+           ondragover="event.preventDefault();this.classList.add('dz-hover')"
+           ondragleave="this.classList.remove('dz-hover')"
+           ondrop="handlePDFDrop(event)"
+           style="border:2px dashed var(--border);border-radius:6px;padding:28px;text-align:center;
+                  color:var(--muted);font-size:12px;cursor:pointer;transition:border-color .15s,color .15s">
+        Drop PDF here or <span style="color:var(--cyan)">click to browse</span>
+        <input type="file" id="pdf-file-input" accept=".pdf" style="display:none"
+               onchange="handlePDFSelect(this.files)">
+      </div>
+      <div id="pdf-preview" style="display:none;margin-top:10px;display:none;align-items:center;gap:10px">
+        <span style="color:var(--cyan);font-size:11px">📎 <span id="pdf-filename"></span></span>
+        <span style="color:var(--muted);font-size:10px" id="pdf-filesize"></span>
+        <button class="btn btn-sm btn-red" onclick="clearPDF()">Remove</button>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+        <button id="pdf-ingest-btn" class="btn btn-cyan" onclick="ingestPDF()" disabled style="flex:1">
+          📥 Ingest PDF
+        </button>
+      </div>
+      <div id="pdf-result" style="margin-top:8px;font-size:11px"></div>
+    </div>
     <div class="row" style="margin-top:0">
       <div class="col">
         <div class="panel" style="margin-top:0">
@@ -1135,7 +1331,7 @@ function nav(id, el) {
     direction: loadDirection,
     arsenal:   loadArsenal,
     mc: loadMC, analytics: loadAnalytics, 'gate-queue': loadGateQueue,
-    ideas: loadIdeas, 'backtest-lab': loadBacktestRuns,
+    ideas: loadIdeas, 'backtest-lab': loadBacktestLab,
     'paper-trades': loadPaperTrades, kb: loadKBStats,
     'ai-usage': loadUsage, logs: loadLogsPage,
   };
@@ -1170,7 +1366,91 @@ const fmtPct = v => (v == null || v === '') ? '—' : (parseFloat(v) * 100).toFi
 const fmtUSD = v => v == null ? '—' : '$' + parseFloat(v).toFixed(4);
 const tsShort = s => s ? s.slice(0, 16).replace('T', ' ') : '—';
 const clr = (v, good = 1.0) => v == null ? '' : parseFloat(v) >= good ? 'color:var(--green)' : 'color:var(--red)';
-const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc     = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const escAttr = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+// ── #tt float tooltip engine ──────────────────────────────────────────────────
+const _tt      = document.getElementById('tt');
+const _ttTitle = document.getElementById('tt-title');
+const _ttBody  = document.getElementById('tt-body');
+
+function showTT(e) {
+  const el    = e.currentTarget;
+  const title = el.getAttribute('data-tt-title') || '';
+  const body  = el.getAttribute('data-tt-body')  || '';
+  if (!title && !body) return;
+  console.log('showTT fired', title, e.clientX, e.clientY);
+  _ttTitle.textContent = title;
+  _ttBody.textContent  = body;
+  _tt.classList.toggle('wide', body.length > 120);
+  _tt.classList.add('show');
+  moveTT(e);   // position immediately on enter so tooltip isn't at -9999px
+}
+function moveTT(e) {
+  const pad = 14;
+  const w   = _tt.offsetWidth  || 260;
+  const h   = _tt.offsetHeight || 100;
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  if (x + w > window.innerWidth  - 8) x = e.clientX - w - pad;
+  if (y + h > window.innerHeight - 8) y = e.clientY - h - pad;
+  _tt.style.left = x + 'px';
+  _tt.style.top  = y + 'px';
+}
+function hideTT() { _tt.classList.remove('show', 'wide'); }
+
+function wireTooltips(root) {
+  const els = (root || document).querySelectorAll('[data-tt-title]');
+  els.forEach(el => {
+    el.removeEventListener('mouseenter', showTT);
+    el.removeEventListener('mousemove',  moveTT);
+    el.removeEventListener('mouseleave', hideTT);
+    el.addEventListener('mouseenter', showTT);
+    el.addEventListener('mousemove',  moveTT);
+    el.addEventListener('mouseleave', hideTT);
+  });
+}
+
+// ── Gate / decision tooltip helpers ──────────────────────────────────────────
+const _GATE_INFO = {
+  gate0:      ['Gate 0 — Alpha screening',
+               'Initial scoring on novelty, logic, feasibility, data quality, and overfitting risk. All five dimensions must meet minimum thresholds to advance to Stage 1 research.'],
+  gate1:      ['Gate 1 — Research score',
+               'Deep research gate: scoring academic evidence, Bursa-specific factors, and strategy feasibility. Requires research_score ≥ 6.5 to advance to Stage 2 backtesting.'],
+  gate2_3:    ['Gate 2/3 — Backtest review',
+               'Quantitative backtest evaluation covering net Sharpe, OOS degradation, transaction costs, trade count, and regime robustness.'],
+  gate3:      ['Gate 3 — Backtest review',
+               'Quantitative backtest evaluation covering net Sharpe, OOS degradation, transaction costs, trade count, and regime robustness.'],
+  gate2_data: ['Gate 2 — Data pre-check',
+               'Pre-check whether the factor formula can be backtested with Yahoo Finance OHLCV data. Blocked if formula requires fundamental data unavailable from the price feed.'],
+  stage1:     ['Stage 1 — Deep research',
+               'Deep research: scoring academic evidence, Bursa-specific factors, and strategy feasibility. Requires research_score ≥ 6.5.'],
+};
+
+const _DECISION_INFO = {
+  reject:   ['Rejected',
+             'This idea did not pass the gate criteria and has been removed from the pipeline. See rationale for specific failure reasons.'],
+  rejected: ['Rejected',
+             'This idea did not pass the gate criteria and has been removed from the pipeline. See rationale for specific failure reasons.'],
+  approve:  ['Approved',
+             'This idea passed the gate and advanced to the next pipeline stage.'],
+  approved: ['Approved',
+             'This idea passed the gate and advanced to the next pipeline stage.'],
+};
+
+function gateTTBadge(g) {
+  const [title, body] = _GATE_INFO[g] || [g, ''];
+  const attrs = body ? ` data-tt-title="${escAttr(title)}" data-tt-body="${escAttr(body)}" style="color:var(--purple);cursor:help"` : ' style="color:var(--purple)"';
+  return `<span${attrs}>${esc(g)}</span>`;
+}
+
+function decisionTTBadge(d) {
+  const [title, body] = _DECISION_INFO[d] || [d, ''];
+  const m = {active:'pass',rejected:'fail',pending:'pending',open:'open',closed:'closed',approved:'pass',approve:'pass',reject:'fail',advanced:'pass'};
+  const cls = m[d] || 'pending';
+  const attrs = body ? ` data-tt-title="${escAttr(title)}" data-tt-body="${escAttr(body)}"` : '';
+  return `<span class="badge ${cls}"${attrs}>${esc(d)}</span>`;
+}
 
 function stageBadge(s) {
   const colors = {gate0:'var(--blue)',stage1:'var(--cyan)',stage2:'var(--purple)',stage3:'var(--orange)',stage4a:'var(--green)',stage4b:'#22d3ee',stage5:'var(--pink)'};
@@ -1656,17 +1936,25 @@ async function loadGateQueue() {
      </tr>`
   ).join('') || '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:16px">No ideas awaiting backtest</td></tr>';
 
-  document.getElementById('gq-history-table').innerHTML = d.recent_decisions.map(r =>
+  const histEl = document.getElementById('gq-history-table');
+  histEl.innerHTML = d.recent_decisions.map(r =>
     `<tr>
        <td style="color:var(--muted)">${r.idea_id}</td>
-       <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</td>
-       <td style="color:var(--purple)">${r.gate}</td>
-       <td>${statusBadge(r.decision)}</td>
+       <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help"
+           data-tt-title="${escAttr(r.title)}"
+           data-tt-body="Idea #${r.idea_id}"
+       >${esc(r.title)}</td>
+       <td>${gateTTBadge(r.gate)}</td>
+       <td>${decisionTTBadge(r.decision)}</td>
        <td style="color:var(--muted2)">${r.decided_by||'—'}</td>
-       <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted2);font-size:10px">${esc(r.rationale||'')}</td>
+       <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;color:var(--muted2);font-size:10px"
+           data-tt-title="Rationale — Idea #${r.idea_id}"
+           data-tt-body="${escAttr(r.rationale||'(no rationale recorded)')}"
+       >${esc(r.rationale||'')}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
      </tr>`
   ).join('') || '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:16px">No decisions yet</td></tr>';
+  wireTooltips(histEl);
 }
 
 async function manualAdvance(id) {
@@ -1693,8 +1981,14 @@ async function loadIdeas() {
   const d = await apiFetch(`/pipeline/ideas?stage=${stage}&status=${status}&limit=100`);
   if (!d) return;
   document.getElementById('ideas-count').textContent = d.total;
-  document.getElementById('ideas-table').innerHTML = d.ideas.map(r =>
-    `<tr>
+  document.getElementById('ideas-table').innerHTML = d.ideas.map(r => {
+    const sn = r.bt_sharpe_net; const sg = r.bt_sharpe_gross;
+    const so = r.bt_sharpe_oos; const tc = r.bt_trade_count;
+    const rp = r.bt_regimes_positive;
+    const hasSanity = r.bt_sanity_flags && r.bt_sanity_flags !== 'null';
+    const regClr = rp == null ? '' : rp >= 2 ? 'color:var(--green)' : 'color:var(--red)';
+    const tcClr  = tc == null ? '' : tc < 30  ? 'color:var(--red)'  : 'color:var(--muted)';
+    return `<tr${hasSanity ? ' style="background:rgba(255,200,0,.06)"' : ''}>
        <td style="color:var(--muted)">${r.id}</td>
        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
          <a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${esc(r.title)}</a>
@@ -1704,13 +1998,20 @@ async function loadIdeas() {
        <td>${statusBadge(r.status)}</td>
        <td style="${clr(r.novelty_score,.6)}">${fmt2(r.novelty_score)}</td>
        <td style="${clr(r.logic_score,.7)}">${fmt2(r.logic_score)}</td>
-       <td style="${clr(r.research_score,.65)}">${fmt2(r.research_score)}</td>
-       <td style="${clr(r.backtest_sharpe,1)}">${fmt2(r.backtest_sharpe)}</td>
+       <td style="${clr(r.research_score,6.5)}">${fmt2(r.research_score)}</td>
+       <td style="${clr(sn,1)}" title="Net Sharpe (after 0.90% round-trip cost)">${fmt2(sn)}</td>
+       <td style="${clr(sg,1)}" title="Gross Sharpe (before costs)">${fmt2(sg)}</td>
+       <td style="${clr(so,.3)}" title="Out-of-sample walk-forward Sharpe">${fmt2(so)}</td>
        <td style="${r.backtest_dd != null && parseFloat(r.backtest_dd) > 0.2 ? 'color:var(--red)' : 'color:var(--muted2)'}">${fmtPct(r.backtest_dd)}</td>
+       <td style="${tcClr}" title="Trade count (min 30 required)">${tc != null ? tc : '—'}</td>
+       <td style="${regClr}" title="Regimes with positive Sharpe out of 3">${rp != null ? rp+'/3' : '—'}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
-       <td><button class="btn btn-sm" onclick="openIdeaModal(${r.id})">Detail</button></td>
-     </tr>`
-  ).join('') || '<tr><td colspan="13" style="color:var(--muted);text-align:center;padding:20px">No ideas yet — generate via Telegram bot or create one in Factor Sandbox</td></tr>';
+       <td style="white-space:nowrap">
+         <button class="btn btn-sm" onclick="openIdeaModal(${r.id})" style="margin-right:3px">Detail</button>
+         ${r.bt_sharpe_net != null ? `<button class="btn btn-sm btn-cyan" onclick="viewInBtLab(${r.id})">Lab</button>` : ''}
+       </td>
+     </tr>`;
+  }).join('') || '<tr><td colspan="17" style="color:var(--muted);text-align:center;padding:20px">No ideas yet — generate via Telegram bot or create one in Factor Sandbox</td></tr>';
 }
 
 // ── Idea Detail Modal ─────────────────────────────────────────────────────────
@@ -1773,47 +2074,233 @@ function closeModal() { document.getElementById('idea-modal').classList.remove('
 document.getElementById('idea-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
 
 // ── Backtest Lab ───────────────────────────────────────────────────────────────
-async function loadBacktestRuns() {
-  const d = await apiFetch('/backtest/runs?limit=50');
+let _btlCurrentId = null;
+let _btlCharts = {};
+
+async function loadBacktestLab() {
+  const d = await apiFetch('/backtest/list');
   if (!d) return;
-  document.getElementById('bt-run-count').textContent = d.runs.length;
-  document.getElementById('bt-runs-table').innerHTML = d.runs.map(r =>
-    `<tr>
-       <td style="color:var(--muted)">${r.id}</td>
-       <td><a onclick="openIdeaModal(${r.idea_id})" style="color:var(--cyan);cursor:pointer;max-width:140px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title||'#'+r.idea_id)}</a></td>
-       <td>${r.pair||r.idea_ticker||'—'}</td>
-       <td>${r.timeframe||r.idea_tf||'—'}</td>
-       <td style="${clr(r.train_sharpe,1)}">${fmt2(r.train_sharpe)}</td>
-       <td style="${clr(r.val_sharpe,1)}">${fmt2(r.val_sharpe)}</td>
-       <td style="${clr(r.test_sharpe,1)}">${fmt2(r.test_sharpe)}</td>
-       <td style="${r.test_dd>0.2?'color:var(--red)':'color:var(--green)'}">${fmtPct(r.test_dd)}</td>
-       <td>${fmtPct(r.win_rate)}</td>
-       <td>${r.total_trades||'—'}</td>
-       <td>${r.passed ? '<span class="badge pass">PASS</span>' : '<span class="badge fail">FAIL</span>'}</td>
-       <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
-     </tr>`
-  ).join('') || '<tr><td colspan="12" style="color:var(--muted);text-align:center;padding:20px">No backtest runs yet — trigger one above or use the Factor Sandbox</td></tr>';
+  const sel = document.getElementById('btl-select');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— Select idea to inspect —</option>' +
+    d.ideas.map(r =>
+      `<option value="${r.id}">${r.id} · ${esc(r.title.slice(0,48))} [${r.stage}] ${r.passed ? '✔' : '✗'}</option>`
+    ).join('');
+  if (prev) { sel.value = prev; }
+  if (_btlCurrentId) { sel.value = _btlCurrentId; }
 }
 
-async function triggerBacktest() {
-  const id = parseInt(document.getElementById('bt-idea-id').value);
-  if (!id) { document.getElementById('bt-trigger-result').innerHTML = '<span style="color:var(--red)">Enter a valid idea ID</span>'; return; }
-  const btn = document.getElementById('bt-trigger-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Running…';
-  document.getElementById('bt-trigger-result').innerHTML = '<span style="color:var(--muted)">Fetching 5yr Yahoo Finance .KL data and running train/val/test split… this takes ~30s</span>';
-  const r = await apiPost('/backtest/trigger', {idea_id: id});
-  btn.disabled = false;
-  btn.innerHTML = '▶ Run Backtest';
-  if (!r || r.error) {
-    document.getElementById('bt-trigger-result').innerHTML = `<span style="color:var(--red)">${esc(r?.error || 'Request failed')}</span>`;
-  } else {
-    document.getElementById('bt-trigger-result').innerHTML =
-      `<div style="color:${r.gate3_pass?'var(--green)':'var(--red)'}">
-        ${r.gate3_pass ? '✔ PASSED' : '✗ FAILED'} — Test Sharpe: ${fmt2(r.test?.sharpe)} | DD: ${fmtPct(r.test?.max_dd)}
-       </div>`;
-    loadBacktestRuns();
+async function loadBtlDetail(rawId) {
+  const id = parseInt(rawId);
+  const header   = document.getElementById('btl-header');
+  const metrics  = document.getElementById('btl-metrics');
+  const emptyEl  = document.getElementById('btl-empty');
+  const trigBtn  = document.getElementById('btl-trigger-btn');
+  if (!id) {
+    header.style.display = metrics.style.display = 'none';
+    emptyEl.style.display = 'block';
+    trigBtn.style.display = 'none';
+    _btlCurrentId = null;
+    return;
   }
+  _btlCurrentId = id;
+  emptyEl.style.display = 'none';
+  trigBtn.style.display = 'inline-block';
+  trigBtn.dataset.ideaId = id;
+
+  const d = await apiFetch('/backtest/' + id);
+  if (!d) return;
+  const r = d.idea; const bt = d.latest || {}; const series = d.series || [];
+
+  // ── 2. Header ──
+  header.style.display = 'block';
+  document.getElementById('btl-title').textContent = r.title;
+  document.getElementById('btl-meta').textContent =
+    `#${r.id} · ${r.ticker||'—'} · ${r.timeframe||'—'} · ${r.stage} · ${r.status}`;
+  document.getElementById('btl-hypothesis').textContent = r.hypothesis || '—';
+  const vb = document.getElementById('btl-verdict-badge');
+  const v = d.verdict || '';
+  vb.textContent = v || 'PENDING';
+  vb.style.cssText = 'font-size:20px;font-weight:bold;padding:6px 20px;border-radius:6px;' +
+    (v === 'PASS' ? 'background:rgba(16,185,129,.15);color:var(--green)' :
+     v === 'FAIL' ? 'background:rgba(239,68,68,.15);color:var(--red)' :
+                    'background:rgba(100,116,139,.15);color:var(--muted2)');
+
+  // ── 3. Metric cards ──
+  metrics.style.display = 'block';
+  function setMetric(elId, val, goodThreshold, fmt) {
+    const el = document.getElementById(elId);
+    el.textContent = val != null ? fmt(val) : '—';
+    if (val != null && goodThreshold != null)
+      el.style.color = val >= goodThreshold ? 'var(--green)' : val >= 0 ? 'var(--yellow)' : 'var(--red)';
+  }
+  const sn = bt.sharpe_net; const sg = bt.sharpe_gross; const so = bt.sharpe_oos;
+  const dd = bt.test_dd;   const tc = bt.trade_count;   const wr = bt.win_rate;
+  setMetric('btl-sn', sn, 1.0,  v => v.toFixed(2));
+  setMetric('btl-sg', sg, 1.0,  v => v.toFixed(2));
+  setMetric('btl-so', so, 0.3,  v => v.toFixed(2));
+  document.getElementById('btl-dd').textContent = dd != null ? (dd*100).toFixed(1)+'%' : '—';
+  document.getElementById('btl-dd').style.color = dd > 0.25 ? 'var(--red)' : 'var(--green)';
+  document.getElementById('btl-tc').textContent = tc != null ? tc : '—';
+  document.getElementById('btl-tc').style.color = tc >= 30 ? 'var(--green)' : 'var(--red)';
+  document.getElementById('btl-wr').textContent = wr != null ? (wr*100).toFixed(1)+'%' : '—';
+
+  // ── 4. IS/OOS split ──
+  const si = bt.sharpe_is; const deg = bt.oos_degradation;
+  document.getElementById('btl-is').textContent  = si  != null ? si.toFixed(2)        : '—';
+  document.getElementById('btl-oos').textContent = so  != null ? so.toFixed(2)        : '—';
+  document.getElementById('btl-deg').textContent = deg != null ? (deg*100).toFixed(0)+'%' : '—';
+
+  // ── 6. Regime stress ──
+  const rl = bt.sharpe_low_vol; const rm = bt.sharpe_mid_vol; const rh = bt.sharpe_high_vol;
+  const rp = bt.regimes_positive;
+  [['btl-r-low',rl],['btl-r-mid',rm],['btl-r-high',rh]].forEach(([elId, val]) => {
+    const el = document.getElementById(elId);
+    el.textContent = val != null ? val.toFixed(2) : '—';
+    el.style.color = val > 0 ? 'var(--green)' : val != null ? 'var(--red)' : 'var(--muted)';
+  });
+  const rpEl = document.getElementById('btl-rp');
+  rpEl.textContent = rp != null ? rp : '—';
+  rpEl.style.color = rp >= 2 ? 'var(--green)' : rp != null ? 'var(--red)' : 'var(--muted)';
+
+  // ── 7. Quality flags ──
+  let flags = [];
+  try { flags = bt.sanity_flags ? JSON.parse(bt.sanity_flags) : []; } catch(_) {}
+  if (bt.needs_review) flags.unshift(bt.verification_note || 'Formula verification flagged');
+  document.getElementById('btl-flags').innerHTML = flags.length === 0
+    ? '<div style="color:var(--green);font-size:11px">✔ No quality flags raised</div>'
+    : flags.map(f => `<div style="color:var(--yellow);font-size:11px;margin-bottom:5px">⚠ ${esc(String(f))}</div>`).join('');
+
+  // ── 8. Runs table ──
+  document.getElementById('btl-runs-table').innerHTML = d.runs.map(b =>
+    `<tr>
+       <td style="color:var(--muted)">${b.id}</td>
+       <td style="${clr(b.sharpe_net,1)}">${fmt2(b.sharpe_net)}</td>
+       <td style="${clr(b.sharpe_gross,1)}">${fmt2(b.sharpe_gross)}</td>
+       <td style="${clr(b.sharpe_is,1)}">${fmt2(b.sharpe_is)}</td>
+       <td style="${clr(b.sharpe_oos,.3)}">${fmt2(b.sharpe_oos)}</td>
+       <td style="${b.test_dd>0.25?'color:var(--red)':'color:var(--green)'}">${fmtPct(b.test_dd)}</td>
+       <td style="${b.trade_count<30?'color:var(--red)':''}">${b.trade_count||'—'}</td>
+       <td>${fmtPct(b.win_rate)}</td>
+       <td style="${b.regimes_positive>=2?'color:var(--green)':'color:var(--red)'}">${b.regimes_positive!=null?b.regimes_positive+'/3':'—'}</td>
+       <td style="color:var(--muted);font-size:10px">${b.holding_period_class||'—'}</td>
+       <td>${b.passed ? '<span class="badge pass">PASS</span>' : '<span class="badge fail">FAIL</span>'}</td>
+       <td style="color:var(--muted)">${tsShort(b.created_at)}</td>
+     </tr>`
+  ).join('') || '<tr><td colspan="12" style="color:var(--muted);text-align:center;padding:16px">No runs yet</td></tr>';
+
+  // ── 9. Verdict reason ──
+  document.getElementById('btl-verdict-reason').textContent =
+    d.verdict_reason || 'No verdict recorded — run a backtest first.';
+
+  // ── 5. Charts ──
+  btlRenderCharts(series);
+}
+
+function btlTab(tab) {
+  ['equity','monthly','drawdown'].forEach(t => {
+    document.getElementById('btl-chart-'+t).style.display = t === tab ? 'block' : 'none';
+  });
+  const tabMap = {equity:'eq', monthly:'mo', drawdown:'dd'};
+  Object.entries(tabMap).forEach(([t, btnId]) => {
+    const btn = document.getElementById('btl-tab-'+btnId);
+    if (btn) btn.style.color = t === tab ? 'var(--cyan)' : '';
+  });
+}
+
+function btlRenderCharts(series) {
+  const hasSeries = series && series.length > 0;
+  document.getElementById('btl-no-series').style.display   = hasSeries ? 'none'  : 'block';
+  document.getElementById('btl-chart-equity').style.display   = hasSeries ? 'block' : 'none';
+  document.getElementById('btl-chart-monthly').style.display  = 'none';
+  document.getElementById('btl-chart-drawdown').style.display = 'none';
+  if (!hasSeries) return;
+
+  // Destroy old Chart.js instances
+  Object.values(_btlCharts).forEach(c => { try { c.destroy(); } catch(_) {} });
+  _btlCharts = {};
+
+  const labels   = series.map(s => s.date.slice(5));           // MM-DD
+  const stratPct = series.map(s => (s.strategy_pct  || 0) * 100);
+  const bmPct    = series.map(s => (s.benchmark_pct || 0) * 100);
+  const ddPct    = series.map(s => (s.drawdown_pct  || 0) * 100);
+
+  const baseOpts = {
+    responsive: true, maintainAspectRatio: false,
+    animation: false,
+    plugins: { legend: { labels: { color: '#94a3b8', font: { size: 10 }, boxWidth: 12 } } },
+    scales: {
+      x: { ticks: { color: '#64748b', maxTicksLimit: 12, font: { size: 9 } }, grid: { color: '#1e2d4a' } },
+      y: { ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e2d4a' } },
+    },
+  };
+
+  _btlCharts.equity = new Chart(document.getElementById('btl-canvas-equity'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Strategy %',  data: stratPct, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.08)', borderWidth: 1.5, pointRadius: 0, fill: true },
+      { label: 'Benchmark %', data: bmPct,    borderColor: '#64748b', backgroundColor: 'transparent',          borderWidth: 1,   pointRadius: 0, borderDash: [4,4] },
+    ]}, options: baseOpts,
+  });
+
+  // Monthly: compound daily % by YYYY-MM
+  const monthly = {};
+  series.forEach((s, i) => { const mo = s.date.slice(0,7); monthly[mo] = (monthly[mo]||0) + stratPct[i]; });
+  const moLabels = Object.keys(monthly).sort();
+  const moValues = moLabels.map(m => +monthly[m].toFixed(2));
+  _btlCharts.monthly = new Chart(document.getElementById('btl-canvas-monthly'), {
+    type: 'bar',
+    data: { labels: moLabels.map(m => m.slice(5)), datasets: [{
+      label: 'Monthly Return %', data: moValues, borderRadius: 3,
+      backgroundColor: moValues.map(v => v >= 0 ? 'rgba(16,185,129,.7)' : 'rgba(239,68,68,.7)'),
+    }]},
+    options: { ...baseOpts, plugins: { ...baseOpts.plugins, legend: { display: false } } },
+  });
+
+  _btlCharts.drawdown = new Chart(document.getElementById('btl-canvas-drawdown'), {
+    type: 'line',
+    data: { labels, datasets: [{
+      label: 'Drawdown %', data: ddPct, borderColor: '#ef4444',
+      backgroundColor: 'rgba(239,68,68,.12)', borderWidth: 1.5, pointRadius: 0, fill: true,
+    }]},
+    options: baseOpts,
+  });
+}
+
+async function btlDecide(decision) {
+  if (!_btlCurrentId) { showToast('No idea selected', true); return; }
+  const notes = document.getElementById('btl-decision-notes')?.value.trim() || '';
+  const r = await apiPost('/backtest/' + _btlCurrentId + '/decision', { decision, notes });
+  if (r?.ok) {
+    showToast(decision === 'approve' ? '✔ Approved → Stage 4A paper trading' : '✗ Idea rejected');
+    loadBtlDetail(_btlCurrentId);
+    loadBacktestLab();
+  } else {
+    showToast('Decision request failed', true);
+  }
+}
+
+async function btlTriggerBacktest() {
+  if (!_btlCurrentId) return;
+  const btn = document.getElementById('btl-trigger-btn');
+  btn.disabled = true; btn.textContent = '⏳ Running…';
+  showToast('⏳ Triggering backtest for idea #' + _btlCurrentId + '…');
+  const r = await apiPost('/backtest/trigger', { idea_id: _btlCurrentId });
+  btn.disabled = false; btn.textContent = '▶ Re-run';
+  if (r) {
+    showToast(r.gate3_pass ? '✔ Backtest PASSED' : '✗ Backtest FAILED');
+    loadBtlDetail(_btlCurrentId);
+    loadBacktestLab();
+  }
+}
+
+function viewInBtLab(id) {
+  const sidebarLink = document.querySelector('.sidebar a[onclick*="backtest-lab"]');
+  nav('backtest-lab', sidebarLink);
+  setTimeout(async () => {
+    const sel = document.getElementById('btl-select');
+    if (sel) { sel.value = id; await loadBtlDetail(id); }
+  }, 350);
 }
 
 // ── Factor Sandbox ──────────────────────────────────────────────────────────
@@ -1969,22 +2456,106 @@ async function searchKB() {
     : `<div style="color:var(--muted);padding:16px;text-align:center">No results for "${esc(q)}"</div>`;
 }
 
+// ── KB Review Mode state ─────────────────────────────────────────────────────
+let _kbReviewMode = false;
+const _KB_DOMAINS = ['price_action','fundamental','event_driven','institutional',
+  'macro','commodity','sector_rotation','behavioural','statistical_modelling'];
+
+function toggleKBReviewMode() {
+  _kbReviewMode = !_kbReviewMode;
+  const btn = document.getElementById('kb-review-btn');
+  btn.textContent = _kbReviewMode ? 'Review Mode ON' : 'Review Mode OFF';
+  btn.classList.toggle('active', _kbReviewMode);
+  document.getElementById('kb-th-check').style.display = _kbReviewMode ? '' : 'none';
+  document.getElementById('kb-th-actions').style.display = _kbReviewMode ? '' : 'none';
+  document.getElementById('kb-bulk-del-btn').style.display = _kbReviewMode ? '' : 'none';
+  document.getElementById('kb-select-all').checked = false;
+  loadKBDocs();
+}
+
+function kbSelectAll(checked) {
+  document.querySelectorAll('.kb-row-cb').forEach(cb => cb.checked = checked);
+  updateBulkDelBtn();
+}
+
+function updateBulkDelBtn() {
+  const n = document.querySelectorAll('.kb-row-cb:checked').length;
+  const btn = document.getElementById('kb-bulk-del-btn');
+  if (btn) { btn.textContent = `✕ Delete Selected (${n})`; btn.disabled = n === 0; }
+}
+
 async function loadKBDocs() {
   const domain = document.getElementById('kb-docs-domain')?.value || '';
   const d = await apiFetch(`/kb/documents?domain=${domain}&limit=50`);
   if (!d) return;
   document.getElementById('kb-doc-count').textContent = d.total;
-  document.getElementById('kb-docs-table').innerHTML = (d.documents||[]).map(r => {
+  document.getElementById('kb-th-check').style.display = _kbReviewMode ? '' : 'none';
+  document.getElementById('kb-th-actions').style.display = _kbReviewMode ? '' : 'none';
+  document.getElementById('kb-bulk-del-btn').style.display = _kbReviewMode ? '' : 'none';
+  const rows = (d.documents||[]);
+  if (!rows.length) {
+    const span = _kbReviewMode ? 7 : 5;
+    document.getElementById('kb-docs-table').innerHTML =
+      `<tr><td colspan="${span}" style="color:var(--muted);text-align:center;padding:20px">No documents yet — use the Ingest tab to add research</td></tr>`;
+    return;
+  }
+  document.getElementById('kb-docs-table').innerHTML = rows.map(r => {
     const sumRaw = r.summary || '';
     const summary = sumRaw.length > 80 ? sumRaw.slice(0, 80) + '…' : sumRaw || '—';
-    return `<tr>
+    const domainOpts = _KB_DOMAINS.map(dm =>
+      `<option value="${dm}"${dm===r.domain?' selected':''}>${dm}</option>`).join('');
+    const domainCell = _kbReviewMode
+      ? `<td><select class="domain-select" onchange="updateKBDomain(${r.id},this.value,this)" title="Reassign domain">${domainOpts}</select></td>`
+      : `<td><span class="domain-pill" onclick="if(_kbReviewMode){}else{}" title="Click Review Mode to reassign">${esc(r.domain)}</span></td>`;
+    const checkCell = _kbReviewMode
+      ? `<td><input type="checkbox" class="kb-row-cb" data-id="${r.id}" onchange="updateBulkDelBtn()"></td>`
+      : '';
+    const actionsCell = _kbReviewMode
+      ? `<td><button class="kb-del-btn" onclick="deleteKBDoc(${r.id},'${esc(r.title).replace(/'/g,"\\'")}')">✕ Delete</button></td>`
+      : '';
+    return `<tr class="${_kbReviewMode ? 'kb-review-row' : ''}">
+       ${checkCell}
        <td style="color:var(--muted)">${r.id}</td>
        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--cyan)">${esc(r.title)}</td>
-       <td><span class="badge stage" style="font-size:9px">${esc(r.domain)}</span></td>
+       ${domainCell}
        <td style="max-width:280px;color:var(--muted2);font-size:10px">${esc(summary)}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
+       ${actionsCell}
      </tr>`;
-  }).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:20px">No documents yet — use the Ingest tab to add research</td></tr>';
+  }).join('');
+}
+
+async function deleteKBDoc(id, title) {
+  if (!confirm(`Delete document #${id}: "${title}"?\n\nThis will also remove all graph links for this document.`)) return;
+  const r = await fetch(`/api/kb/document/${id}`, {method:'DELETE'});
+  if (r.ok) { showToast(`Deleted doc #${id}`); loadKBDocs(); loadKBStats(); }
+  else showToast(`Delete failed: ${r.status}`, true);
+}
+
+async function bulkDeleteKBDocs() {
+  const checked = [...document.querySelectorAll('.kb-row-cb:checked')];
+  if (!checked.length) return;
+  const ids = checked.map(cb => parseInt(cb.dataset.id));
+  if (!confirm(`Delete ${ids.length} document(s)? This cannot be undone.`)) return;
+  const r = await fetch('/api/kb/documents/bulk', {
+    method:'DELETE', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({doc_ids: ids})
+  });
+  if (r.ok) {
+    const d = await r.json();
+    showToast(`Deleted ${d.deleted} document(s)`);
+    document.getElementById('kb-select-all').checked = false;
+    loadKBDocs(); loadKBStats();
+  } else showToast(`Bulk delete failed: ${r.status}`, true);
+}
+
+async function updateKBDomain(id, domain, selectEl) {
+  const r = await fetch(`/api/kb/document/${id}/domain`, {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({domain})
+  });
+  if (r.ok) showToast(`Doc #${id} → ${domain}`);
+  else { showToast(`Domain update failed`, true); loadKBDocs(); }
 }
 
 async function loadKBConcepts() {
@@ -2003,8 +2574,82 @@ async function loadKBConcepts() {
        <td><span class="badge stage" style="font-size:9px">${c.domain||'—'}</span></td>
        <td style="color:var(--muted2);font-size:10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.description||'—')}</td>
        <td style="color:var(--muted)">${c.count}</td>
+       <td><button class="kb-del-btn" onclick="deleteKBConcept(${c.id},'${esc(c.name).replace(/'/g,"\\'")}')">✕</button></td>
      </tr>`
-  ).join('') || '<tr><td colspan="4" style="color:var(--muted);text-align:center;padding:16px">No concepts yet</td></tr>';
+  ).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center;padding:16px">No concepts yet</td></tr>';
+}
+
+async function deleteKBConcept(id, name) {
+  if (!confirm(`Delete concept "${name}"?`)) return;
+  const r = await fetch(`/api/kb/concept/${id}`, {method:'DELETE'});
+  if (r.ok) { showToast(`Deleted concept: ${name}`); loadKBConcepts(); }
+  else showToast(`Delete failed: ${r.status}`, true);
+}
+
+// ── PDF Upload ────────────────────────────────────────────────────────────────
+let _pdfFile = null;
+
+function handlePDFSelect(files) {
+  if (!files || !files[0]) return;
+  _pdfFile = files[0];
+  showPDFPreview();
+}
+
+function handlePDFDrop(e) {
+  e.preventDefault();
+  document.getElementById('pdf-dropzone').classList.remove('dz-hover');
+  const files = e.dataTransfer.files;
+  if (!files[0] || !files[0].name.toLowerCase().endsWith('.pdf')) {
+    showToast('Only PDF files supported', true); return;
+  }
+  _pdfFile = files[0];
+  showPDFPreview();
+}
+
+function showPDFPreview() {
+  if (!_pdfFile) return;
+  const preview = document.getElementById('pdf-preview');
+  document.getElementById('pdf-filename').textContent = _pdfFile.name;
+  document.getElementById('pdf-filesize').textContent = `(${(_pdfFile.size/1024).toFixed(1)} KB)`;
+  preview.style.display = 'flex';
+  document.getElementById('pdf-ingest-btn').disabled = false;
+  document.getElementById('pdf-result').innerHTML = '';
+}
+
+function clearPDF() {
+  _pdfFile = null;
+  document.getElementById('pdf-preview').style.display = 'none';
+  document.getElementById('pdf-file-input').value = '';
+  document.getElementById('pdf-ingest-btn').disabled = true;
+  document.getElementById('pdf-result').innerHTML = '';
+}
+
+async function ingestPDF() {
+  if (!_pdfFile) { showToast('No PDF selected', true); return; }
+  document.getElementById('pdf-result').innerHTML = '<span class="spinner"></span> Extracting text & ingesting…';
+  document.getElementById('pdf-ingest-btn').disabled = true;
+
+  const form = new FormData();
+  form.append('file', _pdfFile, _pdfFile.name);
+
+  try {
+    const resp = await fetch('/api/kb/ingest-pdf', { method: 'POST', body: form });
+    const r = await resp.json();
+    if (r?.doc_id) {
+      const cat = r.relevance_category || '';
+      const catIcon = {irrelevant:'🟥',generic:'🟨',partial:'🟧',relevant:'🟩',direct:'🟦'}[cat] || '⬜';
+      document.getElementById('pdf-result').innerHTML =
+        `<span style="color:var(--green)">✔ Ingested as doc #${r.doc_id} — ${r.concepts_extracted} concepts · relevance: ${catIcon} ${(r.relevance_score||0).toFixed(2)} (${cat})</span>`;
+      clearPDF();
+      loadKBStats();
+    } else {
+      document.getElementById('pdf-result').innerHTML = `<span style="color:var(--red)">${esc(r?.error || 'Ingest failed')}</span>`;
+      document.getElementById('pdf-ingest-btn').disabled = false;
+    }
+  } catch(err) {
+    document.getElementById('pdf-result').innerHTML = `<span style="color:var(--red)">Network error: ${esc(err.message)}</span>`;
+    document.getElementById('pdf-ingest-btn').disabled = false;
+  }
 }
 
 async function ingestKBText() {
@@ -2357,6 +3002,7 @@ function loadAll() {
   else if (_currentPage === 'logs') loadLogsPage();
 }
 
+wireTooltips(); // wire all static [data-tt-title] elements on load
 loadMC();
 setInterval(() => { if (_currentPage === 'mc') loadMC(); }, 15000);
 

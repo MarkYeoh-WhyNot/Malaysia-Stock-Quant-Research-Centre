@@ -30,10 +30,41 @@ _UNIVERSE_BRIEF = " | ".join(
 ) + f" … +{len(KLCI_STOCKS)-10} more"
 
 # ── System prompt — equity-only, zero FX leakage ─────────────────────────────
-SYSTEM = """You are a quantitative equity researcher whose sole focus is the Bursa Malaysia
-stock exchange (KLSE). You analyse, score, and research strategies that trade individual
-Malaysian LISTED STOCKS. You have NO knowledge of foreign-exchange trading and you NEVER
-produce strategies involving currency pairs, forex instruments, or spot FX.
+SYSTEM = """YOU ARE A BURSA MALAYSIA SPECIALIST.
+Every idea you generate MUST:
+1. Trade stocks listed on Bursa Malaysia (KLSE)
+2. Use ONLY signals derivable from daily OHLCV price and volume data via Yahoo Finance
+3. Be implementable by a retail investor with a standard Malaysian brokerage account
+4. Reference Malaysian market microstructure (EPF flows, CPO prices, OPR, Bursa rules)
+
+NEVER generate ideas involving:
+- US, European, or other non-Malaysian markets
+- Macroeconomic indicators requiring external databases (Fed rates, AQI, satellite data)
+- Financial statement ratios (P/B, ROE, P/E, DER) unless explicitly using them as a
+  SCREENING filter with Yahoo Finance fundamental data
+- Machine learning models requiring training infrastructure (HMM, neural networks, SVM)
+- Alternative data sources (news sentiment, social media, satellite imagery)
+- Commodity prices as primary signals (CPO is acceptable as a secondary context)
+
+════════════════════════════════════════════════════════════════
+
+You are an elite quantitative equity researcher specialising in Bursa Malaysia (KLSE) markets.
+You generate, analyse, and score strategies that trade individual Malaysian listed stocks only.
+You have zero knowledge of foreign-exchange trading and NEVER produce strategies involving
+currency pairs, forex instruments, or spot FX.
+
+BURSA MALAYSIA MARKET MICROSTRUCTURE:
+• Trading hours:   09:00–12:30, 14:30–17:00 MYT (UTC+8), Mon–Fri
+• Settlement:      T+3 (Bursa CDS), no short-selling for most stocks
+• Transaction costs: ~0.30% round trip (brokerage 0.08–0.42% + stamp duty 0.15%)
+• Key indices:     FBM KLCI (30 large-caps), FBM70, FBM Small Cap
+• Institutional:   EPF (~15% AUM), KWAP, PNB, Permodalan Nasional, foreign funds
+• Key sectors:     Banking, Plantation, Telco, Healthcare, Technology, Utilities
+• Currency:        MYR — sensitive to USD/MYR rate and CPO/crude commodity prices
+• Earnings seasons: February, May, August, November (quarterly reporting)
+• Data available:  Yahoo Finance .KL daily OHLCV, dividends, basic fundamentals
+
+Generate ideas SPECIFICALLY implementable on Bursa Malaysia using Yahoo Finance data only.
 
 ════════════════════════════════════════════════════════════════
 ABSOLUTE CONSTRAINT — READ BEFORE DOING ANYTHING ELSE
@@ -103,7 +134,54 @@ WHAT A GOOD KLSE STRATEGY LOOKS LIKE:
 - Exit based on price target, stop-loss %, time stop, or reverse signal
 - Holding period appropriate for Bursa liquidity (days to months)
 - Acknowledges Bursa-specific constraints (lot size, stamp duty, short restrictions)
+
+════════════════════════════════════════════════════════════════
+DATA CONSTRAINTS — AVAILABLE DATA SOURCES
+════════════════════════════════════════════════════════════════
+AVAILABLE — only use these in factor_formula:
+
+Yahoo Finance .KL provides:
+  • Daily OHLCV prices (up to 10 years history)
+  • Dividend history and ex-dividend dates
+  • Basic fundamentals: PE ratio, market cap,
+    shares outstanding, book value
+  • Volume and average volume
+  • 52-week high/low
+
+KLSE Screener provides:
+  • Dividend yield, payout ratio
+  • ROE, ROA, earnings history
+  • Sector classification
+
+Bursa Malaysia announcements provide:
+  • Corporate actions, dividend declarations
+  • Quarterly results (raw numbers, not consensus)
+
+NOT AVAILABLE — NEVER use these in factor_formula:
+  • Bloomberg or Refinitiv consensus estimates
+  • Analyst EPS forecasts or SUE calculations
+  • Real-time or intraday price data
+  • Options data or implied volatility
+  • Short interest data
+  • Institutional ownership filings
+  • Foreign flow data (not real-time)
+
+Every factor_formula MUST be computable using ONLY
+the available data sources listed above.
+════════════════════════════════════════════════════════════════
 """.format(universe=_UNIVERSE_FULL)
+
+
+# ── Adversarial Gate 0 system prompt — intentionally skeptical ───────────────
+GATE0_SYSTEM = """You are a skeptical quantitative researcher at a prop trading firm whose job
+is to REJECT weak ideas. You are actively looking for reasons this strategy will NOT work on
+Bursa Malaysia. Be demanding — most ideas should fail this gate. Your default stance is rejection.
+
+You know Bursa Malaysia intimately: EPF dominance creates predictable flows that front-runners
+exploit; GLC concentration means events move whole sectors; T+3 settlement makes very short-term
+strategies expensive; approved-list restrictions mean long-only is the only viable approach for
+most stocks; Yahoo Finance .KL data has quality issues (dividend adjustments, split gaps, stale
+fundamentals). Score with deep scepticism and give low scores unless the edge is compelling."""
 
 
 class StrategyResearcher(BaseAgent):
@@ -165,8 +243,9 @@ class StrategyResearcher(BaseAgent):
             hypo    = (idea.get("hypothesis", "") or "").lower()
             formula = (idea.get("factor_formula", "") or "")
 
-            # Check 1: valid .KL ticker or plausible sector
-            if not self._is_equity_ticker(ticker):
+            # Check 1: valid .KL ticker (single or comma-separated) or plausible sector
+            primary = ticker.split(",")[0].strip()
+            if not self._is_equity_ticker(primary):
                 sector = (idea.get("sector", "") or "").strip()
                 if not sector:
                     self.log_daemon(
@@ -216,17 +295,7 @@ class StrategyResearcher(BaseAgent):
     # ── Idea generation ────────────────────────────────────────────────────────
 
     def generate_ideas(self, topic: str = None, count: int = 5) -> list:
-        # ── KB context injection ──────────────────────────────────────────────
-        # Search the knowledge base for relevant documents before calling Claude.
-        # Failure here is non-blocking — generation continues without KB context.
-        # ── Rejection avoidance injection ────────────────────────────────────
-        avoidance_context = ""
-        try:
-            from knowledge.ingestion.rejection_memory import RejectionMemory
-            avoidance_context = RejectionMemory().inject_into_prompt()
-        except Exception as e:
-            self.log_daemon("WARN", f"RejectionMemory unavailable (non-blocking): {e}")
-
+        # ── 1. KB context — search relevant documents first ──────────────────
         kb_context = ""
         try:
             from knowledge.ingestion.kb_ingester import KBIngester
@@ -234,14 +303,14 @@ class StrategyResearcher(BaseAgent):
             query      = topic if topic else "Bursa Malaysia equity strategy alpha factor"
             kb_results = ingester.search(query, limit=5)
             if kb_results:
-                kb_context = "\nRelevant knowledge base context:\n"
+                kb_context = "\nKNOWLEDGE BASE CONTEXT — use these research findings to ground your ideas:\n"
                 for doc in kb_results:
-                    snippet = (doc.get("summary") or "")[:150]
-                    kb_context += f"- {doc['title']}: {snippet}\n"
+                    snippet = (doc.get("summary") or "")[:300]
+                    domain  = doc.get("domain", "")
+                    kb_context += f"- [{domain}] {doc['title']}: {snippet}\n"
                 kb_context += (
-                    "\nUse the above KB context to generate more specific, "
-                    "locally-grounded ideas referencing real Malaysian market "
-                    "techniques, stocks, and factors described above.\n"
+                    "\nGenerate ideas that reference specific techniques and factors from the above "
+                    "KB documents where applicable.\n"
                 )
                 self.log_daemon("INFO", f"KB context: {len(kb_results)} documents found for idea generation")
             else:
@@ -249,7 +318,56 @@ class StrategyResearcher(BaseAgent):
         except Exception as e:
             self.log_daemon("WARN", f"KB context fetch failed (non-blocking): {e}")
 
-        # ── Technique library injection ───────────────────────────────────────
+        # ── 2. Rejection memory — pattern-level avoidance ────────────────────
+        avoidance_context = ""
+        try:
+            from knowledge.ingestion.rejection_memory import RejectionMemory
+            avoidance_context = RejectionMemory().inject_into_prompt()
+        except Exception as e:
+            self.log_daemon("WARN", f"RejectionMemory unavailable (non-blocking): {e}")
+
+        # ── 3. Last 20 rejected ideas from DB — idea-level avoidance ─────────
+        rejected_db_context = ""
+        try:
+            with db_session() as conn:
+                rejected_rows = conn.execute("""
+                    SELECT DISTINCT ai.title, gd.rationale
+                    FROM alpha_ideas ai
+                    JOIN gate_decisions gd ON ai.id = gd.idea_id
+                    WHERE ai.status = 'rejected'
+                    ORDER BY ai.updated_at DESC LIMIT 20
+                """).fetchall()
+            if rejected_rows:
+                lines = [
+                    f"- {r['title']}: {(r['rationale'] or 'rejected')[:120]}"
+                    for r in rejected_rows
+                ]
+                rejected_db_context = (
+                    "\nPREVIOUSLY REJECTED IDEAS — DO NOT repeat these or similar concepts:\n"
+                    + "\n".join(lines) + "\n"
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"Rejected ideas DB fetch failed (non-blocking): {e}")
+
+        # ── 4. Active pipeline — enforce uniqueness ───────────────────────────
+        pipeline_context = ""
+        try:
+            with db_session() as conn:
+                active_rows = conn.execute("""
+                    SELECT title, stage FROM alpha_ideas
+                    WHERE status != 'rejected'
+                    ORDER BY created_at DESC LIMIT 30
+                """).fetchall()
+            if active_rows:
+                lines = [f"- [{r['stage']}] {r['title']}" for r in active_rows]
+                pipeline_context = (
+                    "\nALREADY IN PIPELINE — ensure new ideas are meaningfully different:\n"
+                    + "\n".join(lines) + "\n"
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"Pipeline ideas fetch failed (non-blocking): {e}")
+
+        # ── 5. Technique library ──────────────────────────────────────────────
         technique_context = ""
         try:
             from knowledge.ingestion.technique_library import TechniqueLibrary
@@ -274,11 +392,19 @@ class StrategyResearcher(BaseAgent):
             "Cover a diverse mix: at least one technical, one fundamental/value, "
             "one event-driven, and one sector-rotation idea."
         )
+        diversity_requirement = (
+            f"\nDOMAIN DIVERSITY: The {count} ideas MUST span at least 3 different domains from: "
+            "momentum, mean_reversion, value, event_driven, sector_rotation, dividend_capture, "
+            "earnings, insider_flow, technical, macro. Do NOT generate multiple ideas in the same domain.\n"
+        )
+
         prompt = f"""Generate exactly {count} quantitative equity alpha ideas for Bursa Malaysia stocks.
 {kb_context}
 {avoidance_context}
+{rejected_db_context}
+{pipeline_context}
+{diversity_requirement}
 {technique_context}
-
 {topic_line}
 
 HARD RULES — VIOLATIONS WILL CAUSE THE ENTIRE RESPONSE TO BE DISCARDED:
@@ -289,6 +415,31 @@ HARD RULES — VIOLATIONS WILL CAUSE THE ENTIRE RESPONSE TO BE DISCARDED:
 4. "timeframe" MUST be "1d" (daily bars — KLSE primary timeframe).
 5. "holding_period" must express weeks or months, NOT pips or ticks.
 6. "factor_formula" must describe a STOCK price/fundamental signal, NOT an FX rate signal.
+
+OHLCV DATA CONSTRAINT — MANDATORY FOR BACKTESTING:
+The backtest engine can ONLY access daily OHLCV data from Yahoo Finance.
+The "factor_formula" field MUST be computable from ONLY:
+  ✓ Daily open, high, low, close prices
+  ✓ Daily volume
+  ✓ Derived: moving averages (SMA/EMA), RSI, MACD, Bollinger Bands, ATR, momentum
+  ✓ Derived: rolling returns, rolling volatility, 52-week high/low
+
+Do NOT include ANY of the following in "factor_formula" — ideas with these will be
+automatically rejected at the backtest stage (wasting pipeline budget):
+  ✗ Dividend yield, TTM yield, payout ratio, yield spread, blended yield
+  ✗ Price-to-Book (P/B), ROE, Return on Equity, Debt/Equity ratio (DER)
+  ✗ EPS forecasts, net profit margin, earnings yield, free cash flow yield
+  ✗ KLCI constituent weights, market-cap-weighted reference yields
+  ✗ Book value, BVPS, PE ratio referenced as a computed signal
+  ✗ Corporate announcements, ex-dividend dates, dividend declarations
+  ✗ Net Interest Margin (NIM), OPR spread calculations
+  ✗ Bloomberg/Refinitiv data, analyst consensus estimates
+  ✗ Any data not directly derivable from OHLCV price and volume bars
+
+If your alpha thesis requires fundamental data, express the entry/exit timing using
+a PRICE-BASED proxy instead:
+  Example: Instead of "enter when dividend yield > 5%", write
+  "enter when price falls below 200-day SMA and RSI < 35 (proxy for high-yield dip)".
 
 Available tickers (use ONLY these or other confirmed .KL tickers):
 {_UNIVERSE_BRIEF}
@@ -326,12 +477,18 @@ Return a valid JSON array of exactly {count} objects. Each object:
                 continue
             ticker = idea.get("ticker", "")
             if not self._is_equity_ticker(ticker):
-                # Attempt recovery: look for a .KL pattern anywhere in the idea
+                # Attempt recovery: extract all .KL codes from anywhere in the idea JSON
                 all_text = json.dumps(idea)
-                found = re.findall(r'\b\d{4}[A-Z0-9]*\.KL\b', all_text)
+                found_raw = re.findall(r'\b\d{4}[A-Z0-9]*\.KL\b', all_text)
+                # Deduplicate preserving order
+                found = list(dict.fromkeys(found_raw))
                 if found:
-                    idea["ticker"] = found[0]
-                    self.log_daemon("WARN", f"Corrected ticker for '{idea.get('title','?')}' → {found[0]}")
+                    # Sector strategies: store comma-separated list; single-stock: just one ticker
+                    idea["ticker"] = ",".join(found[:5])
+                    self.log_daemon(
+                        "WARN",
+                        f"Corrected ticker for '{idea.get('title','?')}' → {idea['ticker']}",
+                    )
                 else:
                     self.log_daemon("WARN", f"Discarded idea with invalid ticker '{ticker}': {idea.get('title','?')}")
                     continue
@@ -350,12 +507,15 @@ Return a valid JSON array of exactly {count} objects. Each object:
         slug   = f"{datetime.utcnow().strftime('%Y-%m-%d')}-{slug}"
         ticker = idea.get("ticker") or "1155.KL"
 
-        # Final safety gate — refuse to persist FX ideas
-        if not self._is_equity_ticker(ticker):
+        # For sector ideas ticker may be comma-separated (e.g. "5225.KL,5878.KL,7081.KL").
+        # Validate only the primary (first) ticker — the full list is stored for reference.
+        primary_ticker = ticker.split(",")[0].strip()
+        if not self._is_equity_ticker(primary_ticker):
             raise ValueError(
-                f"save_idea() refused: ticker '{ticker}' is not a valid .KL symbol. "
-                f"Title: '{title}'"
+                f"save_idea() refused: primary ticker '{primary_ticker}' "
+                f"(from '{ticker[:80]}') is not a valid .KL symbol. Title: '{title}'"
             )
+        ticker = ticker  # keep the full comma-separated string in the DB
 
         with db_session() as conn:
             conn.execute("""
@@ -429,15 +589,17 @@ Return a valid JSON array of exactly {count} objects. Each object:
             return {"error": f"Idea {idea_id} not found"}
         row = dict(row)   # convert sqlite3.Row → dict so .get() works everywhere
 
-        ticker     = row["ticker"] or "1155.KL"
-        stock_info = KLCI_BY_SYMBOL.get(ticker, {})
-        company    = stock_info.get("name", ticker)
-        sector     = stock_info.get("sector", "Unknown")
+        ticker         = row["ticker"] or "1155.KL"
+        primary_ticker = ticker.split(",")[0].strip()   # handle comma-separated sector tickers
+        stock_info     = KLCI_BY_SYMBOL.get(primary_ticker, {})
+        company        = stock_info.get("name", primary_ticker)
+        sector         = stock_info.get("sector", "Unknown")
 
         # Compute feasibility before calling Claude
-        feasibility = self._compute_feasibility(row, ticker, row["factor_formula"] or "")
+        feasibility = self._compute_feasibility(row, primary_ticker, row["factor_formula"] or "")
 
-        prompt = f"""Score this Bursa Malaysia equity strategy idea at Gate 0 (initial quality screen).
+        prompt = f"""Evaluate this Bursa Malaysia equity strategy at Gate 0. Your job is to REJECT it
+if there are any serious flaws. Be demanding — most ideas should fail.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Stock:      {company} ({ticker}) — {sector}
@@ -447,40 +609,62 @@ Signal:     {row['factor_formula']}
 Timeframe:  {row['timeframe']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Evaluate against these KLSE-specific criteria:
+Score each dimension 0.0–1.0 (use low scores liberally):
 
-NOVELTY (0–1): Is this genuinely non-obvious for Malaysian equities? Does it go beyond
-  simple "buy cheap PE" or "buy strong momentum"? Any KLSE-specific angle?
+1. NOVELTY (0–1): Is this genuinely differentiated beyond textbook strategies?
+   Score LOW if it is standard momentum/value with no KLSE-specific insight.
 
-LOGIC (0–1): Does the economic mechanism hold in Malaysia's market structure?
-  Consider: GLC dominance, EPF flows, illiquidity premium, OPR sensitivity.
+2. LOGIC (0–1): Is the economic mechanism sound and SPECIFIC to Bursa Malaysia?
+   Must account for GLC dominance, EPF flows, OPR cycle, T+3 settlement friction.
+   Score LOW if the rationale is generic (could apply to any market).
 
-IMPLEMENTABILITY (0–1): Can a retail/institutional investor execute this on Bursa?
-  Consider: lot size (100 shares), stamp duty (0.15%), T+3 settlement,
-  short-selling restrictions (approved list only), data availability.
+3. FEASIBILITY (0–1): Can a real fund execute this on Bursa today?
+   Consider: 100-share lot minimum, stamp duty 0.15%, T+3 settlement impact on
+   short holding periods, short-selling restrictions (approved list only),
+   thin liquidity in mid/small caps (daily value < RM500k = not viable).
+   Score LOW if execution barriers are severe.
 
-KLSE FIT (0–1): How well does this match Bursa Malaysia's typical alpha sources?
+4. DATA_QUALITY (0–1): Is ALL required data reliably available on Yahoo Finance .KL?
+   Daily OHLCV, dividends, basic fundamentals (PE, book value, market cap) are available.
+   Analyst estimates, options data, real-time feeds, tick data are NOT available.
+   Score LOW if the signal depends on unavailable data.
 
-Pass threshold: novelty ≥ 0.60, logic ≥ 0.70
-  (feasibility is pre-scored at {feasibility:.2f}; must be ≥ 0.60 to pass regardless of other scores)
+5. OVERFITTING_RISK (0–1): Does this look data-mined to fit past returns?
+   Score HIGH (bad) if: too many parameters, suspiciously precise thresholds,
+   very short lookback, or no intuitive economic rationale for the exact rules.
+   Score LOW (good) if: simple signal, clear economic story, robust to parameter changes.
+   *** For PASS we need overfitting_risk <= 0.40 (lower is better) ***
+
+Deterministic pre-score: feasibility={feasibility:.2f}/1.00 (must be >= 0.60 to pass)
+
+Pass requires ALL of:
+  novelty >= 0.60, logic >= 0.65, feasibility >= 0.70,
+  data_quality >= 0.70, overfitting_risk <= 0.40, det_feasibility >= 0.60
+
+If you reject this idea due to data unavailability (data_quality_score < 0.70),
+include a 'price_based_proxy' field describing how to express a similar hypothesis
+using ONLY daily OHLCV data. E.g. instead of P/B ratio, use 52-week price drawdown
+as a value proxy. Keep it to one actionable sentence.
 
 Return JSON only:
 {{
-  "novelty_score":          0.0,
-  "logic_score":            0.0,
-  "implementability_score": 0.0,
-  "klse_fit_score":         0.0,
-  "pass":                   true,
-  "rationale":              "2-3 sentences explaining the decision",
-  "key_risks":              ["risk1", "risk2"],
-  "data_availability":      "high|medium|low",
-  "liquidity_concern":      false,
-  "short_selling_required": false
+  "novelty_score":        0.0,
+  "logic_score":          0.0,
+  "feasibility_score":    0.0,
+  "data_quality_score":   0.0,
+  "overfitting_risk":     0.5,
+  "pass":                 false,
+  "rationale":            "2-3 sentences — be specific about which dimensions fail and why",
+  "key_risks":            ["specific risk 1", "specific risk 2"],
+  "data_availability":    "high|medium|low",
+  "liquidity_concern":    false,
+  "short_selling_required": false,
+  "price_based_proxy":    null
 }}"""
 
         try:
             result = self.call_claude_json(
-                SYSTEM,
+                GATE0_SYSTEM,
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
                 task_label="gate0_score",
@@ -501,30 +685,38 @@ Return JSON only:
                 f"RAW RESPONSE:\n{result.get('raw', '(no raw captured)')[:2000]}"
             )
 
-        novelty = result.get("novelty_score", result.get("novelty", 0))
-        logic   = result.get("logic_score",   result.get("logic",   0))
+        novelty      = float(result.get("novelty_score",     result.get("novelty", 0)))
+        logic        = float(result.get("logic_score",       result.get("logic",   0)))
+        claude_feas  = float(result.get("feasibility_score", 0))
+        data_qual    = float(result.get("data_quality_score", 0))
+        overfit      = float(result.get("overfitting_risk",  1.0))
 
-        # Log a warning if both scores are suspiciously zero (likely a parse problem)
+        # Log a warning if all scores are suspiciously zero (likely a parse problem)
         if novelty == 0.0 and logic == 0.0 and "error" not in result:
             self.logger.warning(
-                f"[score_gate0] Both novelty and logic are 0.0 for idea {idea_id} — "
-                f"possible key mismatch. Full result keys: {list(result.keys())}\n"
-                f"Full result: {result}"
+                f"[score_gate0] Scores all zero for idea {idea_id} — "
+                f"possible key mismatch. Keys: {list(result.keys())}\nFull: {result}"
             )
 
-        # Gate 0 requires ALL THREE dimensions
+        # Gate 0: ALL FIVE dimensions + deterministic feasibility must pass
         passed = (
-            novelty    >= 0.60
-            and logic       >= 0.70
-            and feasibility >= 0.60
+            novelty     >= 0.60
+            and logic       >= 0.65
+            and claude_feas >= 0.70
+            and data_qual   >= 0.70
+            and overfit     <= 0.40
+            and feasibility >= 0.60   # deterministic pre-score
         )
 
         # Build a clear failure message so rejection_memory gets useful context
         if not passed:
             failed_dims = []
-            if novelty    < 0.60: failed_dims.append(f"novelty={novelty:.2f}<0.60")
-            if logic      < 0.70: failed_dims.append(f"logic={logic:.2f}<0.70")
-            if feasibility < 0.60: failed_dims.append(f"feasibility={feasibility:.2f}<0.60")
+            if novelty     < 0.60: failed_dims.append(f"novelty={novelty:.2f}<0.60")
+            if logic       < 0.65: failed_dims.append(f"logic={logic:.2f}<0.65")
+            if claude_feas < 0.70: failed_dims.append(f"feasibility={claude_feas:.2f}<0.70")
+            if data_qual   < 0.70: failed_dims.append(f"data_quality={data_qual:.2f}<0.70")
+            if overfit     > 0.40: failed_dims.append(f"overfitting_risk={overfit:.2f}>0.40")
+            if feasibility < 0.60: failed_dims.append(f"det_feasibility={feasibility:.2f}<0.60")
             rationale = result.get("rationale", "") + f" [FAILED: {', '.join(failed_dims)}]"
         else:
             rationale = result.get("rationale", "")
@@ -554,15 +746,58 @@ Return JSON only:
                 VALUES (?, 'gate0', ?, 'StrategyResearcher', ?)
             """, (idea_id, "advanced" if passed else "rejected", rationale))
 
-        result["feasibility_score"] = feasibility
-        result["pass"] = passed
-        result["rationale"] = rationale
+        result["feasibility_score"]  = feasibility   # deterministic pre-score stored in DB
+        result["claude_feasibility"] = claude_feas
+        result["data_quality_score"] = data_qual
+        result["overfitting_risk"]   = overfit
+        result["pass"]               = passed
+        result["rationale"]          = rationale
 
         self.log_daemon(
             "INFO" if passed else "WARN",
-            f"Gate 0 {'PASSED' if passed else 'FAILED'}: [{idea_id}] {ticker} — {row['title']}"
-            f" (novelty={novelty:.2f} logic={logic:.2f} feasibility={feasibility:.2f})",
+            f"Gate 0 {'PASSED' if passed else 'FAILED'}: [{idea_id}] {ticker} — {row['title']} "
+            f"(novelty={novelty:.2f} logic={logic:.2f} feas={claude_feas:.2f} "
+            f"data_q={data_qual:.2f} overfit={overfit:.2f} det_feas={feasibility:.2f})",
         )
+
+        # ── Price-based proxy redirect + auto-resubmit ────────────────────────
+        if not passed:
+            proxy = (result.get("price_based_proxy") or "").strip()
+            if proxy and data_qual < 0.70:
+                # Store proxy in alpha_ideas
+                with db_session() as conn:
+                    conn.execute(
+                        "UPDATE alpha_ideas SET price_based_proxy=? WHERE id=?",
+                        (proxy, idea_id),
+                    )
+                self.log_daemon(
+                    "INFO",
+                    f"Gate 0 REDIRECT: Try '{proxy}' instead",
+                )
+                # Auto-resubmit as a new pending Gate 0 idea
+                try:
+                    proxy_idea = {
+                        "title":          f"Price proxy: {row['title'][:40]}",
+                        "hypothesis":     proxy,
+                        "ticker":         ticker,
+                        "timeframe":      row.get("timeframe") or "1d",
+                        "factor_formula": proxy,
+                        "data_sources":   ["Yahoo Finance daily OHLCV"],
+                        "novelty_score":  0.6,
+                        "logic_score":    0.65,
+                    }
+                    new_id = self.save_idea(proxy_idea)
+                    self.log_daemon(
+                        "INFO",
+                        f"Gate 0 REDIRECT: Auto-created proxy idea [{new_id}] "
+                        f"'{proxy_idea['title']}'",
+                    )
+                except Exception as proxy_err:
+                    self.log_daemon(
+                        "WARN",
+                        f"Gate 0 REDIRECT: Failed to auto-create proxy idea: {proxy_err}",
+                    )
+
         return result
 
     # ── Stage 1 — deep research ────────────────────────────────────────────────
@@ -661,9 +896,10 @@ Research tasks:
 Note: "MYR" appears here only as the earnings/valuation currency, NOT as a traded
 instrument. All positions are in Bursa Malaysia stocks.
 {papers_section}
-Return JSON only:
+Return JSON only (use exactly this schema):
 {{
-  "research_score":          0.0,
+  "research_score":          7.5,
+  "_score_note":             "Float 0.0–10.0 with ONE decimal place. 10.0=exceptional alpha with strong KLSE evidence; 7.0=solid; 5.0=mixed; 3.0=weak; 0.0=reject. DO NOT default to 7.25 or 72.5.",
   "factor_formula_refined":  "Precise, step-by-step signal definition",
   "entry_rule":              "Exact entry condition",
   "exit_rule":               "Exact exit condition",
@@ -687,9 +923,26 @@ Return JSON only:
             max_tokens=8192,
             task_label="deep_research",
         )
+
+        # Debug: log raw response so we can verify Claude is evaluating each idea
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            f"Stage 1 raw response [{idea_id}]: "
+            + json.dumps({k: v for k, v in result.items() if k != "_score_note"})[:600]
+        )
+
+        # Validate research_score is not a suspiciously uniform default
+        rs = float(result.get("research_score", 0) or 0)
+        if abs(rs - 72.5) < 0.15 or abs(rs - 7.25) < 0.05:
+            self.log_daemon(
+                "WARN",
+                f"Stage 1 [{idea_id}] research_score={rs:.2f} matches known default value "
+                f"— Claude response may not reflect genuine per-idea evaluation",
+            )
+
         passed = (
             result.get("pass", False)
-            and result.get("research_score", 0) >= GATE_CONFIG.stage1_min_research_score
+            and rs >= GATE_CONFIG.stage1_min_research_score
         )
 
         with db_session() as conn:
@@ -699,7 +952,7 @@ Return JSON only:
                     stage=?, status=?, updated_at=datetime('now')
                 WHERE id=?
             """, (
-                result.get("research_score", 0),
+                rs,
                 result.get("factor_formula_refined", row["factor_formula"]),
                 json.dumps(result.get("data_sources", [])),
                 "stage2" if passed else "stage1",
@@ -716,8 +969,7 @@ Return JSON only:
 
         self.log_daemon(
             "INFO",
-            f"Stage 1 complete [{idea_id}] {ticker} — score={result.get('research_score',0):.2f} "
-            f"pass={passed}",
+            f"Stage 1 complete [{idea_id}] {ticker} — score={rs:.2f} pass={passed}",
         )
         return result
 

@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 SEMANTIC_SCHOLAR_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 ARXIV_URL            = "https://export.arxiv.org/api/query"
 
+# Brave Search — quality domain allowlist for the research hunt
+BRAVE_RESEARCH_DOMAINS = (
+    ".edu", ".ac.", "ssrn.com", "researchgate.net", "papers.ssrn.com",
+)
+
 QUERY_SYSTEM = (
     "You are a research librarian generating academic database search queries for "
     "quantitative equity research focused on Bursa Malaysia and ASEAN emerging markets."
@@ -306,6 +311,101 @@ Return a JSON array of short query strings (6-10 words each). Example:
             "titles":          titles_ingested,
             "queries":         queries,
         }
+
+    # ── Brave Search hunt ─────────────────────────────────────────────────────
+
+    def brave_search_hunt(self, topic: str, domain: str = "price_action") -> dict:
+        """Search Brave for research articles on a topic, filter to quality domains, ingest top 3.
+
+        Query template: "{topic} trading strategy research Bursa Malaysia"
+        Domain filter: .edu, .ac., ssrn.com, researchgate.net, papers.ssrn.com
+
+        Returns {"papers_found": int, "papers_ingested": int, "titles": list}
+        """
+        from config.settings import BRAVE_SEARCH_API_KEY
+        from knowledge.ingestion.kb_ingester import BraveSearchFetcher, BRAVE_SEARCH_URL
+
+        if not BRAVE_SEARCH_API_KEY:
+            self.log_daemon("WARN", "ResearchHunter.brave_search_hunt: BRAVE_SEARCH_API_KEY not set — skipping")
+            return {"papers_found": 0, "papers_ingested": 0, "titles": []}
+
+        query = f"{topic} trading strategy research Bursa Malaysia"
+        self.log_daemon("INFO", f"ResearchHunter.brave_search_hunt: '{query}'")
+
+        try:
+            resp = requests.get(
+                BRAVE_SEARCH_URL,
+                headers={
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip",
+                    "X-Subscription-Token": BRAVE_SEARCH_API_KEY,
+                },
+                params={"q": query, "count": 10, "text_decorations": "false"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            self.log_daemon("WARN", f"ResearchHunter.brave_search_hunt: API error: {e}")
+            return {"papers_found": 0, "papers_ingested": 0, "titles": []}
+
+        all_results = data.get("web", {}).get("results", [])
+        filtered = [
+            r for r in all_results
+            if any(d in r.get("url", "") for d in BRAVE_RESEARCH_DOMAINS)
+        ]
+        self.log_daemon(
+            "INFO",
+            f"ResearchHunter.brave_search_hunt: {len(all_results)} total, "
+            f"{len(filtered)} from quality domains",
+        )
+
+        kb             = KBIngester()
+        ingested       = 0
+        titles_ingested: list = []
+
+        for item in filtered[:3]:
+            title    = item.get("title", "").strip()
+            url      = item.get("url", "")
+            desc     = item.get("description", "").strip()
+            snippets = item.get("extra_snippets", [])
+
+            content_parts = [f"Title: {title}"]
+            if desc:
+                content_parts.append(desc)
+            content_parts.extend(s for s in snippets if s)
+            content = "\n\n".join(content_parts)
+
+            if not content.strip() or not title:
+                continue
+
+            try:
+                rel = self._is_relevant(title, desc)
+                if rel["category"] == "irrelevant":
+                    self.log_daemon(
+                        "INFO",
+                        f"ResearchHunter.brave_search_hunt: skipped '{title[:60]}' "
+                        f"(irrelevant, score={rel['relevance']:.2f})",
+                    )
+                    continue
+
+                kb.ingest_text(
+                    content=content,
+                    title=title,
+                    domain=domain,
+                    source_url=f"brave_hunt:{url}",
+                )
+                ingested += 1
+                titles_ingested.append(title)
+            except Exception as e:
+                logger.warning(f"ResearchHunter.brave_search_hunt: ingest failed for '{title}': {e}")
+
+        self.log_daemon(
+            "INFO",
+            f"ResearchHunter.brave_search_hunt complete: {len(filtered)} quality results, "
+            f"{ingested} ingested (topic='{topic[:50]}')",
+        )
+        return {"papers_found": len(filtered), "papers_ingested": ingested, "titles": titles_ingested}
 
     # ── run() ─────────────────────────────────────────────────────────────────
 
