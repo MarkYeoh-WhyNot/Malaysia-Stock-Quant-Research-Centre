@@ -42,6 +42,8 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "*Market Data*\n"
         "/briefing — send morning briefing now\n"
         "/dividends — ex-dividend dates in next 14 days\n"
+        "/fundamentals `<ticker>` — full fundamentals + quarters + dividends\n"
+        "/dividend_calendar — upcoming ex-dividend dates from screener data\n"
         "/epf — EPF ownership tracker: accumulating/distributing stocks\n"
         "/analyst — analyst coverage initiations last 7 days\n"
         "/cpo — CPO lag signal report for plantation stocks\n\n"
@@ -123,28 +125,36 @@ async def cmd_generate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_screen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     await update.message.reply_text(
-        "📡 Screening KLSE live data and generating ideas...\n_(fetches klsescreener.com + i3investor, ~45s)_",
+        "📡 Running 8 KLSE screens on klsescreener.com...\n_(~2 minutes, polite rate limit)_",
         parse_mode="Markdown"
     )
     try:
-        researcher = StrategyResearcher()
-        result     = researcher.run({"action": "screen_generate", "count": 3})
-        lines      = [f"✅ Created {result['ideas_created']} KLSE ideas from live screen:\n"]
-        for r in result.get("results", []):
-            gate = r.get("gate0", {})
-            icon = "✓" if gate.get("pass") else "✗"
-            lines.append(f"{icon} [{r['id']}] {r['title'][:50]}")
+        from data.klse_screener.screener import KLSEProactiveScreener
+        screener = KLSEProactiveScreener()
+        results  = screener.run_all_screens()
+
+        total = sum(r["count"] for r in results.values())
+        lines = [f"📊 *KLSE Screen Results* — {total} total matches\n"]
+        for name, r in results.items():
+            if r["count"] == 0:
+                continue
+            tickers = ", ".join(
+                f"`{s['ticker']}`" for s in r["stocks"][:4]
+            )
+            lines.append(
+                f"*{name}* ({r['count']}) — _{r['description']}_\n  {tickers}"
+            )
 
         # Also check i3investor for recent analyst coverage
         try:
             scraper  = I3investorScraper()
             articles = scraper.get_research_articles(max_articles=5)
             if articles:
-                lines.append(f"\n📰 *Recent i3investor Analyst Coverage*")
+                lines.append(f"\n📰 *Recent i3investor Coverage*")
                 for a in articles[:3]:
                     broker = f" [{a['brokerage']}]" if a.get("brokerage") else ""
-                    tickers = ", ".join(a.get("tickers", [])[:2])
-                    t_str   = f" `{tickers}`" if tickers else ""
+                    tickers_str = ", ".join(a.get("tickers", [])[:2])
+                    t_str = f" `{tickers_str}`" if tickers_str else ""
                     lines.append(f"  • {a['title'][:50]}{broker}{t_str}")
         except Exception as e2:
             logger.warning(f"i3investor coverage check failed: {e2}")
@@ -152,6 +162,127 @@ async def cmd_screen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_fundamentals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Fetch full fundamental data for a single ticker from klsescreener.com."""
+    if not is_allowed(update): return
+    if not ctx.args:
+        await update.message.reply_text(
+            "Usage: /fundamentals 1023.KL\n"
+            "Returns: fundamentals, last 4 quarters, last 4 dividends"
+        )
+        return
+    ticker = ctx.args[0].upper().strip()
+    if not ticker.endswith(".KL"):
+        ticker = ticker + ".KL"
+
+    await update.message.reply_text(
+        f"📊 Fetching fundamental data for `{ticker}`...\n_(~5 seconds)_",
+        parse_mode="Markdown"
+    )
+    try:
+        from data.klse_screener.fundamental_scraper import KLSEFundamentalScraper
+        data = KLSEFundamentalScraper().fetch_all(ticker)
+
+        if "error" in data:
+            await update.message.reply_text(f"❌ {data['error']}")
+            return
+
+        fund = data["fundamentals"]
+        lines = [
+            f"📊 *{fund.get('name') or ticker}* `{ticker}`\n",
+            f"Price:  `{fund.get('price') or '—'} MYR`",
+        ]
+        for label, key in [
+            ("DY",   "dy"),
+            ("DPS",  "dps_ttm"),
+            ("EPS",  "eps_ttm"),
+            ("P/E",  "pe"),
+            ("P/B",  "pb"),
+            ("ROE",  "roe"),
+            ("NTA",  "nta"),
+            ("Mkt Cap", "market_cap_b"),
+        ]:
+            val = fund.get(key)
+            if val is not None:
+                lines.append(f"{label:<8} `{val}`")
+        rsi = fund.get("rsi_14")
+        if rsi is not None:
+            lines.append(f"RSI(14)  `{rsi}`")
+
+        quarters = data["quarterly_history"][:4]
+        if quarters:
+            lines.append(f"\n*Last {len(quarters)} Quarters:*")
+            for q in quarters:
+                qd = q.get("q_date", "?")
+                eps_v = q.get("eps")
+                dps_v = q.get("dps")
+                yoy_v = q.get("yoy_pct")
+                parts = [f"`Q{q.get('quarter','')} {qd}`"]
+                if eps_v is not None:
+                    parts.append(f"EPS={eps_v}")
+                if dps_v is not None:
+                    parts.append(f"DPS={dps_v}")
+                if yoy_v is not None:
+                    parts.append(f"YoY={yoy_v:+.1f}%")
+                lines.append("  " + "  ".join(parts))
+
+        divs = data["dividend_history"][:4]
+        if divs:
+            lines.append(f"\n*Last {len(divs)} Dividends:*")
+            for d in divs:
+                dtype = d.get("dividend_type", "")
+                sen = d.get("dps_sen")
+                exd = d.get("ex_date", "?")
+                lines.append(
+                    f"  `{exd}` {d.get('subject', dtype)[:30]} "
+                    f"{'— ' + str(sen) + ' sen' if sen else ''}"
+                )
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+
+async def cmd_dividend_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show upcoming ex-dividend dates from dividend_history table."""
+    if not is_allowed(update): return
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT dh.ticker, fd.name, dh.ex_date, dh.payment_date,
+                   dh.dps_sen, dh.subject, dh.dividend_type
+            FROM dividend_history dh
+            LEFT JOIN (
+                SELECT ticker, name,
+                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY fetched_at DESC) rn
+                FROM fundamental_data
+            ) fd ON fd.ticker = dh.ticker AND fd.rn = 1
+            WHERE dh.ex_date >= ?
+            ORDER BY dh.ex_date ASC
+            LIMIT 15
+            """,
+            (today,),
+        ).fetchall()
+
+    if not rows:
+        await update.message.reply_text(
+            "No upcoming ex-dividend dates found in dividend_history.\n"
+            "Run /screen or wait for the 18:00 MYT refresh to populate data.",
+        )
+        return
+
+    lines = ["📅 *Upcoming Ex-Dividend Dates*\n"]
+    for r in rows:
+        name_str = (r["name"] or r["ticker"])[:20]
+        sen_str = f" — {r['dps_sen']:.2f} sen" if r.get("dps_sen") else ""
+        lines.append(
+            f"`{r['ex_date']}` *{name_str}* `{r['ticker']}`{sen_str}"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -836,9 +967,11 @@ def main():
     app.add_handler(CommandHandler("ideas",     cmd_ideas))
     app.add_handler(CommandHandler("spend",     cmd_spend))
     app.add_handler(CommandHandler("generate",  cmd_generate))
-    app.add_handler(CommandHandler("screen",    cmd_screen))
-    app.add_handler(CommandHandler("briefing",  cmd_briefing))
-    app.add_handler(CommandHandler("dividends", cmd_dividends))
+    app.add_handler(CommandHandler("screen",             cmd_screen))
+    app.add_handler(CommandHandler("fundamentals",       cmd_fundamentals))
+    app.add_handler(CommandHandler("dividend_calendar",  cmd_dividend_calendar))
+    app.add_handler(CommandHandler("briefing",           cmd_briefing))
+    app.add_handler(CommandHandler("dividends",          cmd_dividends))
     app.add_handler(CommandHandler("kb",        cmd_kb))
     app.add_handler(CommandHandler("search",    cmd_search))
     app.add_handler(CommandHandler("research",  cmd_research))
@@ -858,7 +991,9 @@ def main():
             BotCommand("ideas",     "Last 8 active alpha ideas"),
             BotCommand("spend",     "AI cost breakdown today"),
             BotCommand("generate",  "Generate KLCI equity ideas"),
-            BotCommand("screen",    "Scrape KLSE data + generate ideas"),
+            BotCommand("screen",             "8-screen KLSE fundamental scan"),
+            BotCommand("fundamentals",       "Full fundamentals for a ticker"),
+            BotCommand("dividend_calendar",  "Upcoming ex-dividend dates"),
             BotCommand("briefing",  "Send morning briefing now"),
             BotCommand("dividends", "Ex-dividend dates next 14 days"),
             BotCommand("epf",       "EPF ownership tracker"),

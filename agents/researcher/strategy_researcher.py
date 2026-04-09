@@ -1213,6 +1213,124 @@ novelty_score, logic_score, concerns."""
         self.log_daemon("INFO", f"KB seeding complete: {ok_count}/{len(facts)} facts ingested")
         return {"seeded": ok_count, "total": len(facts), "results": results}
 
+    # ── Screener-driven idea generation ──────────────────────────────────────
+
+    def generate_screener_ideas(self) -> int:
+        """
+        Run all 8 KLSEProactiveScreener screens and generate one idea per stock
+        (up to top 3 from each screen). Ideas are saved directly to gate0/pending.
+
+        Returns: number of ideas generated.
+        """
+        from data.klse_screener.screener import KLSEProactiveScreener
+        from data.database import db_session
+
+        screener = KLSEProactiveScreener()
+        all_results = screener.run_all_screens()
+
+        # Store raw screener results
+        from datetime import date as _date
+        run_date = _date.today().isoformat()
+        try:
+            with db_session() as conn:
+                for screen_name, result in all_results.items():
+                    for stock in result["stocks"]:
+                        conn.execute(
+                            """
+                            INSERT INTO screener_results
+                              (screen_name, ticker, name, dy, pe, pb, roe, price,
+                               matched_criteria, run_date)
+                            VALUES (?,?,?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                screen_name,
+                                stock.get("ticker"),
+                                stock.get("name"),
+                                stock.get("dy"),
+                                stock.get("pe"),
+                                stock.get("pb"),
+                                stock.get("roe"),
+                                stock.get("price"),
+                                result["description"],
+                                run_date,
+                            ),
+                        )
+        except Exception as e:
+            self.log_daemon("WARN", f"screener_results insert failed (non-blocking): {e}")
+
+        generated = 0
+        for screen_name, result in all_results.items():
+            angle = result["idea_angle"]
+            for stock in result["stocks"][:3]:
+                if not stock.get("ticker") or not stock["ticker"].endswith(".KL"):
+                    continue
+                try:
+                    sticker = stock["ticker"]
+                    sname = stock.get("name", sticker)
+                    json_template = (
+                        '{"title": str, "hypothesis": str, '
+                        f'"ticker": "{sticker}", '
+                        '"timeframe": "1d", '
+                        '"factor_formula": str, '
+                        '"novelty_score": float, '
+                        '"logic_score": float}'
+                    )
+                    prompt = (
+                        f"Generate one specific trading idea for "
+                        f"{sname} ({sticker}) on Bursa Malaysia.\n\n"
+                        f"Flagged by '{screen_name}' screen: {result['description']}\n\n"
+                        f"Current signals:\n"
+                        f"  Price: MYR {stock.get('price')}\n"
+                        f"  DY: {stock.get('dy')}%\n"
+                        f"  PE: {stock.get('pe')}\n"
+                        f"  P/B: {stock.get('pb')}\n"
+                        f"  ROE: {stock.get('roe')}%\n\n"
+                        f"RULES:\n"
+                        f"- Fundamentals above = WHY this stock is interesting "
+                        f"(stock selection context only)\n"
+                        f"- factor_formula MUST use ONLY price/volume signals "
+                        f"computable from Yahoo Finance OHLCV\n"
+                        f"- Entry/exit via RSI, MA, momentum, volume, price patterns ONLY\n"
+                        f"- Target ticker: {sticker}\n"
+                        f"- Timeframe: 1d or 1wk\n\n"
+                        f"Return JSON only:\n{json_template}"
+                    )
+                    idea = self.call_claude_json(
+                        SYSTEM,
+                        [{"role": "user", "content": prompt}],
+                        model=MODEL_FAST,
+                        task_label="screener_idea",
+                    )
+                    if not idea or "title" not in idea or idea.get("error"):
+                        continue
+                    # Enforce the ticker from the screener (don't let Claude hallucinate)
+                    idea["ticker"] = stock["ticker"]
+                    idea["screen_source"] = screen_name
+
+                    # Apply infeasibility filter
+                    filtered = self._filter_infeasible([idea])
+                    if not filtered:
+                        continue
+                    idea = filtered[0]
+
+                    idea_id = self.save_idea(idea)
+                    # Store screen_source
+                    with db_session() as conn:
+                        conn.execute(
+                            "UPDATE alpha_ideas SET screen_source=? WHERE id=?",
+                            (screen_name, idea_id),
+                        )
+                    generated += 1
+
+                except Exception as e:
+                    self.log_daemon(
+                        "WARN",
+                        f"generate_screener_ideas: error on {stock.get('ticker')}: {e}",
+                    )
+
+        self.log_daemon("INFO", f"Screener ideas generated: {generated}")
+        return generated
+
     # ── run() ─────────────────────────────────────────────────────────────────
 
     def run(self, task: dict) -> dict:

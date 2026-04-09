@@ -35,6 +35,8 @@ class ResearchDaemon:
         self._last_kb_hunt: datetime | None = None
         self._last_briefing: datetime | None = None
         self._last_alpha_seeds: datetime | None = None
+        self._last_klse_refresh: datetime | None = None
+        self._last_screener_ideas: datetime | None = None
 
     def start(self):
         logger.info("OpenClaw Research Daemon starting...")
@@ -92,6 +94,8 @@ class ResearchDaemon:
         await self._daily_knowledge_hunt()
         await self._process_alpha_seeds()
         await self._process_morning_briefing()
+        await self._process_klse_refresh()
+        await self._process_screener_ideas()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
@@ -512,6 +516,51 @@ class ResearchDaemon:
             )
         except Exception as e:
             logger.error(f"[MorningBriefing] Error: {e}", exc_info=True)
+
+
+    # ── KLSE fundamental refresh — 10:00 UTC (18:00 MYT, after market close) ──
+
+    async def _process_klse_refresh(self):
+        """Refresh KLCI fundamental data once per day at 10:00 UTC.
+
+        Scrapes klsescreener.com stock pages for all SLUG_MAP stocks and upserts
+        into fundamental_data, quarterly_history, and dividend_history tables.
+        """
+        now = datetime.utcnow()
+        if now.hour != 10:
+            return
+        if self._last_klse_refresh and (now - self._last_klse_refresh) < timedelta(hours=20):
+            return
+
+        logger.info("[KLSERefresh] Starting KLCI fundamental data refresh...")
+        try:
+            from data.klse_screener.fundamental_scraper import KLSEFundamentalScraper
+            result = KLSEFundamentalScraper().refresh_all_klci()
+            self._last_klse_refresh = now
+            logger.info(
+                f"[KLSERefresh] Complete — success={result['success']} "
+                f"failed={result['failed']}"
+            )
+        except Exception as e:
+            logger.error(f"[KLSERefresh] Error: {e}", exc_info=True)
+
+    # ── Screener-driven idea generation — 11:00 UTC (19:00 MYT) ─────────────
+
+    async def _process_screener_ideas(self):
+        """Run KLSEProactiveScreener and generate ideas once per day at 11:00 UTC."""
+        now = datetime.utcnow()
+        if now.hour != 11:
+            return
+        if self._last_screener_ideas and (now - self._last_screener_ideas) < timedelta(hours=20):
+            return
+
+        logger.info("[ScreenerIdeas] Running 8-screen KLSE idea generation...")
+        try:
+            generated = self.researcher.generate_screener_ideas()
+            self._last_screener_ideas = now
+            logger.info(f"[ScreenerIdeas] Complete — {generated} ideas created")
+        except Exception as e:
+            logger.error(f"[ScreenerIdeas] Error: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

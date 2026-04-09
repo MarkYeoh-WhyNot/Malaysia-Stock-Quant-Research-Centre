@@ -378,6 +378,113 @@ def init_db(db_path: Path = DB_PATH):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_alert_ticker ON analyst_alerts(ticker)"
         )
+
+        # KLSE Screener integration tables
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS fundamental_data (
+            ticker        TEXT NOT NULL,
+            name          TEXT,
+            price         REAL,
+            dy            REAL,
+            dps_ttm       REAL,
+            eps_ttm       REAL,
+            pe            REAL,
+            pb            REAL,
+            roe           REAL,
+            nta           REAL,
+            rsi_14        REAL,
+            stoch_14      REAL,
+            market_cap_b  REAL,
+            fetched_at    TEXT NOT NULL,
+            PRIMARY KEY (ticker, fetched_at)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS quarterly_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker         TEXT NOT NULL,
+            q_date         TEXT NOT NULL,
+            quarter        INTEGER,
+            financial_year TEXT,
+            announced      TEXT,
+            eps            REAL,
+            dps            REAL,
+            nta            REAL,
+            revenue        TEXT,
+            pl             TEXT,
+            roe            REAL,
+            qoq_pct        REAL,
+            yoy_pct        REAL,
+            UNIQUE(ticker, q_date)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS dividend_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker         TEXT NOT NULL,
+            ex_date        TEXT NOT NULL,
+            payment_date   TEXT,
+            announced      TEXT,
+            financial_year TEXT,
+            subject        TEXT,
+            dps_sen        REAL,
+            dividend_type  TEXT,
+            UNIQUE(ticker, ex_date)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS dividend_calendar (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker       TEXT,
+            name         TEXT,
+            ex_date      TEXT,
+            payment_date TEXT,
+            dps_sen      REAL,
+            days_until   INTEGER,
+            fetched_at   TEXT,
+            UNIQUE(ticker, ex_date)
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS screener_results (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            screen_name      TEXT,
+            ticker           TEXT,
+            name             TEXT,
+            dy               REAL,
+            pe               REAL,
+            pb               REAL,
+            roe              REAL,
+            rsi              REAL,
+            price            REAL,
+            matched_criteria TEXT,
+            run_date         TEXT,
+            idea_id          INTEGER
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fund_ticker ON fundamental_data(ticker)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_qh_ticker ON quarterly_history(ticker)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dh_ticker ON dividend_history(ticker)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dh_ex_date ON dividend_history(ex_date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dcal_ex_date ON dividend_calendar(ex_date)"
+        )
+
+        # Screener source tracking on alpha_ideas
+        try:
+            conn.execute("ALTER TABLE alpha_ideas ADD COLUMN screen_source TEXT")
+            logger.info("Migration applied: alpha_ideas.screen_source column added")
+        except Exception:
+            pass  # already exists
+
     logger.info(f"Database initialized at {db_path}")
 
 if __name__ == "__main__":
