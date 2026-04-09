@@ -5,7 +5,7 @@ klsescreener.com and returns matching stocks for each screen.
 import logging
 import time
 
-from data.klse_screener.client import fetch_page, log_daemon
+from data.klse_screener.client import fetch_page, post_screener, log_daemon
 
 logger = logging.getLogger(__name__)
 
@@ -20,67 +20,70 @@ class KLSEProactiveScreener:
     EPS | DPS | NTA | PE | DY | ROE | PTBV | Cap | Indicators
     """
 
-    # Pre-defined screens — params will be adjusted once form discovery runs
+    # Pre-defined screens — field names match klsescreener.com POST form exactly.
+    # Endpoint: POST /v2/screener/quote_results  (getquote=1 always added by post_screener)
+    # Sector IDs (Main Market): Plantation=10, Financial Services=7
+    # Subsector IDs: Banking=27
     SCREENS: dict = {
         "high_yield_value": {
-            "params": {"dy_min": 5, "pe_max": 15, "roe_min": 8, "market_cap_min": 500},
+            "params": {"min_dy": 5, "max_pe": 15, "min_roe": 8, "min_marketcap": 500},
             "description": "High DY + low PE + solid ROE",
             "idea_angle": "dividend_capture",
         },
         "momentum_breakout": {
             "params": {
-                "sma": "SMA50",
-                "rsi": "Neutral",
-                "price_change": "Gainers",
-                "net_profit_yoy": "On",
+                "price_gt_sma_50": "50",
+                "rsi": "neutral",
+                "price_gainer": "1",
+                "yoy": "1",
             },
             "description": "Above SMA50, gaining, profitable",
             "idea_angle": "momentum",
         },
         "oversold_quality": {
-            "params": {"rsi": "Oversold", "roe_min": 10, "pe_max": 20, "market_cap_min": 1000},
+            "params": {"rsi": "oversold", "min_roe": 10, "max_pe": 20, "min_marketcap": 1000},
             "description": "RSI oversold + quality fundamentals",
             "idea_angle": "mean_reversion",
         },
         "low_pb_reversion": {
-            "params": {"ptbv_max": 1.2, "roe_min": 8, "sma": "SMA50"},
+            "params": {"max_ptbv": 1.2, "min_roe": 8, "price_gt_sma_50": "50"},
             "description": "P/B below book + ROE + uptrend",
             "idea_angle": "value",
         },
         "earnings_momentum": {
             "params": {
-                "net_profit_yoy": "On",
-                "net_profit_qoq": "On",
-                "revenue_yoy": "On",
-                "market_cap_min": 300,
+                "yoy": "1",
+                "qoq": "1",
+                "ryoy": "1",
+                "min_marketcap": 300,
             },
             "description": "Improving earnings and revenue",
             "idea_angle": "event_driven",
         },
         "net_cash_defensive": {
-            "params": {"net_cash": "1", "dy_min": 3, "market_cap_min": 500},
+            "params": {"netcash": "on", "min_dy": 3, "min_marketcap": 500},
             "description": "Net cash + dividend yield",
             "idea_angle": "defensive",
         },
         "plantation_oversold": {
-            "params": {"sector": "Plantation", "rsi": "Oversold", "dy_min": 2},
+            "params": {"sector": "10", "rsi": "oversold", "min_dy": 2},
             "description": "Plantation stocks oversold",
             "idea_angle": "cpo_lag",
         },
         "banking_value": {
             "params": {
-                "subsector": "Banking",
-                "ptbv_max": 1.3,
-                "dy_min": 4,
-                "roe_min": 10,
+                "subsector": "27",
+                "max_ptbv": 1.3,
+                "min_dy": 4,
+                "min_roe": 10,
             },
             "description": "Banking below book with yield",
             "idea_angle": "value",
         },
     }
 
-    # Column indices as discovered from live screenshots
-    # Order: Name Code Category Price Change Change% 52w Volume EPS DPS NTA PE DY ROE PTBV Cap Indicators
+    # Column indices from live /v2/screener/quote_results response (POST)
+    # Headers: Name Code Category Price Change Change% 52week Volume EPS DPS NTA PE DY ROE PTBV MCap.(M) Indicators
     _COL_MAP = {
         "name":     0,
         "code":     1,
@@ -144,16 +147,21 @@ class KLSEProactiveScreener:
 
     def run_screen(self, params: dict, screen_name: str) -> list:
         """
-        Run a single screen: GET klsescreener.com/v2/ with params dict.
+        Run a single screen: POST to /v2/screener/quote_results with params dict.
 
         Returns list of stock dicts with fields:
             ticker, name, price, dy, pe, pb, roe, eps, dps, nta, cap
         """
         time.sleep(2)
 
-        soup = fetch_page("/", params=params)
+        soup, req_url = post_screener(params)
+
+        # ── Debug: log full URL + params ──────────────────────────────────────
+        param_str = "&".join(f"{k}={v}" for k, v in params.items())
+        log_daemon("DEBUG", "KLSEScreener", f"{screen_name}: POST {req_url} [{param_str}]")
+
         if not soup:
-            log_daemon("WARN", "KLSEScreener", f"{screen_name}: fetch returned None")
+            log_daemon("WARN", "KLSEScreener", f"{screen_name}: POST returned None")
             return []
 
         page_text = soup.get_text(separator=" ")
@@ -164,9 +172,11 @@ class KLSEProactiveScreener:
             if "stock(s) found" in line or "stocks found" in line.lower():
                 count_text = line.strip()
                 break
-        # If "0 stock(s) found" → return early
+
         import re
         m = re.search(r"(\d+)\s+stock", count_text, re.IGNORECASE)
+        if count_text:
+            log_daemon("DEBUG", "KLSEScreener", f"{screen_name}: {count_text}")
         if m and int(m.group(1)) == 0:
             return []
 
@@ -189,8 +199,11 @@ class KLSEProactiveScreener:
                     break
 
         if not target_table:
+            html_preview = str(soup)[:500].replace("\n", " ")
             log_daemon(
-                "WARN", "KLSEScreener", f"{screen_name}: results table not found"
+                "WARN",
+                "KLSEScreener",
+                f"{screen_name}: results table not found. HTML[0:500]: {html_preview}",
             )
             return []
 
@@ -206,20 +219,23 @@ class KLSEProactiveScreener:
 
         if header_cells:
             _header_field_map = {
-                "NAME":    "name",
-                "CODE":    "code",
-                "PRICE":   "price",
-                "EPS":     "eps",
-                "DPS":     "dps",
-                "NTA":     "nta",
-                "PE":      "pe",
-                "DY":      "dy",
-                "ROE":     "roe",
-                "PTBV":    "pb",
-                "P/B":     "pb",
-                "CAP":     "cap",
-                "VOLUME":  "volume",
-                "CHANGE%": "change_pct",
+                "NAME":      "name",
+                "CODE":      "code",
+                "PRICE":     "price",
+                "EPS":       "eps",
+                "DPS":       "dps",
+                "NTA":       "nta",
+                "PE":        "pe",
+                "DY":        "dy",
+                "ROE":       "roe",
+                "PTBV":      "pb",
+                "P/B":       "pb",
+                "CAP":       "cap",
+                "MCAP.(M)":  "cap",
+                "VOLUME":    "volume",
+                "CHANGE%":   "change_pct",
+                "52WEEK":    "52w",
+                "INDICATORS": "indicators",
             }
             for i, hdr in enumerate(header_cells):
                 for key, field in _header_field_map.items():

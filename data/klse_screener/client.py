@@ -25,6 +25,13 @@ HEADERS = {
 }
 
 
+_POST_HEADERS = {
+    **HEADERS,
+    "Content-Type": "application/x-www-form-urlencoded",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
+
 def fetch_page(path: str, params: dict = None) -> BeautifulSoup | None:
     """GET {BASE_URL}{path} with polite 1.5s delay. Returns BeautifulSoup or None on error."""
     time.sleep(1.5)
@@ -38,6 +45,22 @@ def fetch_page(path: str, params: dict = None) -> BeautifulSoup | None:
     except Exception as e:
         logger.warning(f"[KLSEClient] Fetch error {url}: {e}")
         return None
+
+
+def post_screener(data: dict) -> tuple[BeautifulSoup | None, str]:
+    """POST to /v2/screener/quote_results (AJAX endpoint). Returns (soup, url)."""
+    time.sleep(1.5)
+    url = f"{BASE_URL}/screener/quote_results"
+    payload = {"getquote": "1", **data}
+    try:
+        r = requests.post(url, data=payload, headers=_POST_HEADERS, timeout=30)
+        if r.status_code == 200:
+            return BeautifulSoup(r.text, "html.parser"), url
+        logger.warning(f"[KLSEClient] HTTP {r.status_code} for POST {url}")
+        return None, url
+    except Exception as e:
+        logger.warning(f"[KLSEClient] POST error {url}: {e}")
+        return None, url
 
 
 def log_daemon(level: str, source: str, message: str) -> None:

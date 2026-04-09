@@ -167,13 +167,14 @@ async def cmd_screen(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_fundamentals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Fetch full fundamental data for a single ticker from klsescreener.com."""
     if not is_allowed(update): return
-    if not ctx.args:
+    text = update.message.text.strip()
+    parts = text.split()
+    if len(parts) < 2:
         await update.message.reply_text(
-            "Usage: /fundamentals 1023.KL\n"
-            "Returns: fundamentals, last 4 quarters, last 4 dividends"
+            "Usage: /fundamentals 1023.KL"
         )
         return
-    ticker = ctx.args[0].upper().strip()
+    ticker = parts[1].upper()
     if not ticker.endswith(".KL"):
         ticker = ticker + ".KL"
 
