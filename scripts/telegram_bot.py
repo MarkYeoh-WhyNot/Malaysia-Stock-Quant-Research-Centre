@@ -63,22 +63,47 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     monitor = RiskMonitor()
     health  = monitor.pipeline_health_report()
-    stages  = health.get("stages", {})
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        today_count = conn.execute(
+            "SELECT COUNT(*) as c FROM alpha_ideas WHERE created_at LIKE ?",
+            (f"{today}%",)
+        ).fetchone()["c"]
+        stage_counts = conn.execute(
+            "SELECT stage, COUNT(*) as c FROM alpha_ideas "
+            "WHERE status='active' GROUP BY stage ORDER BY stage"
+        ).fetchall()
+        last_scan = conn.execute(
+            "SELECT created_at FROM daemon_logs "
+            "WHERE source='ResearchDaemon' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    last_scan_str = last_scan["created_at"][:16] if last_scan else "never"
+
     lines = [
         f"🐋 *Pipeline Status* — {datetime.utcnow().strftime('%H:%M UTC')}",
         f"",
         f"Health: `{health['health'].upper()}`",
         f"Total ideas: `{health['total_ideas']}`",
+        f"Ideas today: `{today_count}`",
         f"Today's spend: `${health['daily_spend']:.4f}`",
         f"Errors (1h): `{health['errors_1h']}`",
+        f"Last scan: `{last_scan_str}`",
     ]
+    if stage_counts:
+        lines.append(f"")
+        lines.append(f"*Active ideas by stage:*")
+        for row in stage_counts:
+            lines.append(f"  `{row['stage']}`: {row['c']}")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_ideas(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     with db_session() as conn:
         ideas = conn.execute("""
-            SELECT id, title, pair, stage, novelty_score, logic_score, backtest_sharpe
+            SELECT id, title, ticker, stage, novelty_score, logic_score, backtest_sharpe
             FROM alpha_ideas WHERE status='active' ORDER BY id DESC LIMIT 8
         """).fetchall()
     if not ideas:
@@ -247,43 +272,204 @@ async def cmd_fundamentals(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_dividend_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Show upcoming ex-dividend dates from dividend_history table."""
+    """Show confirmed + predicted ex-dividend dates with imminent alerts."""
     if not is_allowed(update): return
-    from datetime import date as _date
-    today = _date.today().isoformat()
-    with db_session() as conn:
-        rows = conn.execute(
-            """
-            SELECT dh.ticker, fd.name, dh.ex_date, dh.payment_date,
-                   dh.dps_sen, dh.subject, dh.dividend_type
-            FROM dividend_history dh
-            LEFT JOIN (
-                SELECT ticker, name,
-                       ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY fetched_at DESC) rn
-                FROM fundamental_data
-            ) fd ON fd.ticker = dh.ticker AND fd.rn = 1
-            WHERE dh.ex_date >= ?
-            ORDER BY dh.ex_date ASC
-            LIMIT 15
-            """,
-            (today,),
-        ).fetchall()
 
-    if not rows:
-        await update.message.reply_text(
-            "No upcoming ex-dividend dates found in dividend_history.\n"
-            "Run /screen or wait for the 18:00 MYT refresh to populate data.",
-        )
-        return
+    from datetime import date as _date, timedelta as _td
+    from collections import defaultdict
 
-    lines = ["📅 *Upcoming Ex-Dividend Dates*\n"]
-    for r in rows:
-        name_str = (r["name"] or r["ticker"])[:20]
-        sen_str = f" — {r['dps_sen']:.2f} sen" if r.get("dps_sen") else ""
+    def _short_name(raw: str, ticker: str) -> str:
+        """Strip Bursa code suffix e.g. 'MAYBANK (1155)' → 'Maybank'."""
+        if not raw:
+            return ticker
+        # Remove trailing " (NNNN)" Bursa code
+        if ' (' in raw:
+            raw = raw.split(' (')[0]
+        return raw.strip()[:18]
+
+    try:
+        today = _date.today()
+        today_str = today.isoformat()
+
+        # ── Name lookup from fundamental_data ─────────────────────────────
+        name_map: dict = {}
+        try:
+            with db_session() as conn:
+                for r in conn.execute(
+                    "SELECT ticker, name FROM fundamental_data "
+                    "GROUP BY ticker HAVING MAX(fetched_at)"
+                ).fetchall():
+                    if r['name']:
+                        name_map[r['ticker']] = r['name']
+        except Exception:
+            pass
+        # KLCI short names as fallback
+        try:
+            from config.settings import KLCI_BY_SYMBOL
+            for sym, info in KLCI_BY_SYMBOL.items():
+                if sym not in name_map:
+                    name_map[sym] = info['name']
+        except Exception:
+            pass
+
+        # ── SECTION A: Confirmed upcoming ex-dates ─────────────────────────
+        with db_session() as conn:
+            confirmed = conn.execute("""
+                SELECT ticker, ex_date, dps_sen, dividend_type, subject
+                FROM dividend_history
+                WHERE ex_date >= ?
+                ORDER BY ex_date ASC
+            """, (today_str,)).fetchall()
+
+        confirmed_tickers = {r['ticker'] for r in confirmed}
+
+        # ── SECTION B: Predicted next ex-dates ────────────────────────────
+        cutoff_90 = today + _td(days=90)
+
+        with db_session() as conn:
+            all_hist = conn.execute(
+                "SELECT ticker, ex_date, dps_sen "
+                "FROM dividend_history ORDER BY ticker, ex_date ASC"
+            ).fetchall()
+
+        # Group history by ticker
+        ticker_dates: dict = defaultdict(list)
+        ticker_last_sen: dict = {}
+        for r in all_hist:
+            ticker_dates[r['ticker']].append(r['ex_date'])
+            ticker_last_sen[r['ticker']] = r['dps_sen']  # last in ASC = most recent
+
+        predictions = []
+        for ticker, dates in ticker_dates.items():
+            if ticker in confirmed_tickers:
+                continue  # already confirmed — skip prediction
+            if len(dates) < 2:
+                continue
+            date_objs = sorted(_date.fromisoformat(d) for d in dates)
+            intervals = [
+                (date_objs[i + 1] - date_objs[i]).days
+                for i in range(len(date_objs) - 1)
+            ]
+            recent = intervals[-3:]  # weight recency
+            avg_interval = sum(recent) / len(recent)
+            predicted = date_objs[-1] + _td(days=int(avg_interval))
+            if predicted < today or predicted > cutoff_90:
+                continue
+            predictions.append({
+                'ticker':         ticker,
+                'predicted_date': predicted,
+                'est_sen':        ticker_last_sen.get(ticker),
+                'days_until':     (predicted - today).days,
+            })
+
+        predictions.sort(key=lambda x: x['predicted_date'])
+        predictions = predictions[:5]
+
+        # ── Build response ─────────────────────────────────────────────────
+        lines = ["📅 *Dividend Calendar*\n"]
+
+        lines.append("✅ *Confirmed upcoming ex-dates:*")
+        if confirmed:
+            for r in confirmed:
+                dt = _date.fromisoformat(r['ex_date'])
+                name = _short_name(name_map.get(r['ticker'], ''), r['ticker'])
+                date_fmt = dt.strftime("%b %-d")
+                days_left = (dt - today).days
+                sen_str = f" — {r['dps_sen']:.1f} sen" if r['dps_sen'] else ""
+                dtype_str = f" ({r['dividend_type']})" if r['dividend_type'] else ""
+                warn = " ⚠️" if days_left <= 7 else ""
+                lines.append(
+                    f"  `{r['ticker']}` *{name}*  {date_fmt}{sen_str}{dtype_str}{warn}"
+                )
+        else:
+            lines.append("  _No confirmed ex-dates in database._")
+            lines.append("  _Run /screen to refresh from KLSE Screener._")
+
+        lines.append("")
+        lines.append("🔮 *Predicted next ex-dates (based on history):*")
+        if predictions:
+            for p in predictions:
+                name = _short_name(name_map.get(p['ticker'], ''), p['ticker'])
+                date_fmt = p['predicted_date'].strftime("%b %-d")
+                est_str = f" — est. ~{p['est_sen']:.0f} sen" if p.get('est_sen') else ""
+                lines.append(f"  `{p['ticker']}` *{name}*  ~{date_fmt}{est_str}")
+        else:
+            lines.append("  _Not enough history to predict._")
+
+        lines.append("")
         lines.append(
-            f"`{r['ex_date']}` *{name_str}* `{r['ticker']}`{sen_str}"
+            "_⚠️ Predictions are estimates based on historical patterns. "
+            "Always verify on Bursa announcements._"
         )
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        # ── ISSUE 3: Alert for imminent ex-dates (≤ 7 days) ───────────────
+        imminent = [
+            r for r in confirmed
+            if 0 <= (_date.fromisoformat(r['ex_date']) - today).days <= 7
+        ]
+
+        for r in imminent:
+            dt = _date.fromisoformat(r['ex_date'])
+            days_left = (dt - today).days
+            name = _short_name(name_map.get(r['ticker'], ''), r['ticker'])
+            date_fmt = dt.strftime("%b %-d, %Y")
+            sen_str = f"{r['dps_sen']:.1f} sen" if r['dps_sen'] else "amount TBC"
+            dtype_str = r['dividend_type'] or 'dividend'
+            window_start = (dt - _td(days=5)).strftime("%b %-d")
+            window_end   = (dt - _td(days=1)).strftime("%b %-d")
+
+            alert_lines = [
+                f"⚠️ *Ex-dividend alert:*",
+                f"  `{r['ticker']}` ({name}) goes ex-dividend in "
+                f"*{days_left} day{'s' if days_left != 1 else ''}*",
+                f"  ({date_fmt}) — {sen_str} {dtype_str} dividend.",
+                f"",
+                f"  Pre-ex-dividend drift window: {window_start}–{window_end}",
+                f"  Historical pattern: price tends to rise",
+                f"  in final 3–5 days before ex-date.",
+            ]
+            await update.message.reply_text("\n".join(alert_lines), parse_mode="Markdown")
+
+            # Auto-generate Gate 0 idea for the pre-ex-dividend capture strategy
+            topic = (
+                f"pre-ex-dividend price drift capture for {r['ticker']} {name} "
+                f"ex-date {date_fmt} {sen_str} {dtype_str} dividend Bursa Malaysia"
+            )
+            await update.message.reply_text(
+                f"🔬 Auto-generating pre-ex-dividend idea for `{r['ticker']}`...\n"
+                f"_(will appear in /ideas shortly)_",
+                parse_mode="Markdown",
+            )
+            try:
+                researcher = StrategyResearcher()
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(
+                    None,
+                    lambda t=topic: researcher.run(
+                        {"action": "generate", "topic": t, "count": 1}
+                    ),
+                )
+                created = result.get('ideas_created', 0)
+                idea_lines = [f"✅ Auto-generated `{created}` pre-ex-dividend idea(s) for `{r['ticker']}`."]
+                for res in result.get("results", [])[:2]:
+                    gate = res.get("gate0", {})
+                    icon = "✓" if gate.get("pass") else "✗"
+                    idea_lines.append(f"  {icon} [{res['id']}] {res['title'][:55]}")
+                await update.message.reply_text("\n".join(idea_lines), parse_mode="Markdown")
+            except Exception as e_gen:
+                logger.warning(f"Auto-generate idea for {r['ticker']} failed: {e_gen}")
+                await update.message.reply_text(
+                    f"⚠️ Auto-generate idea failed: {e_gen}"
+                )
+
+    except Exception as e:
+        logger.exception("cmd_dividend_calendar failed")
+        await update.message.reply_text(
+            f"❌ Dividend calendar error: {e}\n_Check /status for system health._",
+            parse_mode="Markdown",
+        )
 
 
 async def cmd_kb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -635,14 +821,14 @@ async def cmd_arsenal(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lib = TechniqueLibrary()
         key = " ".join(ctx.args).strip().lower().replace(" ", "_") if ctx.args else None
         text = lib.format_telegram_summary(key)
-        # Telegram message limit is 4096 chars; split if needed
-        if len(text) <= 4096:
-            await update.message.reply_text(text, parse_mode="Markdown")
-        else:
-            for i in range(0, len(text), 4000):
-                await update.message.reply_text(text[i:i+4000], parse_mode="Markdown")
+        # Strip Markdown markers so plain text renders cleanly
+        for ch in ("*", "_", "`"):
+            text = text.replace(ch, "")
+        # Send as plain text in 4000-char chunks (avoids all Markdown parse errors)
+        for i in range(0, len(text), 4000):
+            await update.message.reply_text(text[i:i+4000])
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"Error: {e}")
 
 
 async def handle_pdf_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
