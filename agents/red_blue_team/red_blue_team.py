@@ -67,6 +67,60 @@ Apply Bursa-specific judgment: reject any strategy that requires short-selling u
 securities, relies on intraday execution, or ignores T+3 settlement constraints."""
 
 
+FUNDAMENTAL_SCREEN_RED_TEMPLATES = """
+SIGNAL-TYPE SPECIFIC ATTACKS — fundamental_screen:
+You MUST raise ALL of the following if they apply:
+
+1. Universe size: If the ticker list contains fewer than 20 stocks, attack it directly.
+   "Universe size: {n} stocks is insufficient for factor ranking. Minimum 20 stocks needed
+   for statistical significance. Top tertile of {n} stocks = 1-3 stocks = dangerous
+   concentration risk. A fundamental factor needs breadth to be investable."
+
+2. Look-ahead bias: Quarterly fundamental data (ROE, DER, PE) from KLSE Screener or
+   Yahoo Finance may lag actual financial report announcement dates by 30-90 days.
+   "The strategy may be using data not available at trade time — this is look-ahead bias.
+   If ROE from FY2024 Q3 was reported on 28 Nov 2024 but the backtest uses it from
+   1 Oct 2024, every trade in that window is contaminated."
+
+3. Single-period / bull-market bias: If train < val < test Sharpe values improve
+   monotonically, attack this directly.
+   "Monotonic improvement (train < val < test) indicates the strategy is capturing a
+   time-specific bull market, not a persistent factor. Real alpha degrades out-of-sample.
+   Improvement is a red flag, not a green flag."
+
+4. Transaction cost drag on thin edge: Quarterly rebalancing of a fundamental screen
+   incurs ~0.4% round-trip per trade (commission + stamp duty + slippage).
+   "For a portfolio of {k} stocks rebalanced 4x per year = {k*4*0.4:.1f}% annual cost
+   drag. If the strategy's gross alpha is less than this, the net edge is negative."
+"""
+
+FUNDAMENTAL_SCREEN_BLUE_TEMPLATES = """
+SIGNAL-TYPE SPECIFIC DEFENSES — fundamental_screen:
+Address these points proactively:
+
+1. Universe expansion: "Strategy can be applied to FBM70 (70 stocks) or KLCI 30 (30 stocks)
+   for better statistical power while retaining Bursa-listed stocks. The factor signal
+   strengthens with more ranking candidates."
+
+2. Look-ahead bias mitigation: "Use announcement dates from Bursa Malaysia official filings
+   (bursamalaysia.com/market_information) rather than KLSE Screener snapshot dates.
+   Data can be timestamped to the actual filing date for clean point-in-time backtesting."
+"""
+
+
+def _is_fundamental_screen(idea: dict) -> bool:
+    """Return True if the idea uses a fundamental screening signal type."""
+    screen_source = (idea.get("screen_source") or "").lower()
+    factor = (idea.get("factor_formula") or "").lower()
+    hypothesis = (idea.get("hypothesis") or "").lower()
+    fundamental_keywords = ["roe", "der", "pe ratio", "p/e", "dividend yield",
+                            "earnings yield", "book value", "fundamental_screen",
+                            "fundamental screen", "quarterly rebalance"]
+    if "fundamental" in screen_source:
+        return True
+    return any(kw in factor or kw in hypothesis for kw in fundamental_keywords)
+
+
 class RedBlueTeam(BaseAgent):
     name = "RedBlueTeam"
     description = "Adversarial strategy stress-testing via structured red/blue debate"
@@ -77,6 +131,14 @@ class RedBlueTeam(BaseAgent):
     # ------------------------------------------------------------------
 
     def red_team_attack(self, idea: dict, backtest_results: dict) -> dict:
+        signal_type_context = ""
+        if _is_fundamental_screen(idea):
+            n = len([t.strip() for t in (idea.get("ticker") or "").split(",") if t.strip()])
+            k = max(1, n // 3)
+            signal_type_context = FUNDAMENTAL_SCREEN_RED_TEMPLATES.replace(
+                "{n}", str(n)
+            ).replace("{k}", str(k)).replace("{k*4*0.4:.1f}", f"{k * 4 * 0.4:.1f}")
+
         prompt = f"""Stress-test this Bursa Malaysia equity strategy as a hostile adversary.
 
 Strategy: {idea.get('title')}
@@ -87,7 +149,7 @@ Research score: {idea.get('research_score')}
 
 Backtest results:
 {json.dumps(backtest_results, indent=2)}
-
+{signal_type_context}
 Return JSON:
 {{
   "critical_flaws": [
@@ -113,6 +175,10 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def blue_team_defend(self, idea: dict, red_findings: dict) -> dict:
+        signal_type_context = ""
+        if _is_fundamental_screen(idea):
+            signal_type_context = FUNDAMENTAL_SCREEN_BLUE_TEMPLATES
+
         prompt = f"""Defend this Bursa Malaysia equity strategy against the following red-team critique.
 
 Strategy: {idea.get('title')}
@@ -121,7 +187,7 @@ Ticker: {idea.get('ticker')} | Factor: {idea.get('factor_formula')}
 
 Red team findings:
 {json.dumps(red_findings, indent=2)}
-
+{signal_type_context}
 Return JSON:
 {{
   "rebuttals": [
