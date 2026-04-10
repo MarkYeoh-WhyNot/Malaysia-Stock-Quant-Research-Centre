@@ -19,10 +19,10 @@ class FundamentalScanner:
     def __init__(self):
         # Lazy-import to avoid circular deps at module load time
         from data.klse.screener import get_klci_constituents, screen_stocks
-        from data.yahoo.client import YahooClient
-        self._get_constituents = get_klci_constituents
-        self._screen_stocks    = screen_stocks
-        self._yahoo            = YahooClient()
+        from data.yahoo.client import get_multi_prices
+        self._get_constituents  = get_klci_constituents
+        self._screen_stocks     = screen_stocks
+        self._get_multi_prices  = get_multi_prices
 
     # ------------------------------------------------------------------
     # 1. Value stocks
@@ -58,27 +58,18 @@ class FundamentalScanner:
         Returns top-10 stocks sorted by % gain, each dict includes:
           symbol, name, sector, momentum_pct, start_price, end_price
         """
-        try:
-            from data.yahoo.client import YahooClient
-        except ImportError:
-            logger.error("yfinance not available for momentum scan")
-            return []
-
         stocks = self._get_constituents()
         symbols = [s["symbol"] for s in stocks]
         name_map = {s["symbol"]: s for s in stocks}
 
         momentum_rows = []
-        # Fetch in bulk — YahooClient.get_multi_prices
+        # Fetch in bulk using module-level get_multi_prices
         try:
             # period that covers lookback_days * 1.4 to account for weekends/holidays
             calendar_days = int(lookback_days * 1.5) + 5
-            end   = datetime.utcnow()
-            start = end - timedelta(days=calendar_days)
-            prices = self._yahoo.get_multi_prices(
+            prices = self._get_multi_prices(
                 symbols,
-                start=start.strftime("%Y-%m-%d"),
-                end=end.strftime("%Y-%m-%d"),
+                period=f"{calendar_days}d",
             )
         except Exception as e:
             logger.warning(f"Momentum scan bulk fetch failed: {e}")
