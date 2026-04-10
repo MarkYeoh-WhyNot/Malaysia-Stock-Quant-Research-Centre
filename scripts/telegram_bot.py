@@ -52,6 +52,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "/search `<query>` — full-text search across KB documents\n"
         "/diversity — KB coverage by research angle\n"
         "/digest `<doc_id|all>` — generate alpha ideas from KB documents\n\n"
+        "*Event Engine*\n"
+        "/events — event feed (last 24h): earnings, dividends, contracts, macro\n"
+        "/calendar — upcoming macro events: BNM OPR, Fed, China PMI\n"
+        "/event_stats — event engine health & stats\n\n"
         "*Arsenal*\n"
         "/arsenal — all quantitative techniques with implemented status\n"
         "/arsenal `<key>` — full detail for one technique\n\n"
@@ -1143,6 +1147,181 @@ async def cmd_epf(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         logger.exception("cmd_epf failed")
         await update.message.reply_text(f"❌ EPF tracker error: {e}")
 
+async def cmd_events(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show last 10 events from market_events."""
+    if not is_allowed(update): return
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        rows = conn.execute("""
+            SELECT event_type, ticker, company, headline, action_taken,
+                   confidence, detected_at
+            FROM market_events
+            WHERE detected_at >= datetime('now','-24 hours')
+            ORDER BY detected_at DESC LIMIT 10
+        """).fetchall()
+
+        stats = conn.execute("""
+            SELECT
+              COUNT(*) as total,
+              SUM(CASE WHEN action_taken='gate0_idea' THEN 1 ELSE 0 END) as ideas,
+              SUM(CASE WHEN action_taken='alert' THEN 1 ELSE 0 END) as alerts,
+              SUM(CASE WHEN action_taken='kb_only' THEN 1 ELSE 0 END) as kb
+            FROM market_events WHERE detected_at LIKE ?
+        """, (f"{today}%",)).fetchone()
+
+    if not rows:
+        await update.message.reply_text(
+            "No events in the last 24 hours.\n"
+            "Is the EventWatcher running? Check /event_stats"
+        )
+        return
+
+    lines = [f"*Event Feed* (last 24h)\n"]
+    ACTION_ICONS = {
+        "gate0_idea": "🟢", "alert": "🟡", "kb_only": "⚫", "ignore": "⬛"
+    }
+    for r in rows:
+        icon = ACTION_ICONS.get(r["action_taken"], "⚪")
+        ticker_str = f"`{r['ticker']}`" if r["ticker"] else ""
+        company_str = r["company"] or ""
+        ts = (r["detected_at"] or "")[:16].replace("T", " ")
+        etype = (r["event_type"] or "").upper().replace("_", " ")
+        conf = f"{r['confidence']*100:.0f}%" if r["confidence"] else ""
+        headline = (r["headline"] or "")[:60]
+        lines.append(f"{icon} {ticker_str} {company_str} `{etype}` {conf}")
+        lines.append(f"  {headline}")
+        lines.append(f"  _{ts}_")
+        lines.append("")
+
+    total = stats["total"] or 0
+    ideas = stats["ideas"] or 0
+    alerts = stats["alerts"] or 0
+    kb = stats["kb"] or 0
+    lines.append(f"Total: {total} | Ideas: {ideas} | Alerts: {alerts} | KB: {kb}")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_calendar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show upcoming economic calendar events."""
+    if not is_allowed(update): return
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    cutoff = (datetime.utcnow() + __import__('datetime').timedelta(days=30)).strftime("%Y-%m-%d")
+
+    with db_session() as conn:
+        rows = conn.execute("""
+            SELECT event_name, event_type, scheduled_date, scheduled_time,
+                   country, importance, forecast_value, previous_value
+            FROM economic_calendar
+            WHERE scheduled_date >= ? AND scheduled_date <= ?
+            ORDER BY scheduled_date, scheduled_time
+        """, (today, cutoff)).fetchall()
+
+    if not rows:
+        await update.message.reply_text(
+            "No upcoming economic events in the calendar.\n"
+            "Run: PYTHONPATH=/opt/openclaw/app /opt/openclaw/venv/bin/python scripts/seed_economic_calendar.py"
+        )
+        return
+
+    high = [r for r in rows if r["importance"] == "high"]
+    med  = [r for r in rows if r["importance"] != "high"]
+
+    lines = ["*Economic Calendar* (next 30 days)\n"]
+    if high:
+        lines.append("*HIGH IMPORTANCE:*")
+        for r in high[:8]:
+            dt = r["scheduled_date"]
+            time_str = r["scheduled_time"] or ""
+            country = r["country"] or "??"
+            time_label = f" {time_str} MYT" if time_str else ""
+            fcast = f" (fcst: {r['forecast_value']})" if r["forecast_value"] else ""
+            lines.append(f"  `{dt}` — {r['event_name']} ({country}){time_label}{fcast}")
+        lines.append("")
+    if med:
+        lines.append("*MEDIUM:*")
+        for r in med[:5]:
+            lines.append(f"  `{r['scheduled_date']}` — {r['event_name']} ({r['country'] or '??'})")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+async def cmd_event_stats(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Show event engine health status."""
+    if not is_allowed(update): return
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    with db_session() as conn:
+        stats = conn.execute("""
+            SELECT
+              COUNT(*) as total,
+              SUM(CASE WHEN action_taken='gate0_idea' THEN 1 ELSE 0 END) as ideas,
+              SUM(CASE WHEN action_taken='alert'      THEN 1 ELSE 0 END) as alerts,
+              SUM(CASE WHEN action_taken='kb_only'    THEN 1 ELSE 0 END) as kb
+            FROM market_events WHERE detected_at LIKE ?
+        """, (f"{today}%",)).fetchone()
+
+        last_log = conn.execute("""
+            SELECT message, created_at FROM daemon_logs
+            WHERE source='EventWatcher' ORDER BY id DESC LIMIT 1
+        """).fetchone()
+
+        # Cycle count from log messages
+        cycle_row = conn.execute("""
+            SELECT message FROM daemon_logs
+            WHERE source='EventWatcher' AND message LIKE 'Cycle %'
+            ORDER BY id DESC LIMIT 1
+        """).fetchone()
+
+        by_source = conn.execute("""
+            SELECT source, COUNT(*) as n FROM market_events
+            WHERE detected_at LIKE ? GROUP BY source ORDER BY n DESC
+        """, (f"{today}%",)).fetchall()
+
+    watcher_status = "STOPPED"
+    last_cycle_str = "never"
+    cycle_num = "?"
+
+    if last_log:
+        last_cycle_str = (last_log["created_at"] or "")[:16]
+        # Check if last log was recent (within 10 minutes)
+        try:
+            from datetime import datetime as _dt
+            last_dt = _dt.strptime(last_cycle_str, "%Y-%m-%d %H:%M")
+            secs_ago = (_dt.utcnow() - last_dt).total_seconds()
+            watcher_status = "RUNNING" if secs_ago < 600 else "POSSIBLY STALLED"
+        except Exception:
+            pass
+
+    if cycle_row:
+        import re
+        m = re.search(r"Cycle (\d+)", cycle_row["message"])
+        if m:
+            cycle_num = m.group(1)
+
+    total  = stats["total"]  or 0
+    ideas  = stats["ideas"]  or 0
+    alerts = stats["alerts"] or 0
+    kb     = stats["kb"]     or 0
+
+    source_str = " ".join(f"`{r['source']}({r['n']})`" for r in by_source[:5])
+
+    lines = [
+        f"*Event Engine Status*",
+        f"",
+        f"Watcher: `{watcher_status}` (cycle #{cycle_num})",
+        f"Last cycle: `{last_cycle_str}`",
+        f"",
+        f"Today ({today}):",
+        f"  `{total}` events processed",
+        f"  `{ideas}` gate0 ideas created",
+        f"  `{alerts}` alerts sent",
+        f"  `{kb}` KB documents added",
+        f"",
+        f"Sources: {source_str or 'none yet'}",
+    ]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
 def main():
     if not BOT_TOKEN:
         logger.error("TELEGRAM_BOT_TOKEN not set — bot cannot start")
@@ -1165,9 +1344,12 @@ def main():
     app.add_handler(CommandHandler("arsenal",   cmd_arsenal))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
     app.add_handler(CommandHandler("digest",    cmd_digest))
-    app.add_handler(CommandHandler("epf",       cmd_epf))
-    app.add_handler(CommandHandler("analyst",   cmd_analyst))
-    app.add_handler(CommandHandler("cpo",       cmd_cpo))
+    app.add_handler(CommandHandler("epf",         cmd_epf))
+    app.add_handler(CommandHandler("analyst",     cmd_analyst))
+    app.add_handler(CommandHandler("cpo",         cmd_cpo))
+    app.add_handler(CommandHandler("events",      cmd_events))
+    app.add_handler(CommandHandler("calendar",    cmd_calendar))
+    app.add_handler(CommandHandler("event_stats", cmd_event_stats))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf_document))
 
     # Register bot command menu (shows up in Telegram UI autocomplete)
@@ -1191,7 +1373,10 @@ def main():
             BotCommand("diversity", "KB coverage by research angle"),
             BotCommand("research",  "Hunt academic papers for an idea"),
             BotCommand("digest",    "Generate ideas from KB documents"),
-            BotCommand("arsenal",   "Quantitative techniques list"),
+            BotCommand("arsenal",      "Quantitative techniques list"),
+            BotCommand("events",       "Event feed (last 24h)"),
+            BotCommand("calendar",     "Upcoming macro events"),
+            BotCommand("event_stats",  "Event engine health"),
         ])
         logger.info("Telegram bot command menu registered")
 

@@ -485,6 +485,54 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass  # already exists
 
+        # ── Event-Driven Alpha Engine tables (2026-04-10) ─────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS market_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id TEXT UNIQUE,
+            source TEXT NOT NULL,
+            ticker TEXT,
+            company TEXT,
+            event_type TEXT NOT NULL,
+            headline TEXT NOT NULL,
+            body TEXT,
+            raw_url TEXT,
+            published_at TEXT,
+            detected_at TEXT DEFAULT (datetime('now')),
+            confidence REAL,
+            sentiment TEXT,
+            magnitude TEXT,
+            is_actionable INTEGER,
+            historical_edge TEXT,
+            action_taken TEXT,
+            idea_id INTEGER,
+            classified_at TEXT,
+            affected_sectors TEXT,
+            affected_tickers TEXT
+        )
+        """)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS economic_calendar (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_name TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            scheduled_date TEXT NOT NULL,
+            scheduled_time TEXT,
+            country TEXT,
+            importance TEXT,
+            actual_value TEXT,
+            forecast_value TEXT,
+            previous_value TEXT,
+            processed INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now')),
+            UNIQUE(event_name, scheduled_date)
+        )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ticker   ON market_events(ticker)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type     ON market_events(event_type)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_events_detected ON market_events(detected_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_date        ON economic_calendar(scheduled_date)")
+
     logger.info(f"Database initialized at {db_path}")
 
 if __name__ == "__main__":

@@ -391,6 +391,7 @@ svg text{font-family:'Courier New',monospace}
   <a onclick="nav('arsenal',this)"><span class="ico">⚙️</span>Technique Arsenal</a>
   <a onclick="nav('backtest-lab',this)"><span class="ico">🔬</span>Backtest Lab</a>
   <a onclick="nav('factor-sandbox',this)"><span class="ico">🧪</span>Factor Sandbox</a>
+  <a onclick="nav('event-feed',this)"><span class="ico">⚡</span>Event Feed</a>
 
   <div class="sidebar-section">Trading</div>
   <a onclick="nav('paper-trades',this)"><span class="ico">📈</span>Paper Trades</a>
@@ -1239,6 +1240,48 @@ svg text{font-family:'Courier New',monospace}
   </div>
 </div>
 
+<!-- ── Event Feed ──────────────────────────────────────────────────────────── -->
+<div id="page-event-feed" class="page">
+  <h2>Event Feed</h2>
+
+  <!-- Stats row -->
+  <div class="stat-grid" id="event-stats-grid">
+    <div class="stat-card"><div class="val" id="ev-total">—</div><div class="lbl">Events Today</div></div>
+    <div class="stat-card"><div class="val" id="ev-ideas">—</div><div class="lbl">Gate 0 Ideas</div></div>
+    <div class="stat-card"><div class="val" id="ev-alerts">—</div><div class="lbl">Alerts Sent</div></div>
+    <div class="stat-card"><div class="val" id="ev-kb">—</div><div class="lbl">KB Docs Added</div></div>
+  </div>
+
+  <!-- Upcoming calendar strip -->
+  <div class="panel" id="calendar-strip-panel">
+    <div class="panel-head">
+      <span class="panel-title">Upcoming Macro Events</span>
+      <button class="btn btn-sm" onclick="loadCalendarStrip()">Refresh</button>
+    </div>
+    <div id="calendar-strip" style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 0"></div>
+  </div>
+
+  <!-- Filter pills -->
+  <div style="margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap">
+    <button class="btn btn-sm btn-cyan active" onclick="filterEvents('all',this)">All</button>
+    <button class="btn btn-sm" onclick="filterEvents('earnings_beat',this)">Earnings Beat</button>
+    <button class="btn btn-sm" onclick="filterEvents('earnings_miss',this)">Earnings Miss</button>
+    <button class="btn btn-sm" onclick="filterEvents('dividend_declared',this)">Dividend</button>
+    <button class="btn btn-sm" onclick="filterEvents('contract_win',this)">Contract</button>
+    <button class="btn btn-sm" onclick="filterEvents('opr_hike',this)">OPR</button>
+    <button class="btn btn-sm" onclick="filterEvents('cpo_move',this)">Commodity</button>
+    <button class="btn btn-sm" onclick="filterEvents('macro_context',this)">Macro</button>
+    <button class="btn btn-sm" onclick="filterEvents('kb_only',this)">KB Only</button>
+  </div>
+
+  <!-- Event cards list -->
+  <div id="event-cards-list" style="display:flex;flex-direction:column;gap:8px"></div>
+
+  <div id="event-feed-empty" style="display:none;color:var(--muted);text-align:center;padding:40px">
+    No events found for current filter
+  </div>
+</div>
+
 <!-- ── AI Usage ────────────────────────────────────────────────────────────── -->
 <div id="page-ai-usage" class="page">
   <div class="panel">
@@ -1334,8 +1377,17 @@ function nav(id, el) {
     ideas: loadIdeas, 'backtest-lab': loadBacktestLab,
     'paper-trades': loadPaperTrades, kb: loadKBStats,
     'ai-usage': loadUsage, logs: loadLogsPage,
+    'event-feed': () => { loadEventFeed(); loadCalendarStrip(); },
   };
   if (loaders[id]) loaders[id]();
+  // Auto-refresh event feed while on that page
+  if (id === 'event-feed') {
+    if (!_evAutoRefresh) _evAutoRefresh = setInterval(loadEventFeed, 60000);
+  } else {
+    if (typeof _evAutoRefresh !== 'undefined' && _evAutoRefresh) {
+      clearInterval(_evAutoRefresh); _evAutoRefresh = null;
+    }
+  }
 }
 
 function switchTab(prefix, id, el) {
@@ -2685,6 +2737,109 @@ async function ingestKBURL() {
   } else {
     document.getElementById('kb-url-result').innerHTML = `<span style="color:var(--red)">${esc(r?.error || 'Failed — check URL accessibility')}</span>`;
   }
+}
+
+// ── Event Feed ────────────────────────────────────────────────────────────────
+
+let _evFilter = 'all';
+let _evAutoRefresh = null;
+
+const EV_COLOURS = {
+  earnings_beat: '#10b981', earnings_miss: '#ef4444',
+  dividend_declared: '#8b5cf6', bonus_issue: '#8b5cf6',
+  contract_win: '#3b82f6', opr_hike: '#f97316', opr_cut: '#f97316',
+  opr_hold: '#f97316', bnm_opr: '#f97316',
+  cpo_move: '#f59e0b', crude_oil_move: '#f59e0b', gold_move: '#f59e0b',
+  macro_context: '#64748b', macro_event: '#64748b',
+  fed_decision: '#64748b', china_pmi_weak: '#64748b',
+  analyst_upgrade: '#3b82f6', analyst_downgrade: '#ef4444',
+  irrelevant: '#374151',
+};
+
+const ACTION_COLOURS = {gate0_idea:'#10b981', alert:'#f59e0b', kb_only:'#64748b', ignore:'#374151'};
+
+function filterEvents(type, btn) {
+  _evFilter = type;
+  document.querySelectorAll('#page-event-feed .btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  loadEventFeed();
+}
+
+async function loadEventFeed() {
+  const params = new URLSearchParams({limit:50, hours:24});
+  if (_evFilter !== 'all' && _evFilter !== 'kb_only') params.set('event_type', _evFilter);
+  if (_evFilter === 'kb_only') params.set('action', 'kb_only');
+
+  const [evData, statsData] = await Promise.all([
+    fetch('/api/events?' + params).then(r => r.json()).catch(() => []),
+    fetch('/api/events/stats').then(r => r.json()).catch(() => ({})),
+  ]);
+
+  // Stats
+  document.getElementById('ev-total').textContent  = statsData.total_today ?? '—';
+  document.getElementById('ev-ideas').textContent  = statsData.gate0_ideas_today ?? '—';
+  document.getElementById('ev-alerts').textContent = statsData.alerts_sent_today ?? '—';
+  document.getElementById('ev-kb').textContent     = statsData.kb_ingested_today ?? '—';
+
+  const list = document.getElementById('event-cards-list');
+  const empty = document.getElementById('event-feed-empty');
+  list.innerHTML = '';
+
+  if (!evData.length) { empty.style.display='block'; return; }
+  empty.style.display = 'none';
+
+  evData.forEach(ev => {
+    const borderCol = ACTION_COLOURS[ev.action_taken] || '#374151';
+    const typeCol   = EV_COLOURS[ev.event_type] || '#64748b';
+    const conf      = ev.confidence != null ? (ev.confidence*100).toFixed(0)+'%' : '—';
+    const ts        = ev.detected_at ? ev.detected_at.substring(11,16) : '';
+    const edge      = ev.historical_edge || '';
+    const action    = ev.action_taken || 'pending';
+    const bodySnip  = ev.body ? ev.body.substring(0,180) + (ev.body.length>180?'…':'') : '';
+    const ticker    = ev.ticker || '';
+
+    const card = document.createElement('div');
+    card.style.cssText = `background:var(--bg2);border:1px solid var(--border);border-left:3px solid ${borderCol};border-radius:6px;padding:12px;`;
+    card.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+        ${ticker ? `<span class="badge stage">${ticker}</span>` : ''}
+        <span style="background:#1a2a3a;color:${typeCol};padding:1px 7px;border-radius:10px;font-size:10px;font-weight:bold">${(ev.event_type||'').toUpperCase().replace(/_/g,' ')}</span>
+        <span style="color:var(--muted);font-size:10px;margin-left:auto">${ts}</span>
+        ${ev.company ? `<span style="color:var(--muted2);font-size:10px">${ev.company}</span>` : ''}
+      </div>
+      <div style="font-weight:bold;margin-bottom:4px;font-size:12px">${ev.headline||''}</div>
+      ${bodySnip ? `<div style="color:var(--muted2);font-size:11px;margin-bottom:6px;line-height:1.4">${bodySnip}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px">
+        <span style="font-size:10px;color:var(--muted)">Conf: <span style="color:${typeCol}">${conf}</span></span>
+        ${edge ? `<span style="font-size:10px;color:var(--muted)">Edge: <span style="color:var(--green)">${edge}</span></span>` : ''}
+        <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#1a2a2a;color:${ACTION_COLOURS[action]||'#888'}">${action.replace(/_/g,' ')}</span>
+        ${ev.idea_id ? `<span style="font-size:10px;color:var(--cyan)">→ Idea #${ev.idea_id}</span>` : ''}
+      </div>
+      <div style="height:2px;background:var(--border);border-radius:1px;overflow:hidden">
+        <div style="height:100%;width:${ev.confidence ? (ev.confidence*100).toFixed(0)+'%' : '0'};background:${typeCol};border-radius:1px;transition:width .3s"></div>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+
+async function loadCalendarStrip() {
+  const data = await fetch('/api/events/calendar?days_ahead=30').then(r=>r.json()).catch(()=>[]);
+  const strip = document.getElementById('calendar-strip');
+  strip.innerHTML = '';
+  const today = new Date().toISOString().slice(0,10);
+  const shown = data.filter(ev=>ev.importance==='high').slice(0,5);
+  if (!shown.length) { strip.innerHTML = '<span style="color:var(--muted);font-size:11px">No high-importance events in next 30 days</span>'; return; }
+  shown.forEach(ev => {
+    const days = Math.round((new Date(ev.scheduled_date)-new Date(today))/(86400000));
+    const urgency = days <= 3 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--muted2)';
+    const card = document.createElement('div');
+    card.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;min-width:160px';
+    card.innerHTML = `<div style="font-size:10px;color:var(--muted);text-transform:uppercase">${ev.country||'?'} — ${(ev.event_type||'').replace(/_/g,' ')}</div>
+      <div style="font-size:11px;font-weight:bold;margin:2px 0">${ev.event_name}</div>
+      <div style="font-size:10px;color:${urgency}">in ${days} day${days===1?'':'s'} (${ev.scheduled_date})</div>
+      ${ev.forecast_value ? `<div style="font-size:10px;color:var(--muted)">Forecast: ${ev.forecast_value}</div>` : ''}`;
+    strip.appendChild(card);
+  });
 }
 
 // ── AI Usage ──────────────────────────────────────────────────────────────────

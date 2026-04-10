@@ -1343,6 +1343,99 @@ def system_arsenal(angle: Optional[str] = None):
     }
 
 
+# ─── Event Engine ────────────────────────────────────────────────────────────
+
+@app.get("/api/events")
+def get_events(limit: int = 50, event_type: str = "all", action: str = "all", hours: int = 24):
+    """Return recent market_events ordered by detected_at DESC."""
+    since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    with db_session() as conn:
+        query = "SELECT * FROM market_events WHERE detected_at >= ?"
+        params: list = [since]
+        if event_type != "all":
+            query += " AND event_type = ?"
+            params.append(event_type)
+        if action != "all":
+            query += " AND action_taken = ?"
+            params.append(action)
+        query += " ORDER BY detected_at DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/events/stats")
+def get_event_stats():
+    """Return event engine stats for today."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        total_today = conn.execute(
+            "SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ?",
+            (f"{today}%",)
+        ).fetchone()["n"]
+
+        gate0_today = conn.execute(
+            "SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ? AND action_taken='gate0_idea'",
+            (f"{today}%",)
+        ).fetchone()["n"]
+
+        alerts_today = conn.execute(
+            "SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ? AND action_taken='alert'",
+            (f"{today}%",)
+        ).fetchone()["n"]
+
+        kb_today = conn.execute(
+            "SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ? AND action_taken='kb_only'",
+            (f"{today}%",)
+        ).fetchone()["n"]
+
+        by_type = {
+            r["event_type"]: r["n"]
+            for r in conn.execute(
+                "SELECT event_type, COUNT(*) as n FROM market_events WHERE detected_at LIKE ? GROUP BY event_type",
+                (f"{today}%",)
+            ).fetchall()
+        }
+
+        by_source = {
+            r["source"]: r["n"]
+            for r in conn.execute(
+                "SELECT source, COUNT(*) as n FROM market_events WHERE detected_at LIKE ? GROUP BY source",
+                (f"{today}%",)
+            ).fetchall()
+        }
+
+        # Watcher heartbeat — last EventWatcher log
+        last_cycle_row = conn.execute(
+            "SELECT created_at FROM daemon_logs WHERE source='EventWatcher' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        last_cycle = last_cycle_row["created_at"] if last_cycle_row else None
+
+    return {
+        "total_today": total_today,
+        "gate0_ideas_today": gate0_today,
+        "alerts_sent_today": alerts_today,
+        "kb_ingested_today": kb_today,
+        "by_type": by_type,
+        "by_source": by_source,
+        "last_cycle": last_cycle,
+    }
+
+
+@app.get("/api/events/calendar")
+def get_event_calendar(days_ahead: int = 30):
+    """Return upcoming economic calendar events."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    cutoff = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+    with db_session() as conn:
+        rows = conn.execute("""
+            SELECT * FROM economic_calendar
+            WHERE scheduled_date >= ? AND scheduled_date <= ?
+            ORDER BY scheduled_date, scheduled_time
+        """, (today, cutoff)).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ─── Static UI ───────────────────────────────────────────────────────────────
 
 ui_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui")
