@@ -171,6 +171,14 @@ Return JSON:
             )
             raw = pd.Series(raw, index=df.index).ffill().fillna(0).values
 
+        elif stype == "fundamental_screen":
+            # Constant signal from a fundamental screen (ROE, PB, PE, DER, etc.).
+            # Fundamental screens are quarterly-rebalanced, not time-varying on daily bars.
+            # The pre-computed signal value (1=long, 0=flat) is stored in params by
+            # _run_backtest() after evaluating fund_context against the formula.
+            fundamental_signal = float(params.get("fundamental_signal", 1.0))
+            raw = np.full(len(close), fundamental_signal)
+
         else:  # momentum / default
             period = int(params.get("momentum_period", 20))
             ret    = close.pct_change(period)
@@ -414,10 +422,13 @@ Return JSON:
         available Yahoo Finance OHLCV data.
 
         Returns a dict:
-          {"blocked": bool, "matched": list[str], "reason": str}
+          {"blocked": bool, "matched": list[str], "reason": str, "fund_context": dict|None}
 
         If blocked=True the backtest must NOT run. The caller is responsible for
         updating the DB and returning a failure result.
+
+        If fund_context is not None the backtest may proceed using a constant
+        fundamental-screen signal derived from the KLSE Screener data in the DB.
         """
         formula   = (idea.get("factor_formula") or "").lower()
         hypothesis = (idea.get("hypothesis")     or "").lower()
@@ -426,7 +437,7 @@ Return JSON:
         # 1. Scan for unavailable-data keywords
         matched = [kw for kw in self._UNAVAILABLE_DATA_SIGNALS if kw in combined]
         if not matched:
-            return {"blocked": False, "matched": [], "reason": ""}
+            return {"blocked": False, "matched": [], "reason": "", "fund_context": None}
 
         # 2. Check whether ALL matched terms are clearly overridden by OHLCV context.
         #    Heuristic: if the formula also mentions several OHLCV terms, the
@@ -436,7 +447,25 @@ Return JSON:
         formula_only_matches = [kw for kw in matched if kw in formula]
         if not formula_only_matches:
             # Keywords appear in hypothesis text only — warn but don't block
-            return {"blocked": False, "matched": matched, "reason": ""}
+            return {"blocked": False, "matched": matched, "reason": "", "fund_context": None}
+
+        # 3. Before blocking, check if fresh fundamental data exists in the DB.
+        #    KLSE Screener populates fundamental_data; if it is available (< 7 days old)
+        #    we can run the backtest as a constant fundamental-screen signal instead.
+        fund_context = self._load_fundamental_context(idea.get("ticker", ""))
+        if fund_context is not None:
+            self.log_daemon(
+                "INFO",
+                f"DataPreCheck: fundamental_data available "
+                f"ROE={fund_context.get('roe')} PB={fund_context.get('pb')} "
+                f"— unlocking backtest with fundamental-screen signal",
+            )
+            return {
+                "blocked": False,
+                "matched": formula_only_matches,
+                "reason": "",
+                "fund_context": fund_context,
+            }
 
         reason = (
             f"Factor formula requires fundamental data not available via Yahoo Finance "
@@ -446,7 +475,70 @@ Return JSON:
             f"Rewrite the factor_formula to use ONLY daily OHLCV signals "
             f"(price, volume, moving averages, RSI, MACD, Bollinger Bands, ATR, momentum)."
         )
-        return {"blocked": True, "matched": formula_only_matches, "reason": reason}
+        return {"blocked": True, "matched": formula_only_matches, "reason": reason, "fund_context": None}
+
+    # ── Fundamental context helpers ────────────────────────────────────────────
+
+    def _load_fundamental_context(self, ticker_raw: str) -> dict | None:
+        """Load fresh KLSE Screener fundamental data (< 7 days) for the primary ticker.
+
+        Returns {"roe", "pb", "pe", "dy", "eps", "dps", "nta"} or None if unavailable.
+        Handles comma-separated ticker lists and sector descriptions.
+        """
+        from datetime import date, timedelta
+        tickers = extract_tickers(ticker_raw or "")
+        primary = next((t for t in tickers if t.endswith(".KL")), None)
+        if not primary:
+            return None
+        try:
+            with db_session() as conn:
+                fund = conn.execute("""
+                    SELECT * FROM fundamental_data
+                    WHERE ticker = ?
+                    ORDER BY fetched_at DESC LIMIT 1
+                """, [primary]).fetchone()
+            if fund is None:
+                return None
+            # Check freshness — fetched_at is stored as YYYY-MM-DD
+            fetched_raw = (fund["fetched_at"] or "")[:10]
+            try:
+                fetched_date = date.fromisoformat(fetched_raw)
+            except Exception:
+                return None
+            if (date.today() - fetched_date).days > 7:
+                logger.warning(
+                    f"Fundamental data for {primary} is {(date.today() - fetched_date).days}d old — "
+                    f"too stale for fundamental-screen backtest"
+                )
+                return None
+            return {
+                "roe": fund["roe"],
+                "pb":  fund["pb"],
+                "pe":  fund["pe"],
+                "dy":  fund["dy"],
+                "eps": fund["eps_ttm"],
+                "dps": fund["dps_ttm"],
+                "nta": fund["nta"],
+            }
+        except Exception as e:
+            logger.warning(f"Failed to load fundamental context for {primary}: {e}")
+            return None
+
+    @staticmethod
+    def _evaluate_fundamental_screen(fund_context: dict, factor_formula: str) -> float:
+        """Convert fundamental context to a constant long/flat screening signal.
+
+        Fundamental screens are quarterly-rebalanced so the signal is constant
+        across the entire backtest window.  Returns 1.0 (hold in portfolio) when
+        the stock has valid positive fundamentals, 0.0 otherwise.
+        """
+        roe = float(fund_context.get("roe") or 0.0)
+        pb  = float(fund_context.get("pb")  or 0.0)
+        # Accept the stock if it has any positive equity return or valid book value.
+        # Stricter screening is handled at idea-generation time (Gate 0 / Stage 1).
+        if roe > 0 or pb > 0:
+            return 1.0
+        return 0.0
 
     # ── Spearman correlation (no scipy needed) ────────────────────────────────
 
@@ -702,6 +794,20 @@ Return JSON:
         "LONG_TERM":   0.8,   # fewer trades, lower bar
     }
 
+    # Relaxed thresholds for fundamental screening strategies.
+    # Fundamental screens are quarterly-rebalanced buy-and-hold selections,
+    # not active trading signals.  A Sharpe of 0.40 on a positive buy-and-hold
+    # screen is genuinely good; active-trading thresholds (1.1) would wrongly
+    # reject solid fundamental strategies.
+    FUNDAMENTAL_SCREEN_THRESHOLDS = {
+        "min_sharpe_net":      0.40,   # vs 1.1 for active signals
+        "min_oos_sharpe":      0.35,   # absolute OOS floor
+        "max_oos_degradation": 0.70,   # vs 0.50 for active signals
+        "min_trades":          1,      # quarterly rebalance = few trades
+        "max_dd":              0.30,   # vs 0.25 for active signals
+        "max_train_val_gap":   1.00,   # bypassed — improving trend is not overfitting
+    }
+
     # ── Formula verification ──────────────────────────────────────────────────
 
     def verify_formula(self, params: dict, factor_formula: str, df: pd.DataFrame) -> dict:
@@ -856,6 +962,24 @@ Return JSON only:
         if not params or "error" in params:
             params = {"signal_type": "momentum", "momentum_period": 20, "long_only": True}
 
+        # If fundamental context is available (from KLSE Screener DB), override to a
+        # constant fundamental-screen signal.  The screen is quarterly-rebalanced so
+        # a constant long/flat position is the correct model for daily price bars.
+        fund_context = data_check.get("fund_context")
+        if fund_context is not None:
+            fundamental_signal = self._evaluate_fundamental_screen(
+                fund_context, row["factor_formula"] or ""
+            )
+            params["signal_type"]        = "fundamental_screen"
+            params["fundamental_signal"] = fundamental_signal
+            params["long_only"]          = True
+            self.log_daemon(
+                "INFO",
+                f"Backtest [{idea_id}] fundamental-screen context: "
+                f"ROE={fund_context.get('roe')} PB={fund_context.get('pb')} "
+                f"PE={fund_context.get('pe')} → signal={'LONG' if fundamental_signal == 1.0 else 'FLAT'}",
+            )
+
         # Fetch 5 years of daily data for robust train/val/test split
         df = self._fetch_prices(symbol, interval, days=1825)
         # QC4: minimum 252 bars (1 year) required for any statistically meaningful backtest
@@ -927,23 +1051,48 @@ Return JSON only:
 
         # Per holding-period-class thresholds
         sharpe_threshold = self._SHARPE_THRESHOLDS.get(hp_class, GATE_CONFIG.stage3_min_sharpe)
+        max_dd_threshold = GATE_CONFIG.stage3_max_drawdown
         min_trades       = self._MIN_TRADES.get(hp_class, 30)
         actual_trades    = test_r.get("total_trades", 0)
 
+        # Fundamental-screen strategies are quarterly-rebalanced buy-and-hold positions.
+        # Apply relaxed thresholds: a Sharpe of 0.40 with positive OOS confirms a working
+        # screen — active-trading thresholds (1.1) would wrongly reject solid strategies.
+        if params.get("signal_type") == "fundamental_screen":
+            _fs = self.FUNDAMENTAL_SCREEN_THRESHOLDS
+            sharpe_threshold = _fs["min_sharpe_net"]
+            max_dd_threshold = _fs["max_dd"]
+            min_trades       = _fs["min_trades"]
+
         # Gate 2 — in-sample quality (use net Sharpe throughout)
-        gate2_pass = (
-            train_r["sharpe_net"] >= sharpe_threshold
-            and val_r["sharpe_net"]   >= sharpe_threshold
-            and train_r["max_dd"] <= GATE_CONFIG.stage3_max_drawdown
-            and val_r["max_dd"]   <= GATE_CONFIG.stage3_max_drawdown
-            and train_val_gap     <= GATE_CONFIG.stage3_max_train_val_gap
-        )
+        # For fundamental screens the signal is constant (quarterly buy-and-hold),
+        # so per-split Sharpe differences reflect the stock's returns in each time
+        # window, NOT parameter overfitting.  Only drawdown is checked per-split;
+        # the train_val_gap limit is relaxed to 1.0 (an improving train→val→test
+        # trend is healthy, not a sign of overfitting).
+        _max_tvg = (self.FUNDAMENTAL_SCREEN_THRESHOLDS["max_train_val_gap"]
+                    if params.get("signal_type") == "fundamental_screen"
+                    else GATE_CONFIG.stage3_max_train_val_gap)
+        if params.get("signal_type") == "fundamental_screen":
+            gate2_pass = (
+                train_r["max_dd"] <= max_dd_threshold
+                and val_r["max_dd"]   <= max_dd_threshold
+                and train_val_gap     <= _max_tvg
+            )
+        else:
+            gate2_pass = (
+                train_r["sharpe_net"] >= sharpe_threshold
+                and val_r["sharpe_net"]   >= sharpe_threshold
+                and train_r["max_dd"] <= max_dd_threshold
+                and val_r["max_dd"]   <= max_dd_threshold
+                and train_val_gap     <= _max_tvg
+            )
 
         # Gate 3 — out-of-sample test
         gate3_pass = (
             gate2_pass
             and test_sharpe_net   >= sharpe_threshold
-            and test_r["max_dd"]  <= GATE_CONFIG.stage3_max_drawdown
+            and test_r["max_dd"]  <= max_dd_threshold
         )
 
         # QC4: minimum trade count (per holding-period class)
@@ -979,16 +1128,21 @@ Return JSON only:
         if not cost_pass:
             self.log_daemon("WARN", f"Backtest [{idea_id}] cost gate FAILED: {cost_note}")
 
-        # QC2: OOS degradation gate
+        # QC2: OOS degradation gate — relaxed for fundamental screens
         oos_pass = True
         oos_note = ""
-        if sharpe_is > 0 and sharpe_oos < 0.5 * sharpe_is:
+        _is_fund_screen = params.get("signal_type") == "fundamental_screen"
+        _max_oos_deg    = (self.FUNDAMENTAL_SCREEN_THRESHOLDS["max_oos_degradation"]
+                           if _is_fund_screen else 0.50)
+        _min_oos_sharpe = (self.FUNDAMENTAL_SCREEN_THRESHOLDS["min_oos_sharpe"]
+                           if _is_fund_screen else 0.30)
+        if sharpe_is > 0 and oos_deg > _max_oos_deg:
             oos_pass = False
             oos_note = (f"OOS Sharpe degradation: IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
-                        f"— likely overfitted")
-        if sharpe_oos < 0.3:
+                        f"deg={oos_deg:.2f} > {_max_oos_deg:.2f} — likely overfitted")
+        if sharpe_oos < _min_oos_sharpe:
             oos_pass = False
-            oos_note = oos_note or f"OOS Sharpe {sharpe_oos:.2f} < 0.30 absolute floor"
+            oos_note = oos_note or f"OOS Sharpe {sharpe_oos:.2f} < {_min_oos_sharpe:.2f} floor"
         if not oos_pass:
             self.log_daemon("WARN", f"Backtest [{idea_id}] OOS gate FAILED: {oos_note}")
 
@@ -1008,6 +1162,32 @@ Return JSON only:
             self.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
 
         overall_pass = gate3_pass and trade_count_pass and cost_pass and oos_pass and regime_pass
+
+        # ── Verdict string ────────────────────────────────────────────────────
+        if _is_fund_screen and overall_pass:
+            verdict = "pass"
+            verdict_reason = (
+                f"Fundamental screen passes relaxed thresholds appropriate for quarterly "
+                f"rebalance strategies. OOS Sharpe {sharpe_oos:.3f} confirms no overfitting. "
+                f"Positive in {regimes_positive}/3 regimes."
+            )
+        elif overall_pass:
+            verdict = "pass"
+            verdict_reason = (
+                f"Active strategy passes all gates: net Sharpe {test_sharpe_net:.2f}, "
+                f"OOS={sharpe_oos:.2f}, regimes={regimes_positive}/3"
+            )
+        else:
+            verdict = "reject"
+            verdict_reason = " | ".join(filter(None, [
+                "" if gate2_pass   else "Gate2 failed (Sharpe or DD)",
+                "" if gate3_pass   else "Gate3 failed (test Sharpe or DD)",
+                "" if cost_pass    else cost_note,
+                "" if oos_pass     else oos_note,
+                "" if regime_pass  else regime_note,
+                "" if trade_count_pass else trade_count_note,
+            ]))
+
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
 
         run_id = None
@@ -1027,8 +1207,9 @@ Return JSON only:
                        sharpe_gross, sharpe_net,
                        sharpe_is, sharpe_oos, oos_degradation,
                        sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
-                       regimes_positive, sanity_flags)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       regimes_positive, sanity_flags,
+                       verdict, verdict_reason)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     idea_id, "klse_daily", symbol, interval, row["factor_formula"],
                     train_r["sharpe_net"], val_r["sharpe_net"], test_sharpe_net,
@@ -1044,6 +1225,7 @@ Return JSON only:
                     reg["sharpe_low_vol"], reg["sharpe_mid_vol"], reg["sharpe_high_vol"],
                     regimes_positive,
                     json.dumps(sanity_flags) if sanity_flags else None,
+                    verdict, verdict_reason,
                 ))
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",

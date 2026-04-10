@@ -789,8 +789,22 @@ svg text{font-family:'Courier New',monospace}
   <!-- 3–9. METRICS + CHARTS + VERDICT (hidden until idea selected) -->
   <div id="btl-metrics" style="display:none">
 
+    <!-- PRE-REJECTION BANNER (shown when fundamental data was missing at backtest time) -->
+    <div id="btl-prefund-banner" style="display:none;background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:8px;padding:16px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:500;color:#633806;margin-bottom:6px">
+        Pre-rejected — Fundamental data required
+      </div>
+      <div style="font-size:12px;color:#854F0B;margin-bottom:10px">
+        This strategy uses fundamental signals (ROE, DER, P/B etc.) that require quarterly
+        financial data rather than daily price data.
+        KLSE Screener data is now available for this ticker — click Re-run to attempt backtest
+        with fundamental context injected.
+      </div>
+      <button class="btn btn-sm btn-amber" onclick="btlTriggerBacktest()">▶ Re-run with fundamentals</button>
+    </div>
+
     <!-- 3. METRIC CARDS -->
-    <div class="stat-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
+    <div id="btl-metric-cards" class="stat-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
       <div class="stat-card" data-tip="Sharpe after 0.90% round-trip Bursa cost: brokerage + stamp duty + slippage × 2">
         <div class="val" id="btl-sn">—</div><div class="lbl">Net Sharpe</div></div>
       <div class="stat-card" data-tip="Gross Sharpe before transaction costs — compare to Net to see cost drag">
@@ -2180,6 +2194,27 @@ async function loadBtlDetail(rawId) {
 
   // ── 3. Metric cards ──
   metrics.style.display = 'block';
+
+  // Detect pre-rejection state: run_type='data_precheck' OR all-zero metrics with
+  // a fundamental-data rejection reason (before KLSE Screener data was available).
+  const isFundPreRejection = (
+    bt.run_type === 'data_precheck' ||
+    ((!bt.sharpe_net || bt.sharpe_net === 0) && (!bt.sharpe_gross || bt.sharpe_gross === 0) &&
+     bt.passed === 0 &&
+     ((d.verdict_reason||'').toLowerCase().includes('fundamental data') ||
+      (d.verdict_reason||'').toLowerCase().includes('requires fundamental') ||
+      (bt.verification_note||'').toLowerCase().includes('fundamental data')))
+  );
+  const banner    = document.getElementById('btl-prefund-banner');
+  const metCards  = document.getElementById('btl-metric-cards');
+  if (isFundPreRejection) {
+    banner.style.display   = 'block';
+    metCards.style.display = 'none';
+  } else {
+    banner.style.display   = 'none';
+    metCards.style.display = '';
+  }
+
   function setMetric(elId, val, goodThreshold, fmt) {
     const el = document.getElementById(elId);
     el.textContent = val != null ? fmt(val) : '—';
