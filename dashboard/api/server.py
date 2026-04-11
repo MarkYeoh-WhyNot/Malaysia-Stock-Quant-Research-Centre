@@ -1323,10 +1323,60 @@ def system_direction():
 
 @app.get("/api/system/arsenal")
 def system_arsenal(angle: Optional[str] = None):
-    """Return all quantitative techniques from TechniqueLibrary as structured JSON."""
+    """Return all quantitative techniques from TechniqueLibrary, enriched with
+    strategy profile data (exit logic, hold rationale, IC benchmarks) where available.
+    """
     from knowledge.ingestion.technique_library import TechniqueLibrary
     lib = TechniqueLibrary()
     techniques = lib.to_api_list()
+
+    # ── Enrich with strategy_profiles data ───────────────────────────────────
+    try:
+        with db_session() as conn:
+            profiles = conn.execute("SELECT * FROM strategy_profiles").fetchall()
+        profile_map = {dict(r)["strategy_key"]: dict(r) for r in profiles}
+    except Exception:
+        profile_map = {}
+
+    # Map technique library keys → strategy_profile keys (where they differ)
+    _KEY_ALIAS: dict[str, str] = {
+        "hidden_markov_model":  "hmm_regime_detector",
+        "garch":                "garch_volatility_overlay",
+        "bollinger_squeeze":    "bollinger_squeeze_breakout",
+        "information_coefficient": "cross_sectional_momentum",
+    }
+
+    for t in techniques:
+        key = t.get("key", "")
+        sp  = profile_map.get(key) or profile_map.get(_KEY_ALIAS.get(key, ""))
+        if sp:
+            t["phenomenon"]        = sp.get("phenomenon")
+            t["bursa_nuance"]      = sp.get("bursa_nuance")
+            t["entry_condition"]   = sp.get("entry_condition")
+            t["entry_universe"]    = sp.get("entry_universe")
+            t["entry_rebalance"]   = sp.get("entry_rebalance")
+            t["exit_type"]         = sp.get("exit_type")
+            t["exit_condition"]    = sp.get("exit_condition")
+            t["exit_rationale"]    = sp.get("exit_rationale")
+            t["stop_loss_pct"]     = sp.get("stop_loss_pct")
+            t["profit_target_pct"] = sp.get("profit_target_pct")
+            t["min_hold_days"]     = sp.get("min_hold_days")
+            t["max_hold_days"]     = sp.get("max_hold_days")
+            t["hold_rationale"]    = sp.get("hold_rationale")
+            t["use_when"]          = sp.get("use_when")
+            t["avoid_when"]        = sp.get("avoid_when")
+            # override ic_benchmark with richer profile version if available
+            if sp.get("ic_benchmark"):
+                t["ic_benchmark"]  = sp.get("ic_benchmark")
+        else:
+            # Ensure fields always present in response even without a profile
+            for field in ("phenomenon", "bursa_nuance", "entry_condition",
+                          "entry_universe", "entry_rebalance", "exit_type",
+                          "exit_condition", "exit_rationale", "stop_loss_pct",
+                          "profit_target_pct", "min_hold_days", "max_hold_days",
+                          "hold_rationale"):
+                t.setdefault(field, None)
+
     if angle:
         techniques = [t for t in techniques if t["angle"] == angle]
     implemented   = sum(1 for t in techniques if t["implemented"])

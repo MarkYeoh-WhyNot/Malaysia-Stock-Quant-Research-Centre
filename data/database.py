@@ -287,6 +287,24 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # Part 1 schema fix: convenience alias columns + signal_type
+        # net_sharpe / gross_sharpe / oos_sharpe are shorter aliases alongside
+        # the existing sharpe_net / sharpe_gross / sharpe_oos columns.
+        for _col in (
+            "net_sharpe REAL",
+            "gross_sharpe REAL",
+            "oos_sharpe REAL",
+            "max_dd REAL",
+            "trades INTEGER",
+            "hp_class TEXT",
+            "signal_type TEXT",
+        ):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
         # Backtest Lab: equity curve / drawdown series cache
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_series (
@@ -485,6 +503,13 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass  # already exists
 
+        # Part 7: strategy_key on alpha_ideas
+        try:
+            conn.execute("ALTER TABLE alpha_ideas ADD COLUMN strategy_key TEXT DEFAULT 'other'")
+            logger.info("Migration applied: alpha_ideas.strategy_key column added")
+        except Exception:
+            pass
+
         # ── Event-Driven Alpha Engine tables (2026-04-10) ─────────────────────
         conn.execute("""
         CREATE TABLE IF NOT EXISTS market_events (
@@ -532,6 +557,59 @@ def init_db(db_path: Path = DB_PATH):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type     ON market_events(event_type)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_events_detected ON market_events(detected_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_cal_date        ON economic_calendar(scheduled_date)")
+
+        # ── Strategy Profiles (Part 3) ────────────────────────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS strategy_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            strategy_key TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            strategy_class TEXT NOT NULL,
+            angle TEXT NOT NULL,
+            phenomenon TEXT NOT NULL,
+            bursa_nuance TEXT NOT NULL,
+            entry_condition TEXT NOT NULL,
+            entry_universe TEXT NOT NULL,
+            entry_rebalance TEXT NOT NULL,
+            exit_type TEXT NOT NULL,
+            exit_condition TEXT NOT NULL,
+            exit_rationale TEXT NOT NULL,
+            stop_loss_pct REAL,
+            profit_target_pct REAL,
+            min_hold_days INTEGER,
+            max_hold_days INTEGER,
+            hold_rationale TEXT NOT NULL,
+            complexity TEXT NOT NULL,
+            data_requirements TEXT NOT NULL,
+            implementation_status TEXT NOT NULL,
+            ic_benchmark TEXT,
+            use_when TEXT,
+            avoid_when TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sp_key ON strategy_profiles(strategy_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sp_class ON strategy_profiles(strategy_class)"
+        )
+
+        # ── Stock Universe (Part 2) ───────────────────────────────────────────
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS stock_universe (
+            ticker TEXT PRIMARY KEY,
+            name TEXT,
+            sector TEXT,
+            index_member TEXT,
+            market_cap_tier TEXT,
+            added_at TEXT DEFAULT (datetime('now'))
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_su_index ON stock_universe(index_member)"
+        )
 
     logger.info(f"Database initialized at {db_path}")
 

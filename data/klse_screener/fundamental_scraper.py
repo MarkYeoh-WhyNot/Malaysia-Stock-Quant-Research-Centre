@@ -10,38 +10,13 @@ from datetime import date
 
 from dateutil import parser as dateutil_parser
 
-from data.klse_screener.client import fetch_page, log_daemon
+from data.klse_screener.client import fetch_page, log_daemon, SLUG_MAP
 
 logger = logging.getLogger(__name__)
 
-# Map stock code → URL slug for klsescreener.com stock pages
-SLUG_MAP = {
-    "1023": "cimb-group-holdings-berhad",
-    "1155": "malayan-banking-berhad",
-    "1295": "public-bank-berhad",
-    "5285": "sime-darby-plantation-berhad",
-    "5347": "tenaga-nasional-berhad",
-    "4863": "telekom-malaysia-berhad",
-    "6947": "celcomdigi-berhad",
-    "5225": "ihh-healthcare-berhad",
-    "2291": "ioi-corporation-berhad",
-    "5182": "kuala-lumpur-kepong-berhad",
-    "1066": "rhb-bank-berhad",
-    "5819": "hong-leong-bank-berhad",
-    "1082": "hong-leong-financial-group-berhad",
-    "4197": "press-metal-aluminium-holdings-berhad",
-    "5398": "petronas-gas-berhad",
-    "5183": "petronas-dagangan-berhad",
-    "6033": "misc-berhad",
-    "4715": "genting-berhad",
-    "3182": "genting-malaysia-berhad",
-    "5681": "maxis-berhad",
-    "6888": "axiata-group-berhad",
-    "1961": "ppb-group-berhad",
-    "7277": "dialog-group-berhad",
-    "5168": "hartalega-holdings-berhad",
-    "5069": "hap-seng-plantations-berhad",
-}
+# SLUG_MAP is now canonical in client.py — imported above.
+# Kept as a local re-export for backward compatibility with any direct imports.
+SLUG_MAP = SLUG_MAP
 
 
 def _parse_date(text: str) -> str | None:

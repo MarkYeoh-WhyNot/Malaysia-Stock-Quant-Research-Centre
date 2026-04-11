@@ -172,6 +172,29 @@ svg text{font-family:'Courier New',monospace}
 .arsenal-stat .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;margin-top:2px}
 .arsenal-progress{background:var(--bg3);border-radius:3px;height:5px;margin:6px 0}
 .arsenal-progress-fill{height:5px;border-radius:3px;background:var(--green);transition:width .5s}
+/* ── Strategy Profile Panel (expandable) ── */
+.tc-profile-toggle{font-size:9px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:2px 0;margin-top:8px;display:block;width:100%;text-align:left;border-top:1px solid var(--border);padding-top:8px}
+.tc-profile-toggle:hover{color:var(--cyan)}
+.tc-profile-panel{display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
+.tc-profile-panel.open{display:block}
+.tc-profile-section{margin-bottom:10px}
+.tc-profile-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.tc-profile-text{font-size:10px;color:var(--muted2);line-height:1.5}
+.tc-profile-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
+.tc-exit-badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:bold;display:inline-block;margin:2px 2px 4px 0}
+.tc-exit-badge.signal{background:#064e3b;color:#4ade80}
+.tc-exit-badge.event{background:#1e3a5f;color:#60a5fa}
+.tc-exit-badge.signal_or_time{background:#44330a;color:#fbbf24}
+.tc-exit-badge.time_fallback{background:#1a1a2e;color:var(--muted2)}
+.tc-exit-badge.deferred{background:var(--bg3);color:var(--muted)}
+.tc-risk-badges{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
+.tc-risk-badge{font-size:9px;padding:2px 6px;border-radius:3px;background:var(--bg3);color:var(--muted2);border:1px solid var(--border)}
+.tc-risk-badge.stop{border-color:#ef4444;color:#ef4444}
+.tc-risk-badge.target{border-color:#4ade80;color:#4ade80}
+.tc-risk-badge.hold{border-color:var(--cyan);color:var(--cyan)}
+.tc-use-when{font-size:10px;color:#4ade80;line-height:1.5}
+.tc-avoid-when{font-size:10px;color:#ef4444;line-height:1.5}
+.tc-ic-bench-full{font-size:10px;color:var(--purple);font-style:italic;line-height:1.4;margin-top:4px}
 
 /* ── System Direction ── */
 .dir-section{margin-bottom:14px}
@@ -428,10 +451,11 @@ svg text{font-family:'Courier New',monospace}
 
   <!-- Filters -->
   <div class="arsenal-filter-bar">
-    <span style="font-size:10px;color:var(--muted);margin-right:4px">Filter:</span>
+    <span style="font-size:10px;color:var(--muted);margin-right:4px">Status:</span>
     <button class="arsenal-filter-btn active" onclick="arsenalFilter('all',this)">All</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilter('implemented',this)">✅ Implemented</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilter('pending',this)">🔲 Planned</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilter('deferred',this)">⏸ Deferred</button>
     <span style="margin-left:8px;font-size:10px;color:var(--muted)">Angle:</span>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('price_action',this)">price_action</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('statistical_modelling',this)">statistical_modelling</button>
@@ -440,6 +464,12 @@ svg text{font-family:'Courier New',monospace}
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('macro',this)">macro</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('institutional',this)">institutional</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('fundamental',this)">fundamental</button>
+    <span style="margin-left:8px;font-size:10px;color:var(--muted)">Exit:</span>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterExit('signal',this)">Signal Exit</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterExit('signal_or_time',this)">Signal+Time</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterExit('time_fallback',this)">Time Fallback</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterExitClass('overlay',this)">Overlay</button>
+    <button class="arsenal-filter-btn" onclick="arsenalFilterExitClass('meta',this)">Meta</button>
   </div>
 
   <div class="technique-grid" id="technique-grid">
@@ -2926,6 +2956,8 @@ setInterval(() => {
 let _arsenalData = [];
 let _arsenalStatusFilter = 'all';
 let _arsenalAngleFilter  = null;
+let _arsenalExitFilter   = null;
+let _arsenalClassFilter  = null;
 
 async function loadArsenal() {
   const d = await apiFetch('/system/arsenal');
@@ -2947,8 +2979,7 @@ async function loadArsenal() {
 function arsenalFilter(status, btn) {
   _arsenalStatusFilter = status;
   document.querySelectorAll('.arsenal-filter-bar .arsenal-filter-btn').forEach(b => {
-    if (['all','implemented','pending'].includes(b.textContent.replace(/[✅🔲 ]/g,'').toLowerCase()) ||
-        b.onclick?.toString().includes("arsenalFilter(")) b.classList.remove('active');
+    if (b.onclick?.toString().includes("arsenalFilter(")) b.classList.remove('active');
   });
   btn.classList.add('active');
   renderArsenal();
@@ -2968,36 +2999,143 @@ function arsenalFilterAngle(angle, btn) {
   renderArsenal();
 }
 
+function arsenalFilterExit(exitType, btn) {
+  if (_arsenalExitFilter === exitType) {
+    _arsenalExitFilter = null;
+    btn.classList.remove('active');
+  } else {
+    _arsenalExitFilter = exitType;
+    _arsenalClassFilter = null;
+    document.querySelectorAll('.arsenal-filter-bar .arsenal-filter-btn').forEach(b => {
+      if (b.onclick?.toString().includes("arsenalFilterExit") ||
+          b.onclick?.toString().includes("arsenalFilterExitClass")) b.classList.remove('active');
+    });
+    btn.classList.add('active');
+  }
+  renderArsenal();
+}
+
+function arsenalFilterExitClass(cls, btn) {
+  if (_arsenalClassFilter === cls) {
+    _arsenalClassFilter = null;
+    btn.classList.remove('active');
+  } else {
+    _arsenalClassFilter = cls;
+    _arsenalExitFilter = null;
+    document.querySelectorAll('.arsenal-filter-bar .arsenal-filter-btn').forEach(b => {
+      if (b.onclick?.toString().includes("arsenalFilterExit") ||
+          b.onclick?.toString().includes("arsenalFilterExitClass")) b.classList.remove('active');
+    });
+    btn.classList.add('active');
+  }
+  renderArsenal();
+}
+
 function renderArsenal() {
   let techs = _arsenalData;
-  if (_arsenalStatusFilter === 'implemented') techs = techs.filter(t => t.implemented);
-  else if (_arsenalStatusFilter === 'pending')     techs = techs.filter(t => !t.implemented);
+
+  // Status filter
+  if (_arsenalStatusFilter === 'implemented')
+    techs = techs.filter(t => t.implemented);
+  else if (_arsenalStatusFilter === 'pending')
+    techs = techs.filter(t => !t.implemented && t.implementation_status !== 'deferred');
+  else if (_arsenalStatusFilter === 'deferred')
+    techs = techs.filter(t => t.implementation_status === 'deferred');
+
+  // Angle filter
   if (_arsenalAngleFilter) techs = techs.filter(t => t.angle === _arsenalAngleFilter);
+
+  // Exit type filter
+  if (_arsenalExitFilter) techs = techs.filter(t => t.exit_type === _arsenalExitFilter);
+
+  // Strategy class filter
+  if (_arsenalClassFilter) techs = techs.filter(t => t.strategy_class === _arsenalClassFilter);
 
   const complexityColors = {low:'low', medium:'medium', high:'high'};
   const riskLabels = {low:'🟢 low', medium:'🟡 med', high:'🔴 high'};
 
+  const exitBadgeLabel = {
+    signal:        'Signal exit',
+    event:         'Event exit',
+    signal_or_time:'Signal + time',
+    time_fallback: 'Time fallback',
+  };
+
   document.getElementById('technique-grid').innerHTML = techs.map(t => {
     const implClass = t.implemented ? 'implemented' : 'pending';
-    const implBadge = t.implemented
+    const implStatus = t.implementation_status || (t.implemented ? 'live' : 'planned');
+    const implBadge = implStatus === 'live'
       ? '<span class="tc-badge impl">✅ LIVE</span>'
+      : implStatus === 'deferred'
+      ? '<span class="tc-badge high">⏸ DEFERRED</span>'
       : '<span class="tc-badge pending">🔲 PLANNED</span>';
     const cplxClass = complexityColors[t.complexity] || 'medium';
     const useItems  = (t.when_to_use||[]).slice(0,3).map(u =>
       `<li>${esc(u)}</li>`).join('');
     const avoidItems= (t.when_to_avoid||[]).map(u =>
       `<li class="tc-avoid-list">${esc(u)}</li>`).join('');
-    const avoidBlock = avoidItems
-      ? `<button class="tc-expand-btn" onclick="toggleAvoid('avoid-${t.key}',this)">▸ Show avoid rules</button>
-         <div id="avoid-${t.key}" class="tc-avoid-section">
-           <div class="tc-use-label" style="color:var(--red)">Avoid when</div>
-           <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
-         </div>`
-      : '';
     const icBench = t.ic_benchmark
-      ? `<div class="tc-ic-bench">📐 IC benchmark: ${esc(t.ic_benchmark)}</div>` : '';
+      ? `<div class="tc-ic-bench">📐 IC: ${esc(String(t.ic_benchmark).slice(0,80))}</div>` : '';
     const stockTypes = (t.stock_types||[]).join(', ');
     const holdingPeriods = (t.holding_periods||[]).join(', ');
+
+    // ── Strategy Profile Panel ──────────────────────────────────────────────
+    let profilePanel = '';
+    if (t.exit_type || t.phenomenon) {
+      const exitBadge = t.exit_type
+        ? `<span class="tc-exit-badge ${t.exit_type}">${exitBadgeLabel[t.exit_type] || t.exit_type}</span>`
+        : '';
+
+      const stopBadge = t.stop_loss_pct != null
+        ? `<span class="tc-risk-badge stop">SL -${t.stop_loss_pct}%</span>` : '';
+      const tgtBadge  = t.profit_target_pct != null
+        ? `<span class="tc-risk-badge target">TP +${t.profit_target_pct}%</span>`
+        : '<span class="tc-risk-badge">No target</span>';
+      const minBadge  = t.min_hold_days != null
+        ? `<span class="tc-risk-badge hold">Min ${t.min_hold_days}d</span>` : '';
+      const maxBadge  = t.max_hold_days != null
+        ? `<span class="tc-risk-badge hold">Max ${t.max_hold_days}d</span>`
+        : (t.exit_type === 'signal' ? '<span class="tc-risk-badge hold">Unlimited</span>' : '');
+
+      profilePanel = `
+        <button class="tc-profile-toggle" onclick="toggleProfile('profile-${t.key}',this)">
+          ▸ Strategy Profile — ${exitBadge}
+        </button>
+        <div id="profile-${t.key}" class="tc-profile-panel">
+          ${t.phenomenon ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">The Phenomenon</div>
+            <div class="tc-profile-text">${esc(t.phenomenon)}</div>
+          </div>` : ''}
+          ${t.bursa_nuance ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">Bursa Nuance</div>
+            <div class="tc-profile-text" style="color:var(--cyan)">${esc(t.bursa_nuance)}</div>
+          </div>` : ''}
+          ${t.entry_condition ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">Entry Condition</div>
+            <div class="tc-profile-text">${esc(t.entry_condition)}</div>
+          </div>` : ''}
+          ${t.exit_condition ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">Exit Condition ${exitBadge}</div>
+            <div class="tc-profile-text">${esc(t.exit_condition)}</div>
+            ${t.exit_rationale ? `<div class="tc-profile-text" style="margin-top:4px;color:var(--muted);font-style:italic">${esc(t.exit_rationale)}</div>` : ''}
+          </div>` : ''}
+          <div class="tc-profile-section">
+            <div class="tc-profile-label">Risk Parameters</div>
+            <div class="tc-risk-badges">${stopBadge}${tgtBadge}${minBadge}${maxBadge}</div>
+            ${t.hold_rationale ? `<div class="tc-profile-text" style="color:var(--muted)">${esc(t.hold_rationale)}</div>` : ''}
+          </div>
+          <div class="tc-profile-row">
+            ${t.use_when ? `<div><div class="tc-profile-label" style="color:#4ade80">Use When</div>
+              <div class="tc-use-when">${esc(t.use_when)}</div></div>` : '<div></div>'}
+            ${t.avoid_when ? `<div><div class="tc-profile-label" style="color:#ef4444">Avoid When</div>
+              <div class="tc-avoid-when">${esc(t.avoid_when)}</div></div>` : '<div></div>'}
+          </div>
+          ${t.ic_benchmark ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">IC Benchmark</div>
+            <div class="tc-ic-bench-full">${esc(t.ic_benchmark)}</div>
+          </div>` : ''}
+        </div>`;
+    }
 
     return `<div class="technique-card ${implClass}">
       <div class="tc-head">
@@ -3013,12 +3151,24 @@ function renderArsenal() {
       </div>
       <div class="tc-applicability">${esc(t.bursa_applicability)}</div>
       ${icBench}
-      <div class="tc-use-label">Use when</div>
-      <ul class="tc-use-list">${useItems}</ul>
-      ${avoidBlock}
+      ${useItems ? `<div class="tc-use-label">Use when</div>
+      <ul class="tc-use-list">${useItems}</ul>` : ''}
+      ${avoidItems ? `<button class="tc-expand-btn" onclick="toggleAvoid('avoid-${t.key}',this)">▸ Show avoid rules</button>
+         <div id="avoid-${t.key}" class="tc-avoid-section">
+           <div class="tc-use-label" style="color:var(--red)">Avoid when</div>
+           <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
+         </div>` : ''}
+      ${profilePanel}
       ${stockTypes ? `<div style="font-size:9px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
     </div>`;
   }).join('') || '<div style="color:var(--muted);padding:20px">No techniques match the current filter.</div>';
+}
+
+function toggleProfile(id, btn) {
+  const panel = document.getElementById(id);
+  if (!panel) return;
+  panel.classList.toggle('open');
+  btn.innerHTML = btn.innerHTML.replace(/^[▸▾]/, panel.classList.contains('open') ? '▾' : '▸');
 }
 
 function toggleAvoid(id, btn) {

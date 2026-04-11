@@ -749,6 +749,210 @@ Return JSON:
         )
         return result
 
+    # ── Per-strategy exit profiles ────────────────────────────────────────────
+
+    EXIT_PROFILES: dict[str, dict] = {
+        "cross_sectional_momentum": {
+            "exit_type":           "signal_or_time",
+            "rsi_overbought_exit": 78,
+            "stop_loss_pct":       0.08,
+            "profit_target_pct":   None,
+            "min_hold_days":       20,
+            "max_hold_days":       65,
+        },
+        "short_term_reversal": {
+            "exit_type":               "signal_or_time",
+            "rsi_exit":                68,
+            "recovery_threshold_pct":  98.5,
+            "stop_loss_pct":           0.05,
+            "profit_target_pct":       0.06,
+            "min_hold_days":           1,
+            "max_hold_days":           5,
+        },
+        "low_volatility_anomaly": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.12,
+            "profit_target_pct": None,
+            "min_hold_days":     60,
+            "max_hold_days":     90,
+        },
+        "rsi_mean_reversion": {
+            "exit_type":           "signal_or_time",
+            "rsi_recovery_exit":   55,
+            "stop_loss_pct":       0.06,
+            "profit_target_pct":   0.08,
+            "min_hold_days":       3,
+            "max_hold_days":       15,
+        },
+        "bollinger_squeeze_breakout": {
+            "exit_type":                 "signal_or_time",
+            "exit_on_middle_band_close": True,
+            "stop_loss_pct":             0.05,
+            "profit_target_pct":         0.15,
+            "min_hold_days":             2,
+            "max_hold_days":             20,
+        },
+        "gap_fill": {
+            "exit_type":        "signal_or_time",
+            "exit_on_gap_fill": True,
+            "stop_loss_pct":    0.03,
+            "profit_target_pct": 0.04,
+            "min_hold_days":    1,
+            "max_hold_days":    3,
+        },
+        "sma_crossover": {
+            "exit_type":          "signal",
+            "exit_on_death_cross": True,
+            "stop_loss_pct":      0.10,
+            "profit_target_pct":  None,
+            "min_hold_days":      10,
+            "max_hold_days":      None,   # unlimited — trend-following
+        },
+    }
+
+    # Default profile used when no strategy_key matches EXIT_PROFILES.
+    _DEFAULT_EXIT_PROFILE: dict = {
+        "exit_type":         "time_fallback",
+        "stop_loss_pct":     0.08,
+        "profit_target_pct": None,
+        "min_hold_days":     1,
+        "max_hold_days":     40,
+    }
+
+    def _get_exit_profile_by_key(self, strategy_key: str) -> dict:
+        """Return the exit profile for a given strategy_key, or the default profile."""
+        return self.EXIT_PROFILES.get(strategy_key or "", self._DEFAULT_EXIT_PROFILE)
+
+    def _apply_exit_logic(
+        self,
+        prices:     pd.Series,
+        signals:    pd.Series,
+        exit_profile: dict,
+        rsi_series: pd.Series | None = None,
+        bb_middle:  pd.Series | None = None,
+        gap_prev_close: pd.Series | None = None,
+    ) -> pd.Series:
+        """Post-process a raw entry signal series using per-strategy exit rules.
+
+        Iterates over each trade entry (signal goes 0→1) and determines the exit
+        bar based on the exit_profile parameters.  Returns a new signal series where
+        positions are held exactly from entry to exit — no longer than max_hold_days
+        and no shorter than min_hold_days.
+
+        Parameters
+        ----------
+        prices        : daily close price series (same index as signals)
+        signals       : raw entry signal (1=long, 0=flat) from _compute_signals()
+        exit_profile  : dict from EXIT_PROFILES or _DEFAULT_EXIT_PROFILE
+        rsi_series    : pre-computed RSI series (required for RSI exits)
+        bb_middle     : 20-day Bollinger mid band (required for BB exit)
+        gap_prev_close: previous-close series used for gap-fill exit detection
+
+        Returns
+        -------
+        pd.Series of 0/1 signals with exits applied.
+        """
+        result = pd.Series(0.0, index=signals.index)
+        min_hold = exit_profile.get("min_hold_days") or 1
+        max_hold = exit_profile.get("max_hold_days")  # None = unlimited
+        stop_pct  = exit_profile.get("stop_loss_pct") or 0.0
+        tgt_pct   = exit_profile.get("profit_target_pct") or 0.0
+        exit_type = exit_profile.get("exit_type", "time_fallback")
+
+        # RSI exits
+        rsi_overbought  = exit_profile.get("rsi_overbought_exit")
+        rsi_recovery    = exit_profile.get("rsi_recovery_exit")
+        rsi_exit_thresh = exit_profile.get("rsi_exit")   # short_term_reversal (RSI 5-day)
+
+        # Signal exits
+        exit_on_bb_mid   = exit_profile.get("exit_on_middle_band_close", False)
+        exit_on_gap_fill = exit_profile.get("exit_on_gap_fill", False)
+        exit_on_death    = exit_profile.get("exit_on_death_cross", False)
+
+        in_trade   = False
+        entry_bar  = 0
+        entry_px   = 0.0
+
+        n = len(signals)
+        sig_vals = signals.values
+        px_vals  = prices.values
+
+        for i in range(n):
+            if not in_trade:
+                if sig_vals[i] == 1:
+                    in_trade  = True
+                    entry_bar = i
+                    entry_px  = float(px_vals[i])
+            else:
+                result.iloc[i - 1] = 1.0   # mark previous bar as held
+                bars_held = i - entry_bar
+                px = float(px_vals[i])
+
+                # Never exit before min_hold
+                if bars_held < min_hold:
+                    continue
+
+                exit_triggered = False
+
+                # Stop loss
+                if stop_pct and entry_px > 0 and px <= entry_px * (1.0 - stop_pct):
+                    exit_triggered = True
+
+                # Profit target
+                if tgt_pct and entry_px > 0 and px >= entry_px * (1.0 + tgt_pct):
+                    exit_triggered = True
+
+                # RSI overbought exit (momentum)
+                if not exit_triggered and rsi_overbought and rsi_series is not None:
+                    rsi_val = float(rsi_series.iloc[i]) if i < len(rsi_series) else float("nan")
+                    if not np.isnan(rsi_val) and rsi_val > rsi_overbought:
+                        exit_triggered = True
+
+                # RSI recovery exit (mean reversion — exit when normalised)
+                if not exit_triggered and rsi_recovery and rsi_series is not None:
+                    rsi_val = float(rsi_series.iloc[i]) if i < len(rsi_series) else float("nan")
+                    if not np.isnan(rsi_val) and rsi_val > rsi_recovery:
+                        exit_triggered = True
+
+                # RSI threshold exit (reversal — short 5-day RSI)
+                if not exit_triggered and rsi_exit_thresh and rsi_series is not None:
+                    rsi_val = float(rsi_series.iloc[i]) if i < len(rsi_series) else float("nan")
+                    if not np.isnan(rsi_val) and rsi_val > rsi_exit_thresh:
+                        exit_triggered = True
+
+                # Bollinger Band middle exit (breakout failed)
+                if not exit_triggered and exit_on_bb_mid and bb_middle is not None:
+                    mid = float(bb_middle.iloc[i]) if i < len(bb_middle) else float("nan")
+                    if not np.isnan(mid) and px < mid:
+                        exit_triggered = True
+
+                # Gap fill exit
+                if not exit_triggered and exit_on_gap_fill and gap_prev_close is not None:
+                    prev_close = float(gap_prev_close.iloc[i]) if i < len(gap_prev_close) else float("nan")
+                    if not np.isnan(prev_close) and px >= prev_close:
+                        exit_triggered = True
+
+                # Death cross exit (SMA crossover)
+                if not exit_triggered and exit_on_death:
+                    # Signal series itself encodes the death cross via 0;
+                    # exit when the original signal flips back to 0
+                    if sig_vals[i] == 0:
+                        exit_triggered = True
+
+                # Max hold days (time fallback)
+                if not exit_triggered and max_hold is not None and bars_held >= max_hold:
+                    exit_triggered = True
+
+                if exit_triggered:
+                    in_trade = False
+                    # Mark exit bar as 0 (position closed this bar)
+
+        # Mark the last bar as held if still in trade at end of series
+        if in_trade and n > 0:
+            result.iloc[n - 1] = 1.0
+
+        return result
+
     # ── Holding period classification ─────────────────────────────────────────
 
     @staticmethod
@@ -874,6 +1078,46 @@ Return JSON only:
             "issue":      issue,
         }
 
+    def _compute_signal_with_exits(
+        self,
+        df:           pd.DataFrame,
+        raw_signals:  pd.Series,
+        exit_profile: dict,
+    ) -> pd.Series:
+        """Wrap _apply_exit_logic() with pre-computed indicator series.
+
+        Builds the RSI, BB middle, and previous-close series required by
+        _apply_exit_logic() from the OHLCV DataFrame, then delegates to it.
+        Returns the modified signal series.
+        """
+        close = df["close"]
+
+        # RSI — needed for several exit types
+        rsi_series: pd.Series | None = None
+        if any(exit_profile.get(k) for k in (
+            "rsi_overbought_exit", "rsi_recovery_exit", "rsi_exit"
+        )):
+            rsi_series = self._rsi(close, 14)
+
+        # Bollinger Band middle (20-day SMA)
+        bb_middle: pd.Series | None = None
+        if exit_profile.get("exit_on_middle_band_close"):
+            bb_middle = close.rolling(20).mean()
+
+        # Previous close for gap-fill detection
+        gap_prev_close: pd.Series | None = None
+        if exit_profile.get("exit_on_gap_fill"):
+            gap_prev_close = close.shift(1)
+
+        return self._apply_exit_logic(
+            prices=close,
+            signals=raw_signals,
+            exit_profile=exit_profile,
+            rsi_series=rsi_series,
+            bb_middle=bb_middle,
+            gap_prev_close=gap_prev_close,
+        )
+
     # ── Train / val / test split ─────────────────────────────────────────────
 
     @staticmethod
@@ -993,6 +1237,19 @@ Return JSON only:
         hp_class = self.classify_holding_period(
             interval, row["factor_formula"] or "", row["hypothesis"] or ""
         )
+
+        # Load per-strategy exit profile (if strategy_key is set)
+        _strategy_key = (dict(row).get("strategy_key") or "").strip()
+        _exit_profile = self._get_exit_profile_by_key(_strategy_key)
+        _has_custom_exit = _strategy_key in self.EXIT_PROFILES
+        if _has_custom_exit:
+            self.log_daemon(
+                "INFO",
+                f"Backtest [{idea_id}] using exit profile '{_strategy_key}': "
+                f"exit_type={_exit_profile['exit_type']} "
+                f"max_hold={_exit_profile.get('max_hold_days')} "
+                f"stop={_exit_profile.get('stop_loss_pct')}",
+            )
         self.log_daemon("INFO", f"Backtest [{idea_id}] holding_period_class={hp_class}")
 
         # Verify formula before full backtest
@@ -1025,6 +1282,9 @@ Return JSON only:
                 }
                 continue
             sig = self._compute_signals(split_df, params)
+            # Apply per-strategy exit logic for known strategy_key profiles
+            if _has_custom_exit:
+                sig = self._compute_signal_with_exits(split_df, sig, _exit_profile)
             results[split_name] = self._compute_performance(split_df, sig, interval)
 
         self._log_progress(idea_id, 65, "Walk-forward IS/OOS and regime stress test")

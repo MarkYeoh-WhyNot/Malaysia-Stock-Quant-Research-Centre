@@ -444,6 +444,29 @@ a PRICE-BASED proxy instead:
 Available tickers (use ONLY these or other confirmed .KL tickers):
 {_UNIVERSE_BRIEF}
 
+STRATEGY KEY — classify each idea into one of these strategy types.
+The strategy_key determines which exit logic the backtest engine applies:
+  cross_sectional_momentum — monthly ranking by 6M return, skip-month rule
+  short_term_reversal      — buy sharp drops without fundamental catalyst
+  low_volatility_anomaly   — long low-vol quintile quarterly
+  rsi_mean_reversion       — RSI < 25 bounce with quality filter
+  bollinger_squeeze_breakout — BB compression + volume breakout
+  gap_fill                 — gap-down fill within 3 days
+  sma_crossover            — 20/50 MA golden cross, unlimited hold
+  pead                     — post-earnings announcement drift
+  pre_ex_dividend          — accumulate before ex-date
+  contract_win             — price response to contract award
+  opr_cycle                — BNM OPR sensitivity in banking stocks
+  cpo_lag                  — palm oil price lag in plantation stocks
+  fundamental_screen       — quarterly fundamental quality screen
+  other                    — does not fit any above category
+
+Also include an "exit_quality" field (0.0-1.0) scoring how well-defined the exit is:
+  1.0 = clear signal-conditioned exit (RSI level, MA crossover, specific event)
+  0.7 = stop + profit target + time fallback
+  0.4 = time-based exit only
+  0.0 = no exit defined
+
 Return a valid JSON array of exactly {count} objects. Each object:
 {{
   "title":          "Concise strategy name (e.g. 'Maybank Dividend Capture Pre-Ex')",
@@ -452,9 +475,11 @@ Return a valid JSON array of exactly {count} objects. Each object:
   "company":        "Full company name",
   "sector":         "Bursa sector (Banking / Plantations / Utilities / etc.)",
   "timeframe":      "1d",
-  "factor_formula": "Precise signal construction: e.g. 'Enter long when 20-day SMA crosses above 50-day SMA and RSI(14) < 65. Exit when RSI > 75 or -8% stop-loss.'",
+  "factor_formula": "Precise signal construction INCLUDING entry AND exit rules. e.g. 'Enter long when 20-day SMA crosses above 50-day SMA and RSI(14) < 65. Exit when death cross (20d below 50d) or -10% stop-loss.'",
   "data_sources":   ["Yahoo Finance daily OHLCV", "Bursa quarterly earnings releases"],
   "strategy_type":  "momentum | value | quality | mean_reversion | event_driven | sector_rotation | technical",
+  "strategy_key":   "one of the strategy_key values listed above",
+  "exit_quality":   0.7,
   "holding_period": "e.g. 2-6 weeks",
   "novelty_score":  0.75,
   "logic_score":    0.80,
@@ -517,12 +542,15 @@ Return a valid JSON array of exactly {count} objects. Each object:
             )
         ticker = ticker  # keep the full comma-separated string in the DB
 
+        strategy_key = str(idea.get("strategy_key") or "other").strip()
+
         with db_session() as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
-                   data_sources, stage, status, novelty_score, logic_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?)
+                   data_sources, stage, status, novelty_score, logic_score,
+                   strategy_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?)
             """, (
                 slug,
                 title,
@@ -533,6 +561,7 @@ Return a valid JSON array of exactly {count} objects. Each object:
                 json.dumps(idea.get("data_sources", [])),
                 float(idea.get("novelty_score", 0.0)),
                 float(idea.get("logic_score", 0.0)),
+                strategy_key,
             ))
             row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
 
@@ -635,6 +664,14 @@ Score each dimension 0.0–1.0 (use low scores liberally):
    Score LOW (good) if: simple signal, clear economic story, robust to parameter changes.
    *** For PASS we need overfitting_risk <= 0.40 (lower is better) ***
 
+6. EXIT_QUALITY (0–1): How well-defined is the exit strategy?
+   Score 1.0 if: clear signal-conditioned exit is defined (e.g. 'exit when RSI > 55',
+     'exit when 20-day SMA crosses below 50-day SMA', 'exit when gap is filled').
+   Score 0.7 if: stop-loss + profit target + time fallback all defined.
+   Score 0.4 if: only a fixed time exit is defined (e.g. 'hold for 30 days').
+   Score 0.0 if: no exit condition is defined at all.
+   *** This dimension is informational only — does NOT affect pass/fail ***
+
 Deterministic pre-score: feasibility={feasibility:.2f}/1.00 (must be >= 0.60 to pass)
 
 Pass requires ALL of:
@@ -653,6 +690,7 @@ Return JSON only:
   "feasibility_score":    0.0,
   "data_quality_score":   0.0,
   "overfitting_risk":     0.5,
+  "exit_quality":         0.7,
   "pass":                 false,
   "rationale":            "2-3 sentences — be specific about which dimensions fail and why",
   "key_risks":            ["specific risk 1", "specific risk 2"],
@@ -690,6 +728,7 @@ Return JSON only:
         claude_feas  = float(result.get("feasibility_score", 0))
         data_qual    = float(result.get("data_quality_score", 0))
         overfit      = float(result.get("overfitting_risk",  1.0))
+        exit_quality = float(result.get("exit_quality",      0.4))  # informational only
 
         # Log a warning if all scores are suspiciously zero (likely a parse problem)
         if novelty == 0.0 and logic == 0.0 and "error" not in result:
@@ -699,6 +738,7 @@ Return JSON only:
             )
 
         # Gate 0: ALL FIVE dimensions + deterministic feasibility must pass
+        # exit_quality is informational only — does NOT affect pass/fail
         passed = (
             novelty     >= 0.60
             and logic       >= 0.65
@@ -706,6 +746,14 @@ Return JSON only:
             and data_qual   >= 0.70
             and overfit     <= 0.40
             and feasibility >= 0.60   # deterministic pre-score
+        )
+
+        # Log exit quality with a hint if it's low
+        eq_label = {1.0: "excellent", 0.7: "good", 0.4: "weak (time only)", 0.0: "missing"}
+        eq_desc  = eq_label.get(exit_quality, f"{exit_quality:.1f}")
+        self.log_daemon(
+            "INFO" if exit_quality >= 0.7 else "WARN",
+            f"Gate0 [{idea_id}] exit_quality={exit_quality:.1f} ({eq_desc})"
         )
 
         # Build a clear failure message so rejection_memory gets useful context
