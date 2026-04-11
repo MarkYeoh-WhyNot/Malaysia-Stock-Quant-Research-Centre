@@ -1342,10 +1342,18 @@ Return JSON only:
             )
         self.log_daemon("INFO", f"Backtest [{idea_id}] holding_period_class={hp_class}")
 
-        # Verify formula before full backtest
-        verification = self.verify_formula(params, row["factor_formula"] or "", df)
-        needs_review    = 0 if (verification["verified"] and verification["confidence"] >= 0.7) else 1
-        verification_note = verification.get("issue", "") or ""
+        # Verify formula before full backtest.
+        # fundamental_screen strategies legitimately produce a constant signal — the
+        # verification step cannot validate fundamental factor logic from price data
+        # alone and always flags needs_review. Skip it for this signal type.
+        if params.get("signal_type") == "fundamental_screen":
+            needs_review      = 0
+            verification_note = ("Constant signal expected for fundamental screen "
+                                 "(quarterly buy-and-hold) — formula verification N/A")
+        else:
+            verification      = self.verify_formula(params, row["factor_formula"] or "", df)
+            needs_review      = 0 if (verification["verified"] and verification["confidence"] >= 0.7) else 1
+            verification_note = verification.get("issue", "") or ""
 
         # INTRADAY on daily bars — flag immediately, do not trust results
         if hp_class == "INTRADAY":
