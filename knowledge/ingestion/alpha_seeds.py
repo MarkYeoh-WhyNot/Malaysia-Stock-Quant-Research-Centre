@@ -157,8 +157,30 @@ Return JSON:
         )
 
         if "error" in result:
-            self.log_daemon("WARN", f"AlphaSeed digest failed for doc {doc_id}: {result.get('error')}")
-            return {"skipped": True, "reason": "claude_error", "doc_id": doc_id, "error": result["error"]}
+            error_msg = result.get("error", "unknown")
+            self.log_daemon(
+                "WARN",
+                f"AlphaSeed digest failed for doc {doc_id}: {error_msg}",
+            )
+            # On hard parse failures (json_parse_failed, invalid JSON, etc.) mark
+            # the document seeded=1 so the daemon does not retry it every cycle.
+            # The summary is updated with a failure note for auditability.
+            if "parse" in str(error_msg).lower() or "json" in str(error_msg).lower():
+                with db_session() as conn:
+                    conn.execute(
+                        "UPDATE kb_documents SET seeded=1, "
+                        "summary=?, updated_at=datetime('now') WHERE id=?",
+                        (f"[PARSE_FAILED] {(summary or '')[:200]}", doc_id),
+                    )
+                self.log_daemon(
+                    "WARN",
+                    f"AlphaSeed: doc {doc_id} marked seeded=1 after parse failure "
+                    f"— will not retry",
+                )
+            return {
+                "skipped": True, "reason": "claude_error",
+                "doc_id": doc_id, "error": error_msg,
+            }
 
         core_insight = result.get("core_insight", "")
         mechanism    = result.get("mechanism", "")

@@ -532,15 +532,19 @@ Return a valid JSON array of exactly {count} objects. Each object:
         slug   = f"{datetime.utcnow().strftime('%Y-%m-%d')}-{slug}"
         ticker = idea.get("ticker") or "1155.KL"
 
-        # For sector ideas ticker may be comma-separated (e.g. "5225.KL,5878.KL,7081.KL").
-        # Validate only the primary (first) ticker — the full list is stored for reference.
-        primary_ticker = ticker.split(",")[0].strip()
-        if not self._is_equity_ticker(primary_ticker):
+        # Extract all valid .KL tickers from the field using regex.
+        # This handles formats like "1961.KL vs 5012.KL", "Consumer Staples: 4707.KL..."
+        # and plain comma-separated lists "1155.KL,1023.KL".
+        kl_tickers = re.findall(r"\d{4}\.KL", ticker)
+        if not kl_tickers:
             raise ValueError(
-                f"save_idea() refused: primary ticker '{primary_ticker}' "
-                f"(from '{ticker[:80]}') is not a valid .KL symbol. Title: '{title}'"
+                f"save_idea() refused: no valid .KL ticker found in '{ticker[:80]}'. "
+                f"Title: '{title}'"
             )
-        ticker = ticker  # keep the full comma-separated string in the DB
+        primary_ticker = kl_tickers[0]
+        # Rewrite ticker field to clean comma-separated .KL list (deduped, order preserved)
+        seen: set = set()
+        ticker = ",".join(t for t in kl_tickers if not (t in seen or seen.add(t)))
 
         strategy_key = str(idea.get("strategy_key") or "other").strip()
 
@@ -824,8 +828,13 @@ Return JSON only:
                 )
                 # Auto-resubmit as a new pending Gate 0 idea
                 try:
+                    # Strip any existing "Price proxy: " prefix before prepending
+                    # to avoid "Price proxy: Price proxy: ..." doubling on retry.
+                    _proxy_base = row["title"]
+                    if _proxy_base.startswith("Price proxy: "):
+                        _proxy_base = _proxy_base[len("Price proxy: "):]
                     proxy_idea = {
-                        "title":          f"Price proxy: {row['title'][:40]}",
+                        "title":          f"Price proxy: {_proxy_base[:40]}",
                         "hypothesis":     proxy,
                         "ticker":         ticker,
                         "timeframe":      row.get("timeframe") or "1d",
