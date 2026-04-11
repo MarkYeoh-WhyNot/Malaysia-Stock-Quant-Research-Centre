@@ -535,7 +535,7 @@ Return a valid JSON array of exactly {count} objects. Each object:
         # Extract all valid .KL tickers from the field using regex.
         # This handles formats like "1961.KL vs 5012.KL", "Consumer Staples: 4707.KL..."
         # and plain comma-separated lists "1155.KL,1023.KL".
-        kl_tickers = re.findall(r"\d{4}\.KL", ticker)
+        kl_tickers = re.findall(r"[\dA-Z]{4,6}\.KL", ticker)
         if not kl_tickers:
             raise ValueError(
                 f"save_idea() refused: no valid .KL ticker found in '{ticker[:80]}'. "

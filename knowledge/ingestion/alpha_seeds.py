@@ -31,7 +31,7 @@ _INFEASIBLE_PHRASES = [
 # Regex to detect non-Bursa tickers (NYSE/NASDAQ style: letters only, no .KL suffix)
 # Catches things like AAPL, MSFT, SPY, ^GSPC — but NOT "1155.KL" or sector labels
 _NON_KL_TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b(?!\s*\.KL)", re.UNICODE)
-_KL_TICKER_RE     = re.compile(r"\b\d{4}\.KL\b")
+_KL_TICKER_RE     = re.compile(r"\b[\dA-Z]{4,6}\.KL\b")
 
 
 def is_bursa_feasible(h: dict) -> tuple[bool, str]:
