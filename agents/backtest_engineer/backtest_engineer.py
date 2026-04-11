@@ -79,7 +79,7 @@ Hypothesis: {hypothesis}
 
 Return JSON:
 {{
-  "signal_type": "sma_crossover|ema_crossover|rsi|momentum|bollinger|macd|value|quality|volume_breakout",
+  "signal_type": "sma_crossover|ema_crossover|rsi|momentum|bollinger|macd|value|quality|volume_breakout|gap_fill|short_term_reversal|cross_sectional_momentum|pead|cpo_correlation|cpo_lag|opr_banking_signal|opr_cycle",
   "fast_period": 20,
   "slow_period": 50,
   "rsi_period": 14,
@@ -120,6 +120,7 @@ Return JSON:
         # KLSE equities: long-only by default (short-selling is restricted to
         # designated securities only)
         long_only = bool(params.get("long_only", True))
+        open_prices = df["open"] if "open" in df.columns else close
 
         if stype in ("sma_crossover", "ema_crossover"):
             fp = int(params.get("fast_period", 20))
@@ -178,6 +179,47 @@ Return JSON:
             # _run_backtest() after evaluating fund_context against the formula.
             fundamental_signal = float(params.get("fundamental_signal", 1.0))
             raw = np.full(len(close), fundamental_signal)
+
+        elif stype == "gap_fill":
+            gap_pct = (open_prices - close.shift(1)) / close.shift(1)
+            raw = (gap_pct < -0.03).astype(float).values
+
+        elif stype == "short_term_reversal":
+            five_day_return = close.pct_change(5)
+            raw = (five_day_return < -0.06).astype(float).values
+
+        elif stype == "cross_sectional_momentum":
+            formation_return = close.shift(21).pct_change(126)
+            rolling_pct = formation_return.rolling(252).rank(pct=True)
+            raw = (rolling_pct >= 0.80).astype(float).values
+
+        elif stype == "pead":
+            gap_pct = (open_prices - close.shift(1)) / close.shift(1)
+            raw = (gap_pct > 0.02).astype(float).values
+
+        elif stype in ("cpo_correlation", "cpo_lag"):
+            try:
+                import yfinance as yf
+                cpo_dl = yf.download(
+                    "FCPO=F",
+                    start=close.index[0],
+                    end=close.index[-1],
+                    interval="1d",
+                    progress=False,
+                )["Close"]
+                # yfinance may return DataFrame with MultiIndex columns — flatten to Series
+                if hasattr(cpo_dl, "squeeze"):
+                    cpo_dl = cpo_dl.squeeze()
+                cpo = pd.Series(cpo_dl.values.ravel(), index=cpo_dl.index) if not isinstance(cpo_dl, pd.Series) else cpo_dl
+                cpo = cpo.reindex(close.index).ffill()
+                cpo_mom = cpo.pct_change(5)
+                raw = (cpo_mom > 0).astype(float).values
+            except Exception:
+                raw = (close.pct_change(21) > 0).astype(float).values
+
+        elif stype in ("opr_banking_signal", "opr_cycle"):
+            three_month_ret = close.pct_change(63)
+            raw = (three_month_ret > 0.02).astype(float).values
 
         else:  # momentum / default
             period = int(params.get("momentum_period", 20))
@@ -807,6 +849,41 @@ Return JSON:
             "profit_target_pct":  None,
             "min_hold_days":      10,
             "max_hold_days":      None,   # unlimited — trend-following
+        },
+        "pead": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.04,
+            "profit_target_pct": 0.08,
+            "min_hold_days":     5,
+            "max_hold_days":     20,
+        },
+        "cpo_correlation": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.06,
+            "profit_target_pct": 0.10,
+            "min_hold_days":     5,
+            "max_hold_days":     20,
+        },
+        "cpo_lag": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.06,
+            "profit_target_pct": 0.10,
+            "min_hold_days":     5,
+            "max_hold_days":     20,
+        },
+        "opr_banking_signal": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.07,
+            "profit_target_pct": 0.12,
+            "min_hold_days":     10,
+            "max_hold_days":     60,
+        },
+        "opr_cycle": {
+            "exit_type":         "signal_or_time",
+            "stop_loss_pct":     0.07,
+            "profit_target_pct": 0.12,
+            "min_hold_days":     10,
+            "max_hold_days":     60,
         },
     }
 
