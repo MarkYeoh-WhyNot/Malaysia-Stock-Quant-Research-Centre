@@ -1650,6 +1650,38 @@ Return JSON only:
             self.log_daemon("ERROR", f"Backtest save FAILED for idea {idea_id}: {e}")
             raise
 
+        # ── Save equity curve to backtest_series ─────────────────────────────
+        try:
+            sig_full = self._compute_signals(df, params)
+            if _has_custom_exit:
+                sig_full = self._compute_signal_with_exits(df, sig_full, _exit_profile)
+            sig_shifted = sig_full.shift(1).fillna(0)
+            bar_returns = df["close"].pct_change().fillna(0)
+            net_bar     = (sig_shifted * bar_returns
+                           - sig_shifted.diff().abs() * _BT_ROUND_TRIP_COST)
+            equity      = (1 + net_bar.clip(-0.5, 0.5)).cumprod()
+            oos_start   = int(len(df) * 0.70)
+            peak        = equity.expanding().max()
+            dd_series   = (equity - peak) / peak.clip(lower=1e-9)
+            with db_session() as conn:
+                conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
+                rows_eq = [
+                    (idea_id, str(d)[:10],
+                     float(v) - 1.0, 0.0,
+                     float(dd_series.iloc[i]), 1 if i >= oos_start else 0)
+                    for i, (d, v) in enumerate(zip(equity.index, equity.values))
+                ]
+                conn.executemany(
+                    "INSERT INTO backtest_series "
+                    "(idea_id, date, strategy_pct, benchmark_pct, drawdown_pct, is_oos) "
+                    "VALUES (?,?,?,?,?,?)", rows_eq,
+                )
+            self.log_daemon("INFO",
+                f"Backtest [{idea_id}] saved {len(rows_eq)} equity curve points to backtest_series")
+        except Exception as _eq_exc:
+            self.log_daemon("WARN",
+                f"Backtest [{idea_id}] could not save equity series: {_eq_exc}")
+
         self._log_progress(idea_id, 100, "Complete")
         self._clear_progress(idea_id)
         self.log_daemon(
@@ -2157,6 +2189,30 @@ Return JSON only:
             self.log_daemon("ERROR",
                 f"FundScreen [{idea_id}] DB save FAILED: {exc}")
             raise
+
+        # ── Save equity curve to backtest_series ─────────────────────────────
+        try:
+            oos_start = int(len(nav) * 0.70)
+            peak      = nav.expanding().max()
+            dd_series = (nav - peak) / peak.clip(lower=1e-9)
+            with db_session() as conn:
+                conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
+                rows_eq = [
+                    (idea_id, str(d)[:10],
+                     float(v) - 1.0, 0.0,
+                     float(dd_series.iloc[i]), 1 if i >= oos_start else 0)
+                    for i, (d, v) in enumerate(zip(nav.index, nav.values))
+                ]
+                conn.executemany(
+                    "INSERT INTO backtest_series "
+                    "(idea_id, date, strategy_pct, benchmark_pct, drawdown_pct, is_oos) "
+                    "VALUES (?,?,?,?,?,?)", rows_eq,
+                )
+            self.log_daemon("INFO",
+                f"FundScreen [{idea_id}] saved {len(rows_eq)} equity curve points to backtest_series")
+        except Exception as _eq_exc:
+            self.log_daemon("WARN",
+                f"FundScreen [{idea_id}] could not save equity series: {_eq_exc}")
 
         self._log_progress(idea_id, 100, "Complete")
         self._clear_progress(idea_id)
