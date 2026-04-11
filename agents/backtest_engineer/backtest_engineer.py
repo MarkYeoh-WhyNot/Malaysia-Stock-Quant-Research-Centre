@@ -1413,6 +1413,12 @@ Return JSON only:
             sharpe_threshold = _fs["min_sharpe_net"]
             max_dd_threshold = _fs["max_dd"]
             min_trades       = _fs["min_trades"]
+            # For fundamental screens the "trade" is a quarterly rebalance decision,
+            # not a signal flip. Compute actual_trades as the total number of quarterly
+            # rebalance points across the full backtest period (252 trading days ÷ 4 ≈ 63).
+            bars_per_quarter  = 63 if interval == "1d" else 13  # 52wk ÷ 4
+            n_bars_total      = len(train_df) + len(val_df) + len(test_df)
+            actual_trades     = max(1, n_bars_total // bars_per_quarter)
 
         # Gate 2 — in-sample quality (use net Sharpe throughout)
         # For fundamental screens the signal is constant (quarterly buy-and-hold),
@@ -1553,13 +1559,13 @@ Return JSON only:
                        train_dd, val_dd, test_dd,
                        train_val_gap, total_trades, win_rate, profit_factor,
                        params, result_data, passed, needs_review, verification_note,
-                       holding_period_class, trade_count,
-                       sharpe_gross, sharpe_net,
-                       sharpe_is, sharpe_oos, oos_degradation,
+                       holding_period_class, trade_count, trades,
+                       sharpe_gross, sharpe_net, net_sharpe, gross_sharpe,
+                       sharpe_is, sharpe_oos, oos_sharpe, oos_degradation,
                        sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
-                       regimes_positive, sanity_flags,
+                       regimes_positive, sanity_flags, max_dd,
                        verdict, verdict_reason)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     idea_id, "klse_daily", symbol, interval, row["factor_formula"],
                     train_r["sharpe_net"], val_r["sharpe_net"], test_sharpe_net,
@@ -1569,12 +1575,13 @@ Return JSON only:
                     json.dumps(params), json.dumps(results),
                     1 if overall_pass else 0,
                     needs_review, full_note or None,
-                    hp_class, actual_trades,
-                    test_sharpe_gross, test_sharpe_net,
-                    sharpe_is, sharpe_oos, oos_deg,
+                    hp_class, actual_trades, actual_trades,
+                    test_sharpe_gross, test_sharpe_net, test_sharpe_net, test_sharpe_gross,
+                    sharpe_is, sharpe_oos, sharpe_oos, oos_deg,
                     reg["sharpe_low_vol"], reg["sharpe_mid_vol"], reg["sharpe_high_vol"],
                     regimes_positive,
                     json.dumps(sanity_flags) if sanity_flags else None,
+                    test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
                 run_id = conn.execute(
@@ -1582,14 +1589,30 @@ Return JSON only:
                     (idea_id,),
                 ).fetchone()["id"]
 
-                new_stage  = "stage3" if overall_pass else "stage2"
-                new_status = "active"  if overall_pass else "rejected"
-                # Store net Sharpe as the primary backtest metric
-                conn.execute("""
-                    UPDATE alpha_ideas
-                    SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?, updated_at=datetime('now')
-                    WHERE id=?
-                """, (test_sharpe_net, test_r["max_dd"], new_stage, new_status, idea_id))
+                # Only update stage/status from stage2 → stage3.
+                # If idea is already at stage3+ (e.g., after Red-Blue reviewed it),
+                # preserve the current stage/status — never overwrite Red-Blue decisions.
+                cur_idea = conn.execute(
+                    "SELECT stage, status FROM alpha_ideas WHERE id=?", (idea_id,)
+                ).fetchone()
+                cur_stage = cur_idea["stage"] if cur_idea else "stage2"
+
+                if cur_stage == "stage2":
+                    new_stage  = "stage3" if overall_pass else "stage2"
+                    new_status = "active"  if overall_pass else "rejected"
+                    conn.execute("""
+                        UPDATE alpha_ideas
+                        SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?,
+                            updated_at=datetime('now')
+                        WHERE id=?
+                    """, (test_sharpe_net, test_r["max_dd"], new_stage, new_status, idea_id))
+                else:
+                    # Refresh metrics only; preserve stage and status
+                    conn.execute("""
+                        UPDATE alpha_ideas
+                        SET backtest_sharpe=?, backtest_dd=?, updated_at=datetime('now')
+                        WHERE id=?
+                    """, (test_sharpe_net, test_r["max_dd"], idea_id))
 
                 conn.execute("""
                     INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
@@ -2045,13 +2068,13 @@ Return JSON only:
                        train_dd, val_dd, test_dd,
                        train_val_gap, total_trades, win_rate, profit_factor,
                        params, result_data, passed, needs_review, verification_note,
-                       holding_period_class, trade_count,
-                       sharpe_gross, sharpe_net,
-                       sharpe_is, sharpe_oos, oos_degradation,
+                       holding_period_class, trade_count, trades,
+                       sharpe_gross, sharpe_net, net_sharpe, gross_sharpe,
+                       sharpe_is, sharpe_oos, oos_sharpe, oos_degradation,
                        sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
-                       regimes_positive, sanity_flags,
+                       regimes_positive, sanity_flags, max_dd,
                        verdict, verdict_reason)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     idea_id, "fundamental_screen_portfolio",
                     ticker_raw, interval, row.get("factor_formula", ""),
@@ -2062,11 +2085,11 @@ Return JSON only:
                     json.dumps(params), json.dumps(result_data),
                     1 if overall_pass else 0,
                     0, full_note or None,
-                    hp_class, actual_trades,
-                    test_sharpe_gross, test_sharpe_net,
-                    sharpe_is, sharpe_oos, oos_deg,
+                    hp_class, actual_trades, actual_trades,
+                    test_sharpe_gross, test_sharpe_net, test_sharpe_net, test_sharpe_gross,
+                    sharpe_is, sharpe_oos, sharpe_oos, oos_deg,
                     reg["sharpe_low_vol"], reg["sharpe_mid_vol"], reg["sharpe_high_vol"],
-                    regimes_positive, None,
+                    regimes_positive, None, test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
                 run_id = conn.execute(
@@ -2075,15 +2098,33 @@ Return JSON only:
                     (idea_id,),
                 ).fetchone()["id"]
 
-                new_stage  = "stage3" if overall_pass else "stage2"
-                new_status = "active"  if overall_pass else "rejected"
-                conn.execute("""
-                    UPDATE alpha_ideas
-                    SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?,
-                        updated_at=datetime('now')
-                    WHERE id=?
-                """, (test_sharpe_net, test_r["max_dd"],
-                      new_stage, new_status, idea_id))
+                # Only update stage/status if idea is currently at stage2.
+                # If already at stage3 or higher (e.g., after Red-Blue review),
+                # preserve the existing stage/status — do not overwrite rejections.
+                cur_idea = conn.execute(
+                    "SELECT stage, status FROM alpha_ideas WHERE id=?", (idea_id,)
+                ).fetchone()
+                cur_stage  = cur_idea["stage"]  if cur_idea else "stage2"
+                cur_status = cur_idea["status"] if cur_idea else "pending"
+
+                if cur_stage == "stage2":
+                    new_stage  = "stage3" if overall_pass else "stage2"
+                    new_status = "active"  if overall_pass else "rejected"
+                    conn.execute("""
+                        UPDATE alpha_ideas
+                        SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?,
+                            updated_at=datetime('now')
+                        WHERE id=?
+                    """, (test_sharpe_net, test_r["max_dd"],
+                          new_stage, new_status, idea_id))
+                else:
+                    # Only refresh metrics, never downgrade stage or flip status
+                    conn.execute("""
+                        UPDATE alpha_ideas
+                        SET backtest_sharpe=?, backtest_dd=?,
+                            updated_at=datetime('now')
+                        WHERE id=?
+                    """, (test_sharpe_net, test_r["max_dd"], idea_id))
                 conn.execute("""
                     INSERT INTO pipeline_events
                       (idea_id, stage, event_type, agent, notes)
