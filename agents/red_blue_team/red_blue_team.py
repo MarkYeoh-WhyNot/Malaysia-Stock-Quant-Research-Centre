@@ -188,6 +188,18 @@ Return JSON:
         if _is_fundamental_screen(idea):
             signal_type_context = FUNDAMENTAL_SCREEN_BLUE_TEMPLATES
 
+        # Truncate serialised red findings to avoid oversized prompts when red team
+        # returns a large response — keep the most diagnostic fields only.
+        red_summary = {
+            "overall_attack_score": red_findings.get("overall_attack_score"),
+            "kill_recommendation":  red_findings.get("kill_recommendation"),
+            "kill_rationale":       red_findings.get("kill_rationale"),
+            "critical_flaws":       red_findings.get("critical_flaws", [])[:5],
+            "regime_vulnerabilities": red_findings.get("regime_vulnerabilities", [])[:3],
+            "hidden_costs":         red_findings.get("hidden_costs", [])[:3],
+        }
+        red_json = json.dumps(red_summary, indent=2)
+
         prompt = f"""Defend this Bursa Malaysia equity strategy against the following red-team critique.
 
 Strategy: {idea.get('title')}
@@ -195,7 +207,7 @@ Hypothesis: {idea.get('hypothesis')}
 Ticker: {idea.get('ticker')} | Factor: {idea.get('factor_formula')}
 
 Red team findings:
-{json.dumps(red_findings, indent=2)}
+{red_json}
 {signal_type_context}
 Return JSON:
 {{
@@ -233,10 +245,17 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def _judge(self, idea: dict, red: dict, blue: dict, backtest_results: dict) -> dict:
+        # Summarise backtest results to keep the judge prompt concise
+        bt_summary = {k: backtest_results.get(k) for k in (
+            "sharpe_net", "sharpe_is", "sharpe_oos", "max_dd",
+            "trades", "trade_count", "regimes_positive",
+            "verdict", "verdict_reason", "oos_degradation",
+        )}
+
         prompt = f"""Judge this Bursa Malaysia equity strategy debate and give a final verdict.
 
 Strategy: {idea.get('title')} | Ticker: {idea.get('ticker')}
-Backtest: {json.dumps(backtest_results, indent=2)}
+Backtest: {json.dumps(bt_summary, indent=2)}
 
 Red team (attack_score={red.get('overall_attack_score')}, kill={red.get('kill_recommendation')}):
 - Critical flaws: {[f['finding'] for f in red.get('critical_flaws', [])]}
