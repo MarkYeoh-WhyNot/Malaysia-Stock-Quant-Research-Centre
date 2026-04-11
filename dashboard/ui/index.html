@@ -234,6 +234,43 @@ svg text{font-family:'Courier New',monospace}
 .dir-progress-bar-wrap{background:var(--bg3);border-radius:3px;height:5px;margin:4px 0}
 .dir-progress-bar{height:5px;border-radius:3px;background:var(--cyan);transition:width .5s}
 
+/* ── Department Hub ── */
+.dept-hub-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.dept-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:12px;margin-bottom:14px}
+.dept-card{background:var(--bg2);border-radius:8px;padding:14px;cursor:pointer;
+  border:1px solid var(--border);border-top:3px solid var(--dept-color,#666);
+  transition:border-color .2s,transform .1s}
+.dept-card:hover{border-color:var(--dept-color,#666);transform:translateY(-2px)}
+.dept-card.active{border-color:var(--dept-color,#666);background:var(--bg3)}
+.dept-card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.dept-abbr{font-size:11px;font-weight:700;letter-spacing:1px;color:var(--dept-color,#888)}
+.dept-status-dot{width:8px;height:8px;border-radius:50%}
+.dept-status-dot.active{background:#22c55e;box-shadow:0 0 6px #22c55e;animation:pulse-dot 2s infinite}
+.dept-status-dot.idle{background:var(--muted)}
+.dept-status-dot.error{background:var(--red)}
+.dept-name{font-size:12px;font-weight:600;margin-bottom:10px;color:var(--text)}
+.dept-kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
+.dept-kpi-value{font-size:14px;font-weight:700;color:var(--dept-color,#888);line-height:1.2}
+.dept-kpi-label{font-size:9px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.4px}
+.dept-last-action{font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:8px;margin-top:6px}
+.dept-last-action-ago{color:var(--dept-color,#888);font-weight:600;margin-right:5px}
+.dept-work-view{background:var(--bg2);border-radius:8px;padding:16px;margin-top:14px;border:1px solid var(--border)}
+.dept-work-view.hidden{display:none}
+.dept-work-header{display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+#dept-work-title{font-size:13px;font-weight:700;color:var(--text)}
+#dept-work-close{background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;padding:0}
+#dept-work-close:hover{color:var(--red)}
+.score-badge{display:inline-block;padding:3px 9px;border-radius:12px;font-size:12px;font-weight:700}
+.score-badge.good{background:#22c55e20;color:#22c55e}
+.score-badge.ok{background:#f59e0b20;color:#f59e0b}
+.score-badge.poor{background:#ef444420;color:#ef4444}
+.run-table{width:100%;border-collapse:collapse;font-size:11px}
+.run-table th{text-align:left;padding:5px 8px;color:var(--muted);border-bottom:1px solid var(--border)}
+.run-table td{padding:5px 8px;border-bottom:1px solid var(--bg4)}
+.run-table tr.pass td{color:#22c55e}
+.run-table tr.fail td{color:#ef4444}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{width:6px;height:6px}
 ::-webkit-scrollbar-track{background:var(--bg)}
@@ -578,20 +615,24 @@ svg text{font-family:'Courier New',monospace}
     <div class="stat-card"><div class="val" id="mc-calls" style="color:var(--purple)">—</div><div class="lbl">API Calls Today</div></div>
   </div>
 
-  <div class="panel">
-    <div class="panel-head">
-      <span class="panel-title">Agent Team</span>
-      <span style="font-size:10px;color:var(--muted2)">
-        <span id="at-active-badge" style="color:var(--green);font-weight:bold">—</span> ACTIVE &nbsp;
-        <span id="at-idle-badge" style="color:var(--muted);font-weight:bold">—</span> IDLE &nbsp;
-        <span id="at-pending-badge" style="color:var(--purple);font-weight:bold">—</span> PENDING
-      </span>
+  <section id="dept-hub" class="panel">
+    <div class="dept-hub-header">
+      <span class="panel-title">Departments</span>
+      <select id="dept-idea-select" style="font-size:11px;padding:3px 8px;max-width:320px">
+        <option value="">— Select idea to inspect —</option>
+      </select>
     </div>
-    <div class="activity-summary" id="activity-summary">Loading system status…</div>
-    <div class="agent-team-row" id="agent-team-row">
-      <div style="color:var(--muted);font-size:11px;padding:8px">Loading…</div>
+    <div class="dept-grid" id="dept-grid">
+      <div style="color:var(--muted);font-size:11px;padding:8px">Loading departments…</div>
     </div>
-  </div>
+    <div id="dept-work-view" class="dept-work-view hidden">
+      <div class="dept-work-header">
+        <span id="dept-work-title"></span>
+        <button id="dept-work-close">✕</button>
+      </div>
+      <div id="dept-work-content"></div>
+    </div>
+  </section>
 
   <div class="panel">
     <div class="panel-head"><span class="panel-title">Strategy Pipeline</span></div>
@@ -1700,7 +1741,7 @@ async function loadAgentTeam() {
 
 // ── Mission Control ──────────────────────────────────────────────────────────
 async function loadMC() {
-  loadAgentTeam();
+  refreshDeptCards();
   const d = await apiFetch('/mission-control');
   if (!d) {
     document.getElementById('mc-logs').innerHTML = `<div style="color:var(--red);padding:8px">⚠ Cannot reach API at ${API}</div>`;
@@ -1822,9 +1863,6 @@ setInterval(async () => {
   if (_currentPage !== 'mc') return;
   const prog = await apiFetch('/agent-progress');
   if (!prog) return;
-  const progress = prog.progress || {};
-  // Refresh agent cards if any backtest is running
-  if (Object.keys(progress).length > 0) loadAgentTeam();
 }, 3000);
 
 // ── Analytics ────────────────────────────────────────────────────────────────
@@ -3328,6 +3366,405 @@ async function loadDirection() {
   ).join('');
 }
 
+// ── Department Hub ───────────────────────────────────────────────────────────
+let _deptHubInited = false;
+async function initDeptHub() {
+  if (_deptHubInited) return;
+  _deptHubInited = true;
+  const ideas = await apiFetch('/pipeline/ideas?limit=50');
+  const sel = document.getElementById('dept-idea-select');
+  if (sel && ideas && ideas.ideas) {
+    ideas.ideas.forEach(i => {
+      const o = document.createElement('option');
+      o.value = i.id;
+      o.textContent = `[${i.id}] ${(i.title||'').slice(0,42)}… [${i.stage}]`;
+      if (i.status === 'active') o.selected = true;
+      sel.appendChild(o);
+    });
+  }
+  await refreshDeptCards();
+  setInterval(refreshDeptCards, 30000);
+  const grid = document.getElementById('dept-grid');
+  if (grid) {
+    grid.addEventListener('click', e => {
+      const card = e.target.closest('.dept-card');
+      if (!card) return;
+      const deptId = card.dataset.deptId;
+      const ideaId = document.getElementById('dept-idea-select').value;
+      openDeptWorkView(deptId, ideaId);
+      document.querySelectorAll('.dept-card').forEach(c => c.classList.remove('active'));
+      card.classList.add('active');
+    });
+  }
+  const closeBtn = document.getElementById('dept-work-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      document.getElementById('dept-work-view').classList.add('hidden');
+      document.querySelectorAll('.dept-card').forEach(c => c.classList.remove('active'));
+    });
+  }
+}
+
+async function refreshDeptCards() {
+  const data = await apiFetch('/departments/overview');
+  if (!data) return;
+  const grid = document.getElementById('dept-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  (data.departments || []).forEach(dept => {
+    const card = document.createElement('div');
+    card.className = 'dept-card';
+    card.dataset.deptId = dept.id;
+    card.style.setProperty('--dept-color', dept.color);
+    card.innerHTML = `
+      <div class="dept-card-header">
+        <span class="dept-abbr">${dept.abbr}</span>
+        <span class="dept-status-dot ${dept.status}"></span>
+      </div>
+      <div class="dept-name">${dept.name}</div>
+      <div class="dept-kpis">
+        <div class="dept-kpi"><div class="dept-kpi-value">${dept.kpi1_value}</div><div class="dept-kpi-label">${dept.kpi1_label}</div></div>
+        <div class="dept-kpi"><div class="dept-kpi-value">${dept.kpi2_value}</div><div class="dept-kpi-label">${dept.kpi2_label}</div></div>
+        <div class="dept-kpi"><div class="dept-kpi-value">${dept.kpi3_value}</div><div class="dept-kpi-label">${dept.kpi3_label}</div></div>
+      </div>
+      <div class="dept-last-action">
+        <span class="dept-last-action-ago">${dept.last_action_ago}</span>
+        <span class="dept-last-action-text">${esc(dept.last_action)}</span>
+      </div>`;
+    grid.appendChild(card);
+  });
+}
+
+async function openDeptWorkView(deptId, ideaId) {
+  const panel   = document.getElementById('dept-work-view');
+  const content = document.getElementById('dept-work-content');
+  const titleEl = document.getElementById('dept-work-title');
+  panel.classList.remove('hidden');
+  content.innerHTML = '<div style="padding:20px;color:#888">Loading…</div>';
+  const deptNames = {
+    alpha_research:'Alpha Research', data_engineering:'Data Engineering',
+    quant_research:'Quantitative Research', red_blue:'Red-Blue War Room',
+    execution:'Execution & Paper Trading', market_intelligence:'Market Intelligence',
+    knowledge_base:'Knowledge Base'
+  };
+  titleEl.textContent = deptNames[deptId] || deptId;
+  if (!ideaId && deptId !== 'knowledge_base' && deptId !== 'market_intelligence') {
+    content.innerHTML = '<div style="padding:20px;color:#f59e0b">⚠ Select an idea from the dropdown to view work</div>';
+    return;
+  }
+  const path = ideaId ? `/departments/${deptId}/${ideaId}` : `/departments/${deptId}`;
+  const data  = await apiFetch(path);
+  if (!data) {
+    content.innerHTML = '<div style="padding:20px;color:#ef4444">Failed to load department data</div>';
+    return;
+  }
+  content.innerHTML = renderDeptPanel(deptId, data);
+}
+
+function renderDeptPanel(deptId, data) {
+  switch(deptId) {
+    case 'alpha_research':    return renderAlphaPanel(data);
+    case 'data_engineering':  return renderDataPanel(data);
+    case 'quant_research':    return renderQuantPanel(data);
+    case 'red_blue':          return renderRedBluePanel(data);
+    case 'execution':         return renderExecutionPanel(data);
+    case 'market_intelligence': return renderMarketPanel(data);
+    case 'knowledge_base':    return renderKBPanel(data);
+    default: return '<div style="padding:20px;color:#888">No renderer for this department</div>';
+  }
+}
+
+function scoreBadge(val, thresholds) {
+  thresholds = thresholds || [0.5, 0.65];
+  if (val === null || val === undefined) return '<span class="score-badge ok">N/A</span>';
+  const cls = val >= thresholds[1] ? 'good' : val >= thresholds[0] ? 'ok' : 'poor';
+  return `<span class="score-badge ${cls}">${(val*100).toFixed(0)}%</span>`;
+}
+
+function renderAlphaPanel(d) {
+  const i  = d.idea || {};
+  const sp = d.strategy_profile;
+  const gates = (d.gate_history || []).map(g => `
+    <div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;
+      border-bottom:1px solid #ffffff08;font-size:12px;flex-wrap:wrap">
+      <span style="background:#ffffff10;padding:2px 8px;border-radius:4px;
+        font-size:10px;font-weight:700;flex-shrink:0">${esc(g.gate)}</span>
+      <span style="color:${g.decision==='approve'?'#22c55e':'#ef4444'};font-weight:700;flex-shrink:0">
+        ${esc((g.decision||'').toUpperCase())}</span>
+      <span style="color:#888;font-size:10px;flex-shrink:0">${esc(g.decided_by||'')}</span>
+      <span style="color:#888;font-size:10px;margin-left:auto;flex-shrink:0">${(g.created_at||'').slice(0,16)}</span>
+    </div>
+    ${g.rationale ? `<div style="color:#888;font-size:11px;padding:2px 0 6px 0;
+      border-bottom:1px solid #ffffff08">${esc((g.rationale||'').slice(0,200))}</div>` : ''}
+  `).join('');
+  return `
+    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
+      <div>Novelty ${scoreBadge(i.novelty_score)}</div>
+      <div>Logic ${scoreBadge(i.logic_score)}</div>
+      <div>Feasibility ${scoreBadge(i.feasibility_score)}</div>
+      <div>Research <span class="score-badge ${(i.research_score||0)>=6?'good':(i.research_score||0)>=4?'ok':'poor'}">${(i.research_score||0).toFixed(1)}</span></div>
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">HYPOTHESIS</div>
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:12px;line-height:1.6;
+        color:#ddd;max-height:140px;overflow-y:auto">${esc(i.hypothesis||'')}</div>
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">FACTOR FORMULA</div>
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
+        font-family:monospace;color:#a5f3fc;max-height:100px;overflow-y:auto">${esc(i.factor_formula||'')}</div>
+    </div>
+    ${sp ? `<div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">STRATEGY PROFILE — ${esc(sp.name||sp.strategy_key||'')}</div>
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
+        color:#ddd;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div><span style="color:#888">Phenomenon:</span> ${esc(sp.phenomenon||'')}</div>
+        <div><span style="color:#888">IC Benchmark:</span> ${esc(sp.ic_benchmark||'')}</div>
+        <div style="grid-column:1/-1"><span style="color:#888">Hold Rationale:</span> ${esc(sp.hold_rationale||'')}</div>
+      </div>
+    </div>` : ''}
+    <div>
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">GATE HISTORY</div>
+      ${gates || '<div style="color:#888;font-size:12px;padding:10px">No gate decisions yet</div>'}
+    </div>`;
+}
+
+function renderQuantPanel(d) {
+  const s    = d.summary || {};
+  const best = d.best_run  || {};
+  const maxS = Math.max(best.train_sharpe||0, best.val_sharpe||0, best.test_sharpe||0, 0.1);
+  const barH = v => Math.round((((v||0)/maxS)*60));
+  const barC = v => v >= 1.0 ? '#22c55e' : v >= 0.5 ? '#f59e0b' : '#ef4444';
+  const rows = (d.runs || []).map(r => `
+    <tr class="${r.passed?'pass':'fail'}">
+      <td>#${r.id}</td>
+      <td>${(r.sharpe_net||0).toFixed(3)}</td>
+      <td>${(r.sharpe_oos||0).toFixed(3)}</td>
+      <td>${((r.max_dd||r.test_dd||0)*100).toFixed(1)}%</td>
+      <td>${r.trade_count||r.trades||0}</td>
+      <td>${esc(r.verdict||'')}</td>
+      <td style="color:#666">${(r.created_at||'').slice(5,16)}</td>
+    </tr>`).join('');
+  const oosDeg = best.oos_degradation;
+  const oosBadge = oosDeg !== null && oosDeg !== undefined
+    ? `<span style="color:${oosDeg<=0?'#22c55e':'#ef4444'};font-size:11px;margin-top:6px;display:block">
+        ${oosDeg<=0?'✔ OOS beats IS':'⚠ OOS degraded'} (${(oosDeg||0).toFixed(3)})</span>` : '';
+  return `
+    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:14px">
+      ${[['Best Sharpe',(s.best_sharpe||0).toFixed(3),'#6366f1'],
+         ['OOS Sharpe',(best.sharpe_oos||0).toFixed(3),'#8b5cf6'],
+         ['Max DD',((best.max_dd||best.test_dd||0)*100).toFixed(1)+'%','#ef4444'],
+         ['Trades',best.trade_count||best.trades||0,'#10b981'],
+         ['Regimes +',(best.regimes_positive||0)+'/3','#f59e0b']
+        ].map(([l,v,c])=>`
+        <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+          <div style="color:${c};font-size:16px;font-weight:700">${v}</div>
+          <div style="color:#888;font-size:9px;margin-top:4px;text-transform:uppercase">${l}</div>
+        </div>`).join('')}
+    </div>
+    <div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">TRAIN / VAL / TEST (Best Run #${best.id||'—'})</div>
+      <div style="display:flex;gap:12px;align-items:flex-end;height:90px">
+        ${[['Train',best.train_sharpe,best.train_dd],
+           ['Val',  best.val_sharpe,  best.val_dd  ],
+           ['Test', best.test_sharpe, best.test_dd ]].map(([label,sh,dd])=>`
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
+            <div style="font-size:11px;font-weight:700;color:${barC(sh||0)}">${(sh||0).toFixed(3)}</div>
+            <div style="width:100%;height:${barH(sh||0)}px;background:${barC(sh||0)};
+              border-radius:3px 3px 0 0;opacity:.8;min-height:4px"></div>
+            <div style="font-size:10px;color:#888">${label}</div>
+            <div style="font-size:10px;color:#666">DD ${((dd||0)*100).toFixed(1)}%</div>
+          </div>`).join('')}
+      </div>
+      ${oosBadge}
+    </div>
+    <div>
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
+        ALL RUNS (${s.total_runs||0} total · ${s.passes||0} passed)</div>
+      <div style="overflow-x:auto">
+        <table class="run-table">
+          <thead><tr><th>Run</th><th>Sharpe</th><th>OOS</th><th>DD</th><th>Trades</th><th>Verdict</th><th>Date</th></tr></thead>
+          <tbody>${rows||'<tr><td colspan="7" style="color:#888;text-align:center;padding:16px">No runs yet</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderDataPanel(d) {
+  const rows = (d.tickers||[]).map(t=>`
+    <tr>
+      <td style="font-weight:700;color:#a5f3fc">${esc(t.ticker)}</td>
+      <td>${esc(t.name||'')}</td>
+      <td style="color:${(t.roe||0)>10?'#22c55e':'#f59e0b'}">${t.roe!=null?t.roe.toFixed(1)+'%':'—'}</td>
+      <td>${t.der!=null?t.der.toFixed(2):'—'}</td>
+      <td>${t.pb!=null?t.pb.toFixed(2):'—'}</td>
+      <td>${t.pe!=null?t.pe.toFixed(1):'—'}</td>
+      <td style="color:#22c55e">${t.dy!=null?t.dy.toFixed(1)+'%':'—'}</td>
+      <td style="color:#888">${t.price_bars!=null?t.price_bars+' bars':'—'}</td>
+      <td><span style="color:${t.data_quality==='good'?'#22c55e':t.data_quality==='ok'?'#f59e0b':'#888'}">${esc(t.data_quality||'')}</span></td>
+    </tr>`).join('');
+  return `
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#10b981;font-size:16px;font-weight:700">${d.fundamental_coverage||0}</div>
+        <div style="color:#888;font-size:9px;margin-top:4px">WITH FUNDAMENTALS</div>
+      </div>
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#10b981;font-size:16px;font-weight:700">${d.universe_size||69}</div>
+        <div style="color:#888;font-size:9px;margin-top:4px">FBM70 UNIVERSE</div>
+      </div>
+      <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+        <div style="color:#10b981;font-size:16px;font-weight:700">${(d.tickers||[]).length}</div>
+        <div style="color:#888;font-size:9px;margin-top:4px">IDEA TICKERS</div>
+      </div>
+    </div>
+    <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">TICKER FUNDAMENTALS</div>
+    <div style="overflow-x:auto">
+      <table class="run-table">
+        <thead><tr><th>Ticker</th><th>Name</th><th>ROE</th><th>DER</th><th>P/B</th><th>P/E</th><th>DY</th><th>Data</th><th>Quality</th></tr></thead>
+        <tbody>${rows||'<tr><td colspan="9" style="color:#888;text-align:center;padding:16px">No data — fetched during backtest run</td></tr>'}</tbody>
+      </table>
+    </div>
+    ${(d.data_sources||[]).length ? `<div style="margin-top:12px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">DATA SOURCES</div>
+      <ul style="margin:0;padding:0 0 0 16px;color:#888;font-size:11px;line-height:1.9">${(d.data_sources||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>
+    </div>` : ''}`;
+}
+
+function renderRedBluePanel(d) {
+  const debates = (d.debates||[]).map(db=>{
+    const notes    = db.notes || {};
+    const findings = notes.red_findings || notes.critical_flaws || [];
+    const borderC  = db.verdict==='advance'?'#22c55e':db.verdict==='conditional'?'#f59e0b':'#ef4444';
+    const verdictC = borderC;
+    return `
+      <div style="background:#ffffff08;border-radius:8px;padding:12px;margin-bottom:10px;border-left:3px solid ${borderC}">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+          <span style="font-weight:700;font-size:13px;color:${verdictC}">${esc((db.verdict||'unknown').toUpperCase())}</span>
+          <span style="background:#ffffff10;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;color:#ef4444">
+            RISK: ${esc((db.risk_level||'unknown').toUpperCase())}</span>
+          ${db.parse_failed?'<span style="background:#f59e0b20;color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:10px">⚠ PARSE FAILURE</span>':''}
+          <span style="color:#888;font-size:10px;margin-left:auto">${(db.created_at||'').slice(0,16)}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+          <div style="background:#ef444415;border-radius:6px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:#ef4444;margin-bottom:4px">
+              🔴 RED TEAM${db.red_score!=null?' · Score: '+db.red_score:''}</div>
+            ${findings.length ? `<ul style="margin:0;padding:0 0 0 14px;font-size:11px;color:#ddd;line-height:1.7">
+              ${findings.slice(0,5).map(f=>`<li>${esc(typeof f==='string'?f.slice(0,100):JSON.stringify(f).slice(0,100))}</li>`).join('')}
+              ${findings.length>5?`<li style="color:#888">+${findings.length-5} more…</li>`:''}
+              </ul>` : `<div style="color:#888;font-size:11px">${db.red_score!=null?'Score: '+db.red_score:'No findings parsed'}</div>`}
+          </div>
+          <div style="background:#22c55e15;border-radius:6px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:#22c55e;margin-bottom:4px">
+              🔵 BLUE TEAM${db.blue_score!=null?' · Score: '+db.blue_score:''}</div>
+            <div style="color:#888;font-size:11px">
+              ${db.blue_score!=null?'Defense score: '+db.blue_score:db.parse_failed?'Parse failure — score unavailable':'Score unavailable'}</div>
+          </div>
+        </div>
+        ${db.rationale?`<div style="font-size:11px;color:#aaa;border-top:1px solid #ffffff08;
+          padding-top:8px"><span style="color:#888;font-weight:700">Judge: </span>${esc((db.rationale||'').slice(0,300))}</div>`:''}
+      </div>`;
+  }).join('');
+  const s = d.summary || {};
+  return `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px">
+      ${[['Debates',s.total_debates||0,'#ef4444'],['Advances',s.advances||0,'#22c55e'],
+         ['Conditionals',s.conditionals||0,'#f59e0b'],['Rejections',s.rejections||0,'#ef4444']
+        ].map(([l,v,c])=>`
+        <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+          <div style="color:${c};font-size:18px;font-weight:700">${v}</div>
+          <div style="color:#888;font-size:9px;margin-top:4px;text-transform:uppercase">${l}</div>
+        </div>`).join('')}
+    </div>
+    <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">DEBATE HISTORY</div>
+    ${debates||'<div style="color:#888;font-size:12px;padding:20px;text-align:center">No debates yet for this idea</div>'}`;
+}
+
+function renderExecutionPanel(d) {
+  const pt = d.paper_trade;
+  if (!pt) return `
+    <div style="text-align:center;padding:40px;color:#888">
+      <div style="font-size:32px;margin-bottom:12px">📊</div>
+      <div style="font-size:14px">No paper trades running yet</div>
+      <div style="font-size:12px;margin-top:8px">Ideas must pass Red-Blue review to enter paper trading</div>
+    </div>`;
+  const pct = Math.min(100, Math.round((pt.days_elapsed/30)*100));
+  return `
+    <div style="background:#f59e0b15;border-radius:8px;padding:16px;border-left:3px solid #f59e0b;margin-bottom:14px">
+      <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-bottom:12px">📈 PAPER TRADE ACTIVE</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:12px">
+        <div><span style="color:#888">Strategy: </span><span style="color:#ddd">${esc(pt.strategy||'')}</span></div>
+        <div><span style="color:#888">Entered: </span><span style="color:#ddd">${(pt.entered_at||'').slice(0,16)}</span></div>
+        <div><span style="color:#888">Tickers: </span><span style="color:#a5f3fc">${(pt.tickers||[]).join(' · ')}</span></div>
+        <div><span style="color:#888">Status: </span><span style="color:#22c55e;font-weight:700">${esc(pt.status||'active')}</span></div>
+      </div>
+      <div style="margin-top:14px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:6px">
+          <span>Day ${pt.days_elapsed} of 30</span><span>${pt.days_remaining} days remaining</span>
+        </div>
+        <div style="background:#ffffff10;border-radius:4px;height:8px">
+          <div style="background:#f59e0b;height:8px;border-radius:4px;width:${pct}%;transition:width .5s"></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+        <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+          <div style="color:#f59e0b;font-size:16px;font-weight:700">${pt.backtest_sharpe!=null?pt.backtest_sharpe.toFixed(3):'—'}</div>
+          <div style="color:#888;font-size:9px;margin-top:4px">BACKTEST SHARPE</div>
+        </div>
+        <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
+          <div style="color:#22c55e;font-size:16px;font-weight:700">${(pt.target_sharpe||1.0).toFixed(1)}+</div>
+          <div style="color:#888;font-size:9px;margin-top:4px">TARGET SHARPE</div>
+        </div>
+      </div>
+    </div>
+    <div style="color:#888;font-size:12px;text-align:center;padding:8px">Live P&L tracking will appear here as paper trade progresses</div>`;
+}
+
+function renderMarketPanel(d) {
+  const events = (d.recent_events||[]).slice(0,10).map(e=>`
+    <div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid #ffffff08;font-size:12px">
+      <span style="color:#06b6d4;font-size:10px;width:90px;flex-shrink:0">${(e.detected_at||e.event_date||'').slice(0,10)}</span>
+      <span style="color:#ddd">${esc((e.title||e.event_type||'Event').slice(0,80))}</span>
+    </div>`).join('');
+  const overlap = (d.ticker_overlap||[]).map(e=>`
+    <div style="background:#06b6d415;border-radius:4px;padding:5px 10px;font-size:11px;color:#06b6d4;margin-bottom:4px">${esc(e)}</div>
+  `).join('');
+  return `
+    ${overlap ? `<div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">EVENTS AFFECTING IDEA TICKERS</div>
+      ${overlap}
+    </div>` : ''}
+    <div>
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RECENT MARKET EVENTS</div>
+      ${events||'<div style="color:#888;font-size:12px;text-align:center;padding:20px">No recent events</div>'}
+    </div>`;
+}
+
+function renderKBPanel(d) {
+  const angles = (d.angles||[]).map(a=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;
+      padding:7px 0;border-bottom:1px solid #ffffff08;font-size:12px">
+      <span style="color:#ddd">${esc(a.domain||'')}</span>
+      <span style="color:${(a.count||0)>=5?'#22c55e':'#f59e0b'}">${a.count} docs ${(a.count||0)>=5?'✔':''}</span>
+    </div>`).join('');
+  const techniques = (d.techniques||[]).map(t=>`
+    <span style="display:inline-block;background:${t.implemented?'#22c55e20':'#ffffff10'};
+      color:${t.implemented?'#22c55e':'#888'};
+      padding:3px 9px;border-radius:16px;font-size:11px;margin:2px">${esc(t.name||t.key||'')}</span>`).join('');
+  const liveCount = (d.techniques||[]).filter(t=>t.implemented).length;
+  return `
+    <div style="margin-bottom:14px">
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RESEARCH ANGLE COVERAGE</div>
+      ${angles||'<div style="color:#888">No documents yet</div>'}
+    </div>
+    <div>
+      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
+        TECHNIQUE ARSENAL (${liveCount} LIVE / ${(d.techniques||[]).length} TOTAL)</div>
+      <div style="line-height:2">${techniques||'<div style="color:#888">Loading…</div>'}</div>
+    </div>`;
+}
+
 function loadAll() {
   if (_currentPage === 'direction') loadDirection();
   else if (_currentPage === 'arsenal')   loadArsenal();
@@ -3343,6 +3780,7 @@ function loadAll() {
 }
 
 wireTooltips(); // wire all static [data-tt-title] elements on load
+initDeptHub();
 loadMC();
 setInterval(() => { if (_currentPage === 'mc') loadMC(); }, 15000);
 

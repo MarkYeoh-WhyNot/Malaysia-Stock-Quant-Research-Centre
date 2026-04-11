@@ -1486,6 +1486,347 @@ def get_event_calendar(days_ahead: int = 30):
     return [dict(r) for r in rows]
 
 
+# ─── Department Hub ──────────────────────────────────────────────────────────
+
+@app.get("/api/departments/overview")
+def dept_overview():
+    now   = datetime.utcnow()
+    today = now.strftime("%Y-%m-%d")
+
+    def _ago(ts_str):
+        if not ts_str: return "never"
+        try:
+            dt   = datetime.strptime(str(ts_str)[:19].replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
+            secs = int((now - dt).total_seconds())
+            if secs < 60:    return f"{secs}s ago"
+            if secs < 3600:  return f"{secs//60}m ago"
+            if secs < 86400: return f"{secs//3600}h ago"
+            return f"{secs//86400}d ago"
+        except Exception:
+            return "—"
+
+    with db_session() as conn:
+        ar_scored  = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate0'").fetchone()["n"]
+        ar_pass    = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate0' AND decision='approve'").fetchone()["n"]
+        ar_in_pipe = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('active','pending')").fetchone()["n"]
+        ar_last    = conn.execute("SELECT created_at FROM gate_decisions WHERE gate='gate0' ORDER BY id DESC LIMIT 1").fetchone()
+
+        de_runs   = conn.execute("SELECT COUNT(*) as n FROM backtest_runs").fetchone()["n"]
+        de_stage2 = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage2' AND status='active'").fetchone()["n"]
+        de_last   = conn.execute("SELECT created_at FROM backtest_runs ORDER BY id DESC LIMIT 1").fetchone()
+
+        qr_total  = de_runs
+        qr_pass   = conn.execute("SELECT COUNT(*) as n FROM backtest_runs WHERE passed=1").fetchone()["n"]
+        qr_best_r = conn.execute("SELECT MAX(sharpe_net) as v FROM backtest_runs WHERE passed=1").fetchone()
+        qr_best   = qr_best_r["v"] if qr_best_r else None
+        qr_last   = de_last
+
+        rb_total  = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb'").fetchone()["n"]
+        rb_adv    = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb' AND decision='advance'").fetchone()["n"]
+        rb_cond   = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb' AND decision='conditional'").fetchone()["n"]
+        rb_last   = conn.execute("SELECT created_at FROM gate_decisions WHERE gate='gate3_rb' ORDER BY id DESC LIMIT 1").fetchone()
+
+        ex_open   = conn.execute("SELECT COUNT(*) as n FROM paper_trades WHERE status='open'").fetchone()["n"]
+        ex_s4     = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'").fetchone()["n"]
+        ex_pnl    = float(conn.execute("SELECT COALESCE(SUM(pnl),0) as v FROM paper_trades WHERE status='closed'").fetchone()["v"])
+        ex_last   = conn.execute("SELECT opened_at FROM paper_trades ORDER BY id DESC LIMIT 1").fetchone()
+
+        mi_today  = conn.execute("SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ?", (f"{today}%",)).fetchone()["n"]
+        mi_ideas  = conn.execute("SELECT COUNT(*) as n FROM market_events WHERE action_taken='gate0_idea' AND detected_at LIKE ?", (f"{today}%",)).fetchone()["n"]
+        mi_total  = conn.execute("SELECT COUNT(*) as n FROM market_events").fetchone()["n"]
+        mi_last   = conn.execute("SELECT detected_at FROM market_events ORDER BY id DESC LIMIT 1").fetchone()
+
+        kb_docs   = conn.execute("SELECT COUNT(*) as n FROM kb_documents").fetchone()["n"]
+        kb_angles = conn.execute("SELECT COUNT(DISTINCT domain) as n FROM kb_documents").fetchone()["n"]
+        kb_seeded = conn.execute("SELECT COUNT(*) as n FROM kb_documents WHERE seeded=1").fetchone()["n"]
+        kb_last   = conn.execute("SELECT created_at FROM kb_documents ORDER BY id DESC LIMIT 1").fetchone()
+
+    departments = [
+        {
+            "id": "alpha_research",  "name": "Alpha Research",           "abbr": "AR", "color": "#6366f1",
+            "status": "active" if ar_in_pipe > 0 else "idle",
+            "kpi1_value": ar_scored,  "kpi1_label": "Ideas Scored",
+            "kpi2_value": f"{round(ar_pass/max(ar_scored,1)*100)}%", "kpi2_label": "Gate 0 Pass",
+            "kpi3_value": ar_in_pipe, "kpi3_label": "In Pipeline",
+            "last_action": "Gate 0 screening",
+            "last_action_ago": _ago(ar_last["created_at"] if ar_last else None),
+        },
+        {
+            "id": "data_engineering", "name": "Data Engineering",        "abbr": "DE", "color": "#10b981",
+            "status": "active" if de_stage2 > 0 else "idle",
+            "kpi1_value": de_runs,    "kpi1_label": "Data Fetches",
+            "kpi2_value": de_stage2,  "kpi2_label": "Pending",
+            "kpi3_value": "5yr",      "kpi3_label": "History Depth",
+            "last_action": f"{de_stage2} awaiting data" if de_stage2 else "Idle",
+            "last_action_ago": _ago(de_last["created_at"] if de_last else None),
+        },
+        {
+            "id": "quant_research",   "name": "Quantitative Research",   "abbr": "QR", "color": "#8b5cf6",
+            "status": "active" if de_stage2 > 0 else "idle",
+            "kpi1_value": qr_total,   "kpi1_label": "Backtests",
+            "kpi2_value": f"{round(qr_pass/max(qr_total,1)*100)}%", "kpi2_label": "Pass Rate",
+            "kpi3_value": f"{round(float(qr_best),2)}" if qr_best else "—", "kpi3_label": "Best Sharpe",
+            "last_action": "Latest backtest",
+            "last_action_ago": _ago(qr_last["created_at"] if qr_last else None),
+        },
+        {
+            "id": "red_blue",         "name": "Red-Blue War Room",       "abbr": "RB", "color": "#ef4444",
+            "status": "active" if rb_total > 0 else "idle",
+            "kpi1_value": rb_total,   "kpi1_label": "Debates",
+            "kpi2_value": rb_adv,     "kpi2_label": "Advances",
+            "kpi3_value": rb_cond,    "kpi3_label": "Conditionals",
+            "last_action": "Last debate",
+            "last_action_ago": _ago(rb_last["created_at"] if rb_last else None),
+        },
+        {
+            "id": "execution",        "name": "Execution & Paper Trading","abbr": "EX", "color": "#f59e0b",
+            "status": "active" if ex_open > 0 else "idle",
+            "kpi1_value": ex_open,    "kpi1_label": "Open Trades",
+            "kpi2_value": ex_s4,      "kpi2_label": "Stage 4A",
+            "kpi3_value": f"{ex_pnl:+.2f}", "kpi3_label": "PnL (MYR)",
+            "last_action": f"{ex_open} open trade(s)" if ex_open else "No active trades",
+            "last_action_ago": _ago(ex_last["opened_at"] if ex_last else None),
+        },
+        {
+            "id": "market_intelligence","name": "Market Intelligence",   "abbr": "MI", "color": "#06b6d4",
+            "status": "active" if mi_today > 0 else "idle",
+            "kpi1_value": mi_today,   "kpi1_label": "Events Today",
+            "kpi2_value": mi_ideas,   "kpi2_label": "Ideas Generated",
+            "kpi3_value": mi_total,   "kpi3_label": "Total Events",
+            "last_action": f"{mi_today} events today",
+            "last_action_ago": _ago(mi_last["detected_at"] if mi_last else None),
+        },
+        {
+            "id": "knowledge_base",   "name": "Knowledge Base",          "abbr": "KB", "color": "#84cc16",
+            "status": "active" if kb_docs > 0 else "idle",
+            "kpi1_value": kb_docs,    "kpi1_label": "Documents",
+            "kpi2_value": kb_angles,  "kpi2_label": "Angles Covered",
+            "kpi3_value": kb_seeded,  "kpi3_label": "Seeded",
+            "last_action": f"{kb_docs} docs, {kb_angles} angles",
+            "last_action_ago": _ago(kb_last["created_at"] if kb_last else None),
+        },
+    ]
+    return {"departments": departments, "as_of": now.isoformat()}
+
+
+@app.get("/api/departments/alpha_research/{idea_id}")
+def dept_alpha_research(idea_id: int):
+    with db_session() as conn:
+        idea = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        gates = conn.execute(
+            "SELECT * FROM gate_decisions WHERE idea_id=? ORDER BY id", (idea_id,)
+        ).fetchall()
+        bt = conn.execute(
+            "SELECT params, signal_type FROM backtest_runs WHERE idea_id=? ORDER BY id DESC LIMIT 1",
+            (idea_id,)
+        ).fetchone()
+        strategy_profile = None
+        if bt and (bt["params"] or bt["signal_type"]):
+            try:
+                params     = json.loads(bt["params"]) if bt["params"] else {}
+                sig        = bt["signal_type"] or params.get("signal_type")
+                if sig:
+                    sp_row = conn.execute(
+                        "SELECT * FROM strategy_profiles WHERE strategy_key=?", (sig,)
+                    ).fetchone()
+                    if sp_row:
+                        strategy_profile = dict(sp_row)
+            except Exception:
+                pass
+    return {
+        "idea": dict(idea),
+        "gate_history": [dict(g) for g in gates],
+        "strategy_profile": strategy_profile,
+    }
+
+
+@app.get("/api/departments/data_engineering/{idea_id}")
+def dept_data_engineering(idea_id: int):
+    with db_session() as conn:
+        idea = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+    idea = dict(idea)
+    ticker_str  = idea.get("ticker") or ""
+    tickers     = [t.strip() for t in ticker_str.split(",") if t.strip()] or ([ticker_str] if ticker_str else [])
+    data_sources: list = []
+    try:
+        src = idea.get("data_sources") or "[]"
+        data_sources = json.loads(src) if isinstance(src, str) else src
+    except Exception:
+        pass
+    ticker_data = [
+        {"ticker": t, "name": "", "roe": None, "der": None, "pb": None,
+         "pe": None, "dy": None, "price_bars": None, "data_quality": "unknown"}
+        for t in tickers
+    ]
+    return {
+        "tickers": ticker_data,
+        "fundamental_coverage": 0,
+        "universe_size": 69,
+        "data_sources": data_sources,
+    }
+
+
+@app.get("/api/departments/quant_research/{idea_id}")
+def dept_quant_research(idea_id: int):
+    with db_session() as conn:
+        idea = conn.execute("SELECT id, title, ticker FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        runs = conn.execute(
+            "SELECT * FROM backtest_runs WHERE idea_id=? ORDER BY id DESC", (idea_id,)
+        ).fetchall()
+    runs = [dict(r) for r in runs]
+    if not runs:
+        return {"idea_id": idea_id, "runs": [], "summary": {"total_runs": 0, "passes": 0, "best_sharpe": 0}, "best_run": {}}
+    best   = max(runs, key=lambda r: float(r.get("sharpe_net") or 0))
+    passes = [r for r in runs if r.get("passed")]
+    if best.get("sharpe_is") is not None and best.get("sharpe_oos") is not None:
+        best["oos_degradation"] = float(best.get("sharpe_oos") or 0) - float(best.get("sharpe_is") or 0)
+    elif best.get("sharpe_net") is not None and best.get("sharpe_oos") is not None:
+        best["oos_degradation"] = float(best.get("sharpe_oos") or 0) - float(best.get("sharpe_net") or 0)
+    return {
+        "idea_id":  idea_id,
+        "runs":     runs,
+        "best_run": best,
+        "summary":  {"total_runs": len(runs), "passes": len(passes), "best_sharpe": round(float(best.get("sharpe_net") or 0), 3)},
+    }
+
+
+@app.get("/api/departments/red_blue/{idea_id}")
+def dept_red_blue(idea_id: int):
+    with db_session() as conn:
+        idea = conn.execute("SELECT id, title, ticker FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        gates = conn.execute(
+            "SELECT * FROM gate_decisions WHERE idea_id=? AND gate='gate3_rb' ORDER BY id DESC", (idea_id,)
+        ).fetchall()
+        events = conn.execute(
+            "SELECT * FROM pipeline_events WHERE idea_id=? AND event_type='gate3_rb' ORDER BY id DESC", (idea_id,)
+        ).fetchall()
+    gates  = [dict(g) for g in gates]
+    ev_map = {str(e["created_at"])[:16]: dict(e) for e in events}
+    debates = []
+    for g in gates:
+        notes: dict = {}
+        ev = ev_map.get(str(g["created_at"])[:16])
+        if ev:
+            try: notes = json.loads(ev["notes"] or "{}")
+            except Exception: pass
+        if not notes:
+            try: notes = json.loads(g.get("rationale") or "{}")
+            except Exception: pass
+        debates.append({
+            "verdict":      g["decision"],
+            "rationale":    g.get("rationale", ""),
+            "decided_by":   g.get("decided_by", ""),
+            "created_at":   g["created_at"],
+            "red_score":    notes.get("red_score") or notes.get("attack_score"),
+            "blue_score":   notes.get("blue_score") or notes.get("defense_score"),
+            "risk_level":   notes.get("risk_level", ""),
+            "parse_failed": bool(notes.get("parse_failed", False)),
+            "notes":        notes,
+        })
+    advances     = sum(1 for d in debates if d["verdict"] == "advance")
+    conditionals = sum(1 for d in debates if d["verdict"] == "conditional")
+    rejections   = sum(1 for d in debates if d["verdict"] in ("reject", "rejected"))
+    return {
+        "idea_id": idea_id, "debates": debates,
+        "summary": {"total_debates": len(debates), "advances": advances, "conditionals": conditionals, "rejections": rejections},
+    }
+
+
+@app.get("/api/departments/execution/{idea_id}")
+def dept_execution(idea_id: int):
+    with db_session() as conn:
+        idea = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        if not idea:
+            raise HTTPException(status_code=404, detail="Idea not found")
+        trades = conn.execute(
+            "SELECT * FROM paper_trades WHERE idea_id=? ORDER BY id DESC", (idea_id,)
+        ).fetchall()
+        bt = conn.execute(
+            "SELECT sharpe_net FROM backtest_runs WHERE idea_id=? ORDER BY id DESC LIMIT 1", (idea_id,)
+        ).fetchone()
+    idea   = dict(idea)
+    trades = [dict(t) for t in trades]
+    open_t = [t for t in trades if t.get("status") == "open"]
+    paper_trade = None
+    if open_t:
+        t           = open_t[0]
+        entered_at  = t.get("opened_at", "")
+        days_elapsed = 0
+        if entered_at:
+            try:
+                dt = datetime.strptime(str(entered_at)[:19].replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
+                days_elapsed = (datetime.utcnow() - dt).days
+            except Exception:
+                pass
+        paper_trade = {
+            "strategy":        idea.get("title", ""),
+            "entered_at":      entered_at,
+            "tickers":         [t.get("pair") or idea.get("ticker", "")],
+            "status":          t.get("status", "open"),
+            "days_elapsed":    days_elapsed,
+            "days_remaining":  max(0, 30 - days_elapsed),
+            "backtest_sharpe": float(bt["sharpe_net"]) if bt and bt["sharpe_net"] else None,
+            "target_sharpe":   1.0,
+        }
+    return {"idea_id": idea_id, "paper_trade": paper_trade, "all_trades": trades}
+
+
+def _dept_market_intelligence_impl(idea_id: Optional[int]):
+    with db_session() as conn:
+        events   = conn.execute("SELECT * FROM market_events ORDER BY detected_at DESC LIMIT 30").fetchall()
+        upcoming = conn.execute("""
+            SELECT * FROM economic_calendar
+            WHERE scheduled_date >= date('now') ORDER BY scheduled_date LIMIT 10
+        """).fetchall()
+        ticker = None
+        if idea_id:
+            row = conn.execute("SELECT ticker FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+            if row: ticker = row["ticker"]
+    events = [dict(e) for e in events]
+    ticker_overlap: list = []
+    if ticker:
+        tickers = [t.strip() for t in (ticker or "").split(",") if t.strip()]
+        for e in events:
+            e_tickers = str(e.get("tickers_mentioned") or e.get("ticker") or "")
+            for t in tickers:
+                if t in e_tickers:
+                    snippet = f"{str(e.get('detected_at',''))[:10]}: {str(e.get('title') or e.get('event_type',''))[:60]}"
+                    if snippet not in ticker_overlap:
+                        ticker_overlap.append(snippet)
+    return {"recent_events": events[:20], "ticker_overlap": ticker_overlap[:10], "upcoming_events": [dict(e) for e in upcoming]}
+
+
+@app.get("/api/departments/market_intelligence")
+def dept_market_intelligence_base():
+    return _dept_market_intelligence_impl(None)
+
+
+@app.get("/api/departments/market_intelligence/{idea_id}")
+def dept_market_intelligence(idea_id: int):
+    return _dept_market_intelligence_impl(idea_id)
+
+
+@app.get("/api/departments/knowledge_base")
+def dept_knowledge_base():
+    with db_session() as conn:
+        angles = conn.execute(
+            "SELECT domain, COUNT(*) as count FROM kb_documents GROUP BY domain ORDER BY count DESC"
+        ).fetchall()
+    from knowledge.ingestion.technique_library import TechniqueLibrary
+    lib        = TechniqueLibrary()
+    techniques = [{"key": t.get("key"), "name": t.get("name"), "implemented": t.get("implemented", False)}
+                  for t in lib.to_api_list()]
+    return {"angles": [dict(a) for a in angles], "techniques": techniques}
+
+
 # ─── Static UI ───────────────────────────────────────────────────────────────
 
 ui_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ui")
