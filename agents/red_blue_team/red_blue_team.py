@@ -167,6 +167,15 @@ Return JSON:
             RED_SYSTEM, [{"role": "user", "content": prompt}],
             model=MODEL_MAIN, max_tokens=4096, task_label="red_team_attack"
         )
+        if "error" in result or result.get("overall_attack_score") is None:
+            self.log_daemon("WARN",
+                f"Red team parse failure for idea (result={list(result.keys())}) — "
+                f"substituting minimal attack so debate can continue")
+            result.setdefault("critical_flaws", [])
+            result.setdefault("overall_attack_score", 0.5)
+            result.setdefault("kill_recommendation", False)
+            result.setdefault("kill_rationale", "[Red team JSON parse failed — scores unavailable]")
+            result["_parse_failed"] = True
         self.log_daemon("INFO", f"Red team: {len(result.get('critical_flaws', []))} findings, attack_score={result.get('overall_attack_score')}")
         return result
 
@@ -205,6 +214,17 @@ Return JSON:
             BLUE_SYSTEM, [{"role": "user", "content": prompt}],
             model=MODEL_MAIN, max_tokens=4096, task_label="blue_team_defend"
         )
+        if "error" in result or result.get("overall_defense_score") is None:
+            self.log_daemon("WARN",
+                f"Blue team parse failure (result={list(result.keys())}) — "
+                f"substituting neutral defense so debate can continue")
+            result.setdefault("rebuttals", [])
+            result.setdefault("conceded_points", [])
+            result.setdefault("proposed_safeguards", ["Manual review required — blue team scores unavailable"])
+            result.setdefault("overall_defense_score", 0.5)
+            result.setdefault("advance_recommendation", True)
+            result.setdefault("advance_rationale", "[Blue team JSON parse failed — scores unavailable]")
+            result["_parse_failed"] = True
         self.log_daemon("INFO", f"Blue team: defense_score={result.get('overall_defense_score')}, advance={result.get('advance_recommendation')}")
         return result
 
@@ -239,10 +259,26 @@ Return JSON:
   "final_risk_rating": "low|medium|high|very_high",
   "summary": "..."
 }}"""
-        return self.call_claude_json(
+        result = self.call_claude_json(
             JUDGE_SYSTEM, [{"role": "user", "content": prompt}],
             model=MODEL_HEAVY, max_tokens=2048, task_label="red_blue_judge"
         )
+        if "error" in result or result.get("verdict") is None:
+            self.log_daemon("WARN",
+                "Judge parse failure — defaulting to conditional with manual review requirement")
+            return {
+                "verdict":              "conditional",
+                "confidence":           0.5,
+                "key_conditions":       ["Manual review required — judge JSON parse failed"],
+                "position_size_limit_pct": 0.5,
+                "required_safeguards":  ["Human review before paper trading", "Limit position to 0.5% NAV"],
+                "red_score":            red.get("overall_attack_score"),
+                "blue_score":           blue.get("overall_defense_score"),
+                "final_risk_rating":    "medium",
+                "summary":              "JSON parse failure — scores unavailable — recommend manual review",
+                "_parse_failed":        True,
+            }
+        return result
 
     # ------------------------------------------------------------------
     # Full stress test
@@ -273,27 +309,49 @@ Return JSON:
         blue = self.blue_team_defend(idea, red)
         verdict = self._judge(idea, red, blue, backtest_results)
 
-        # Persist result
-        verdict_str = verdict.get("verdict", "reject")
+        # Detect parse failures across any step — a JSON glitch must never kill a good idea
+        any_parse_failed = (
+            red.get("_parse_failed") or
+            blue.get("_parse_failed") or
+            verdict.get("_parse_failed")
+        )
+
+        # If any step failed to parse, override to "conditional" so the idea advances
+        # to paper trading with a manual-review safeguard rather than being archived.
+        raw_verdict = verdict.get("verdict")
+        if raw_verdict is None or (any_parse_failed and raw_verdict == "reject"):
+            verdict_str = "conditional"
+            self.log_daemon("WARN",
+                f"Red-Blue [{idea_id}]: parse failure detected — overriding to 'conditional' "
+                f"(red_failed={red.get('_parse_failed')}, blue_failed={blue.get('_parse_failed')}, "
+                f"judge_failed={verdict.get('_parse_failed')})")
+        else:
+            verdict_str = raw_verdict
+
         should_advance = verdict_str in ("advance", "conditional")
 
         with db_session() as conn:
             notes = json.dumps({
-                "red_score": red.get("overall_attack_score"),
-                "blue_score": blue.get("overall_defense_score"),
-                "verdict": verdict_str,
-                "conditions": verdict.get("key_conditions", []),
-                "safeguards": verdict.get("required_safeguards", []),
+                "red_score":   red.get("overall_attack_score"),
+                "blue_score":  blue.get("overall_defense_score"),
+                "verdict":     verdict_str,
+                "conditions":  verdict.get("key_conditions", []),
+                "safeguards":  verdict.get("required_safeguards", []),
+                "parse_failed": bool(any_parse_failed),
             })
             conn.execute("""
                 INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
                 VALUES (?, 'stage3', ?, 'RedBlueTeam', ?)
             """, (idea_id, "advanced" if should_advance else "rejected", notes))
 
+            rationale = verdict.get("summary") or (
+                "JSON parse failure — scores unavailable — recommend manual review"
+                if any_parse_failed else ""
+            )
             conn.execute("""
                 INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
                 VALUES (?, 'gate3_rb', ?, 'RedBlueTeam', ?)
-            """, (idea_id, "approve" if should_advance else "reject", verdict.get("summary", "")))
+            """, (idea_id, "approve" if should_advance else "reject", rationale))
 
             if should_advance:
                 conn.execute("""
