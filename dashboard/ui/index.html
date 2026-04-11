@@ -3452,7 +3452,8 @@ async function openDeptWorkView(deptId, ideaId) {
     content.innerHTML = '<div style="padding:20px;color:#f59e0b">⚠ Select an idea from the dropdown to view work</div>';
     return;
   }
-  const path = ideaId ? `/departments/${deptId}/${ideaId}` : `/departments/${deptId}`;
+  const noIdeaDepts = ['knowledge_base', 'market_intelligence'];
+  const path = (ideaId && !noIdeaDepts.includes(deptId)) ? `/departments/${deptId}/${ideaId}` : `/departments/${deptId}`;
   const data  = await apiFetch(path);
   if (!data) {
     content.innerHTML = '<div style="padding:20px;color:#ef4444">Failed to load department data</div>';
