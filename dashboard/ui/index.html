@@ -3371,7 +3371,7 @@ let _deptHubInited = false;
 async function initDeptHub() {
   if (_deptHubInited) return;
   _deptHubInited = true;
-  const ideas = await apiFetch('/pipeline/ideas?limit=50');
+  const ideas = await apiFetch('/pipeline/ideas?limit=100&include_all_stages=true');
   const sel = document.getElementById('dept-idea-select');
   if (sel && ideas && ideas.ideas) {
     ideas.ideas.forEach(i => {

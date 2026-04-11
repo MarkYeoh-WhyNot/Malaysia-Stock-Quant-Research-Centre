@@ -215,11 +215,16 @@ def analytics():
 # ─── Pipeline / Ideas ────────────────────────────────────────────────────────
 
 @app.get("/api/pipeline/ideas")
-def get_ideas(stage: Optional[str] = None, status: Optional[str] = None, limit: int = 50):
+def get_ideas(stage: Optional[str] = None, status: Optional[str] = None, limit: int = 50,
+              include_all_stages: bool = False):
     with db_session() as conn:
         where, params = [], []
-        if stage:  where.append("ai.stage=?");  params.append(stage)
-        if status: where.append("ai.status=?"); params.append(status)
+        if include_all_stages:
+            # Return all non-rejected ideas across every stage
+            where.append("ai.status != 'rejected'")
+        else:
+            if stage:  where.append("ai.stage=?");  params.append(stage)
+            if status: where.append("ai.status=?"); params.append(status)
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         # LEFT JOIN latest backtest_run to expose QC metrics in the ideas table
         ideas = conn.execute(f"""
@@ -1702,41 +1707,42 @@ def dept_red_blue(idea_id: int):
         idea = conn.execute("SELECT id, title, ticker FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
         if not idea:
             raise HTTPException(status_code=404, detail="Idea not found")
-        gates = conn.execute(
-            "SELECT * FROM gate_decisions WHERE idea_id=? AND gate='gate3_rb' ORDER BY id DESC", (idea_id,)
+        # Debates come from pipeline_events: stage3 events by RedBlueTeam
+        rb_events = conn.execute(
+            "SELECT * FROM pipeline_events "
+            "WHERE idea_id=? AND stage='stage3' AND agent='RedBlueTeam' "
+            "ORDER BY id DESC", (idea_id,)
         ).fetchall()
-        events = conn.execute(
-            "SELECT * FROM pipeline_events WHERE idea_id=? AND event_type='gate3_rb' ORDER BY id DESC", (idea_id,)
-        ).fetchall()
-    gates  = [dict(g) for g in gates]
-    ev_map = {str(e["created_at"])[:16]: dict(e) for e in events}
     debates = []
-    for g in gates:
+    for ev in rb_events:
+        ev = dict(ev)
         notes: dict = {}
-        ev = ev_map.get(str(g["created_at"])[:16])
-        if ev:
-            try: notes = json.loads(ev["notes"] or "{}")
-            except Exception: pass
-        if not notes:
-            try: notes = json.loads(g.get("rationale") or "{}")
-            except Exception: pass
+        try: notes = json.loads(ev.get("notes") or "{}")
+        except Exception: pass
+        # verdict: use notes.verdict if present, otherwise derive from event_type
+        verdict = notes.get("verdict") or ("advance" if ev["event_type"] == "advanced" else "reject")
         debates.append({
-            "verdict":      g["decision"],
-            "rationale":    g.get("rationale", ""),
-            "decided_by":   g.get("decided_by", ""),
-            "created_at":   g["created_at"],
+            "verdict":      verdict,
+            "event_type":   ev["event_type"],
+            "created_at":   ev["created_at"],
             "red_score":    notes.get("red_score") or notes.get("attack_score"),
             "blue_score":   notes.get("blue_score") or notes.get("defense_score"),
             "risk_level":   notes.get("risk_level", ""),
             "parse_failed": bool(notes.get("parse_failed", False)),
             "notes":        notes,
         })
-    advances     = sum(1 for d in debates if d["verdict"] == "advance")
+    # Count from debates list (gate_decisions may not record every RB round)
+    advances     = sum(1 for d in debates if d["verdict"] in ("advance", "conditional") and d["event_type"] == "advanced")
     conditionals = sum(1 for d in debates if d["verdict"] == "conditional")
-    rejections   = sum(1 for d in debates if d["verdict"] in ("reject", "rejected"))
+    rejections   = sum(1 for d in debates if d["event_type"] == "rejected")
     return {
         "idea_id": idea_id, "debates": debates,
-        "summary": {"total_debates": len(debates), "advances": advances, "conditionals": conditionals, "rejections": rejections},
+        "summary": {
+            "total_debates": len(debates),
+            "advances":      advances,
+            "conditionals":  conditionals,
+            "rejections":    rejections,
+        },
     }
 
 
@@ -1752,13 +1758,25 @@ def dept_execution(idea_id: int):
         bt = conn.execute(
             "SELECT sharpe_net FROM backtest_runs WHERE idea_id=? ORDER BY id DESC LIMIT 1", (idea_id,)
         ).fetchone()
+        # Look for stage4a entry event — first check pipeline_events stage='stage4a',
+        # then fall back to the last stage3 advance (which is when the idea entered paper trading)
+        stage4a_ev = conn.execute(
+            "SELECT created_at FROM pipeline_events WHERE idea_id=? AND stage='stage4a' "
+            "AND event_type='advanced' ORDER BY id DESC LIMIT 1", (idea_id,)
+        ).fetchone()
+        if not stage4a_ev:
+            stage4a_ev = conn.execute(
+                "SELECT created_at FROM pipeline_events WHERE idea_id=? AND stage='stage3' "
+                "AND event_type='advanced' ORDER BY id DESC LIMIT 1", (idea_id,)
+            ).fetchone()
+        stage4a_ts = stage4a_ev["created_at"] if stage4a_ev else None
     idea   = dict(idea)
     trades = [dict(t) for t in trades]
     open_t = [t for t in trades if t.get("status") == "open"]
     paper_trade = None
     if open_t:
-        t           = open_t[0]
-        entered_at  = t.get("opened_at", "")
+        t            = open_t[0]
+        entered_at   = t.get("opened_at", "")
         days_elapsed = 0
         if entered_at:
             try:
@@ -1771,6 +1789,28 @@ def dept_execution(idea_id: int):
             "entered_at":      entered_at,
             "tickers":         [t.get("pair") or idea.get("ticker", "")],
             "status":          t.get("status", "open"),
+            "days_elapsed":    days_elapsed,
+            "days_remaining":  max(0, 30 - days_elapsed),
+            "backtest_sharpe": float(bt["sharpe_net"]) if bt and bt["sharpe_net"] else None,
+            "target_sharpe":   1.0,
+        }
+    elif idea.get("stage") == "stage4a" and stage4a_ts:
+        # Idea is in paper trading but paper_trades table has no open row yet —
+        # construct a synthetic entry from the stage transition timestamp
+        entered_at   = str(stage4a_ts)
+        days_elapsed = 0
+        try:
+            dt = datetime.strptime(entered_at[:19].replace(" ", "T"), "%Y-%m-%dT%H:%M:%S")
+            days_elapsed = (datetime.utcnow() - dt).days
+        except Exception:
+            pass
+        ticker_str = idea.get("ticker", "")
+        tickers    = [t.strip() for t in ticker_str.split(",") if t.strip()] if ticker_str else []
+        paper_trade = {
+            "strategy":        idea.get("title", ""),
+            "entered_at":      entered_at,
+            "tickers":         tickers,
+            "status":          "active",
             "days_elapsed":    days_elapsed,
             "days_remaining":  max(0, 30 - days_elapsed),
             "backtest_sharpe": float(bt["sharpe_net"]) if bt and bt["sharpe_net"] else None,
