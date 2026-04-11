@@ -1346,6 +1346,7 @@ Return JSON only:
         # fundamental_screen strategies legitimately produce a constant signal — the
         # verification step cannot validate fundamental factor logic from price data
         # alone and always flags needs_review. Skip it for this signal type.
+        verification = {"verified": False, "confidence": 0.0, "issue": ""}
         if params.get("signal_type") == "fundamental_screen":
             needs_review      = 0
             verification_note = ("Constant signal expected for fundamental screen "
