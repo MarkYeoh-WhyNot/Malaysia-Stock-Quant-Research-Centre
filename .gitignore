@@ -6,3 +6,5 @@ logs/
 data/cache/
 backups/
 venv/
+.env.save
+*.env.save
