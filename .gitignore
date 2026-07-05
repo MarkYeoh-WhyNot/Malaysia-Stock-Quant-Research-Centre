@@ -8,3 +8,4 @@ backups/
 venv/
 .env.save
 *.env.save
+.DS_Store
