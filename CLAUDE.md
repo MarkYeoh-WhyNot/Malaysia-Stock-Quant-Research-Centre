@@ -555,9 +555,21 @@ Every KB document and every alpha idea must map to one:
 
 ### GATE THRESHOLDS (current, may be tuned over time)
 - **Gate 0:** novelty >= 0.60 AND logic >= 0.70 AND feasibility >= 0.60
+- **Gate DQ (Phase 1.3):** Data Confidence Score >= 80/100 before backtest (price/volume completeness, stale-price + missing-day + suspected-corp-action penalties). Config: `GATE_CONFIG.dq_*`.
 - **Stage 2:** Sharpe >= 1.1 (MEDIUM_TERM), train/val gap <= 30%
+- **Benchmark gate (Phase 3.2):** strategy net annual return must beat equal-weight KLCI. Config: `GATE_CONFIG.benchmark_*`.
+- **Capacity gate (Phase 3.4):** <= 5% of ADV/day, days-to-enter <= 5. Config: `GATE_CONFIG.capacity_*`.
 - **Cross-sectional:** mean IC > 0.05, IC t-stat > 1.5, positive IC on > 15/30 KLCI stocks
-- **Stage 4A:** Sharpe >= 1.0 over 30 days, max drawdown <= 15%
+- **Stage 4A (Phase 3.5):** class-aware promotion — Sharpe/DD plus day-floor-by-class (INTRADAY/SHORT 30, MEDIUM 60, LONG 120) OR enough completed trades. Config: `GATE_CONFIG.stage4a_*`.
+- **Production-eligibility (Phase 2.3):** current-constituent-only backtests over pre-`UNIVERSE_ASOF` windows are research-grade, not production-eligible.
+
+### AUDIT-DRIVEN TABLES (2026-07-09, from external system audit)
+`fee_schedules` (date-versioned costs), `data_quality_checks`, `corporate_actions`,
+`universe_membership` (point-in-time constituents), `liquidity_features`,
+`risk_snapshots`. New `backtest_runs` columns: benchmark/capacity metrics,
+`market_rules_version` / `fee_model_version` / `production_eligible` / `universe_asof`.
+Cost/market-rule sources of truth: `config/settings.py` (constants + `MARKET_RULES_VERSION`),
+`data/fee_schedule.py` (date-aware). See plan file `users-markyeoh-downloads-bursa-quant-re-prancy-milner.md`.
 
 ### MINIMUM TRADE COUNTS BY HOLDING PERIOD
 | Class | Min Trades |
