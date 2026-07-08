@@ -94,6 +94,55 @@ def health():
     }
 
 
+# ─── Live prices (crypto only) ───────────────────────────────────────────────
+
+# Tiny in-process TTL cache: many dashboard tabs poll /api/prices every ~10s,
+# but they should share ONE upstream exchange fetch. 8s < the 10s UI cadence, so
+# a tab's own next poll is usually a fresh fetch while concurrent tabs are served
+# from cache.
+_PRICE_CACHE: dict = {"ts": 0.0, "data": None}
+_PRICE_TTL_SECS = 8.0
+
+
+@app.get("/api/prices")
+async def prices():
+    """Live spot quotes for the active market's universe (crypto only).
+
+    Display-only monitoring data — not persisted, not fed to the pipeline. The
+    Bursa instance answers cleanly with supported=false (yfinance quotes are
+    delayed and would need a separate path)."""
+    from config.settings import DATA_BACKEND, MARKET, DEFAULT_SYMBOLS, KLCI_BY_SYMBOL
+
+    if DATA_BACKEND != "binance":
+        return {"market": MARKET, "supported": False, "prices": [], "errors": []}
+
+    import time as _time
+    now = _time.time()
+    cached = _PRICE_CACHE["data"]
+    if cached is not None and (now - _PRICE_CACHE["ts"]) < _PRICE_TTL_SECS:
+        return cached
+
+    from data.binance.client import fetch_live_prices
+    result = await _in_thread(lambda: fetch_live_prices(DEFAULT_SYMBOLS))
+
+    # Enrich each row with the universe's display name / sector for the table.
+    for row in result["prices"]:
+        meta = KLCI_BY_SYMBOL.get(row["symbol"], {})
+        row["name"] = meta.get("name", row["symbol"])
+        row["sector"] = meta.get("sector", "")
+
+    payload = {
+        "market": MARKET,
+        "supported": True,
+        "as_of": datetime.utcnow().isoformat(),
+        "prices": result["prices"],
+        "errors": result["errors"],
+    }
+    _PRICE_CACHE["ts"] = now
+    _PRICE_CACHE["data"] = payload
+    return payload
+
+
 # ─── Agent Progress ──────────────────────────────────────────────────────────
 
 @app.get("/api/agent-progress")
