@@ -132,6 +132,17 @@ INSTRUMENT_TYPE  = _P.INSTRUMENT_TYPE
 CONCENTRATION_SECTOR = _P.CONCENTRATION_SECTOR
 ENABLED_JOBS     = _P.ENABLED_JOBS        # None = all jobs
 
+# ── Research content (KB hunt / alpha seeds, from profile) ───────────────────
+# Fixes the bug where DiversityEngine/ResearchHunter/KBIngester/AlphaSeedGenerator
+# hardcoded Bursa Malaysia content regardless of MARKET_MODE (2026-07-09).
+RESEARCH_ANGLES        = _P.RESEARCH_ANGLES
+ANGLE_KEYWORDS         = _P.ANGLE_KEYWORDS
+RESEARCH_QUERY_PERSONA = _P.RESEARCH_QUERY_PERSONA
+ALPHA_SEED_SYSTEM      = _P.ALPHA_SEED_SYSTEM
+DATA_SOURCES_EXAMPLE   = _P.DATA_SOURCES_EXAMPLE
+RELEVANCE_TARGET       = _P.RELEVANCE_TARGET
+RELEVANCE_SCALE        = _P.RELEVANCE_SCALE
+
 # ── Runtime state directory ───────────────────────────────────────────────────
 # All mutable runtime artifacts (SQLite DB, parquet cache, heartbeat, progress
 # file) live here. Defaults to the repo's data/ dir for local development, but

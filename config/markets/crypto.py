@@ -204,24 +204,199 @@ JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that r
 # Concentration risk: the sector analog whose over-weight the risk monitor flags.
 CONCENTRATION_SECTOR = "Smart Contract"
 
+# ── Research content (KB hunt / alpha seeds) ─────────────────────────────────
+# Same 9 taxonomy keys as bursa.py (kb_ingester.VALID_DOMAINS / family_quotas
+# share this taxonomy across markets) — content authored for crypto spot.
+# "commodity" has no literal equivalent in crypto (no CPO/plantation-style
+# equity-commodity linkage); reinterpreted as BTC-dominance / altcoin-BTC
+# correlation regime, which plays the same "one external price series drives a
+# basket of related instruments" role CPO plays for Bursa plantation stocks.
+RESEARCH_ANGLES = {
+    "price_action": {
+        "description": "Technical analysis, momentum, chart patterns on crypto spot markets",
+        "queries": [
+            "price momentum cryptocurrency spot returns",
+            "technical analysis bitcoin ethereum anomalies",
+            "moving average crossover cryptocurrency markets",
+        ],
+    },
+    "fundamental": {
+        "description": "Tokenomics, network fundamentals, supply schedules as crypto value factors",
+        "queries": [
+            "tokenomics supply schedule cryptocurrency valuation",
+            "network value active addresses crypto fundamental factor",
+            "total value locked TVL blockchain protocol valuation",
+        ],
+    },
+    "event_driven": {
+        "description": "Halvings, token unlocks, exchange listings, protocol upgrades",
+        "queries": [
+            "bitcoin halving cycle price impact returns",
+            "token unlock vesting schedule price impact",
+            "exchange listing announcement cryptocurrency returns",
+        ],
+    },
+    "institutional": {
+        "description": "ETF flows, whale-wallet accumulation, exchange-reserve flows",
+        "queries": [
+            "bitcoin ETF flow impact price returns",
+            "whale wallet accumulation cryptocurrency price impact",
+            "exchange reserve outflow bitcoin price signal",
+        ],
+    },
+    "macro": {
+        "description": "Fed policy, DXY, risk-on/risk-off regime impact on crypto returns",
+        "queries": [
+            "federal reserve interest rate cryptocurrency market impact",
+            "dollar index DXY bitcoin correlation macro regime",
+            "risk asset correlation cryptocurrency equity markets",
+        ],
+    },
+    "commodity": {
+        "description": "BTC-dominance and altcoin-BTC correlation regime (crypto's commodity-linkage analog)",
+        "queries": [
+            "bitcoin dominance altcoin correlation regime",
+            "altcoin beta bitcoin price co-movement",
+            "cryptocurrency market cycle rotation dominance",
+        ],
+    },
+    "sector_rotation": {
+        "description": "Rotation between L1s, DeFi, gaming/NFT, and meme-coin narrative sectors",
+        "queries": [
+            "sector rotation layer1 defi cryptocurrency narrative",
+            "narrative cycle cryptocurrency sector momentum",
+            "defi layer2 token category performance rotation",
+        ],
+    },
+    "behavioural": {
+        "description": "Crypto sentiment, fear-greed index, herding and retail anomalies",
+        "queries": [
+            "investor sentiment fear greed index cryptocurrency returns",
+            "herding behaviour cryptocurrency retail trading",
+            "social media sentiment bitcoin price prediction",
+        ],
+    },
+    "statistical_modelling": {
+        "description": "Quantitative models: GARCH, HMM, factor models, ML, cointegration for crypto",
+        "queries": [
+            "GARCH volatility model cryptocurrency bitcoin",
+            "hidden markov regime detection cryptocurrency market",
+            "random matrix theory portfolio optimization digital assets",
+            "machine learning return prediction cryptocurrency",
+            "factor model cryptocurrency cross-sectional returns",
+        ],
+    },
+}
+
+ANGLE_KEYWORDS = {
+    "price_action": [
+        "momentum", "mean reversion", "mean-reversion", "technical", "moving average",
+        "rsi", "breakout", "trend", "macd", "bollinger", "price action", "chart pattern",
+        "support", "resistance", "crossover", "oscillator",
+    ],
+    "fundamental": [
+        "tokenomics", "token supply", "circulating supply", "network value",
+        "active addresses", "total value locked", "tvl", "protocol revenue",
+        "staking yield", "burn rate", "emission schedule", "fundamental",
+    ],
+    "event_driven": [
+        "halving", "token unlock", "vesting", "exchange listing", "delisting",
+        "protocol upgrade", "hard fork", "airdrop", "mainnet launch",
+        "governance vote", "event study",
+    ],
+    "institutional": [
+        "etf", "whale wallet", "exchange reserve", "institutional", "custody",
+        "grayscale", "spot etf", "futures open interest", "institutional flows",
+        "on-chain accumulation",
+    ],
+    "macro": [
+        "federal reserve", "interest rate", "dxy", "dollar index", "monetary policy",
+        "risk-on", "risk-off", "macro regime", "inflation", "quantitative easing",
+        "macroeconomics", "economic cycle",
+    ],
+    "commodity": [
+        "bitcoin dominance", "btc dominance", "altcoin correlation", "altcoin beta",
+        "alt season", "market cycle", "rotation", "dominance chart",
+    ],
+    "sector_rotation": [
+        "sector rotation", "narrative cycle", "layer 1", "layer1", "defi", "gamefi",
+        "nft", "meme coin", "sector momentum", "category performance",
+    ],
+    "behavioural": [
+        "sentiment", "fear and greed", "fear greed index", "herding", "anomaly",
+        "anomalies", "social media sentiment", "retail trading", "overreaction",
+        "market anomaly", "investor sentiment",
+    ],
+    "statistical_modelling": [
+        "garch", "egarch", "arima", "volatility model", "time series",
+        "hidden markov", "regime detection", "regime switching",
+        "random matrix", "eigenvalue", "minimum spanning tree", "correlation clustering",
+        "factor model", "pca", "principal component", "ica",
+        "machine learning", "regression", "bayesian", "kalman filter",
+        "monte carlo", "cointegration", "stationarity", "unit root",
+        "statistical arbitrage", "clustering algorithm",
+    ],
+}
+
+RESEARCH_QUERY_PERSONA = (
+    "You are a research librarian generating academic database search queries for "
+    "quantitative cryptocurrency spot-market research focused on major digital assets "
+    "(BTC, ETH, and large-cap alts traded on centralized exchanges)."
+)
+
+ALPHA_SEED_SYSTEM = (
+    "You are a senior quant researcher specialising in cryptocurrency spot markets. "
+    "You are comfortable with both discretionary and quantitative approaches including "
+    "GARCH/ARIMA time series models, factor models, Hidden Markov regime detection, "
+    "cointegration, Kalman filters, Monte Carlo simulation, Bayesian inference, machine "
+    "learning applied to financial data, and statistical arbitrage. When extracting alpha "
+    "from statistical modelling papers, translate the quantitative techniques into "
+    "concrete, implementable long-only spot strategies — this system has no on-chain, "
+    "funding-rate, or order-book data in v1, so extracted signals must be expressible "
+    "from daily OHLCV alone."
+)
+
+DATA_SOURCES_EXAMPLE = ["Binance OHLCV", "Exchange announcements"]
+
+RELEVANCE_TARGET = "crypto spot trading"
+RELEVANCE_SCALE = """  0.00–0.20  irrelevant — completely wrong market or asset class
+    Examples: equity/stock market research, forex pairs, bond mechanics,
+    real estate, ML for cybersecurity, non-financial content
+
+  0.20–0.40  generic — general finance, transferable concepts only
+    Examples: General momentum theory, generic valuation frameworks,
+    factor investing with no crypto/digital-asset context, portfolio theory
+
+  0.40–0.60  partial — blockchain/digital-asset context but not spot-trading specific
+    Examples: general blockchain technology, NFT/gaming ecosystem analysis,
+    DeFi protocol mechanics without a trading angle, crypto regulation
+
+  0.60–0.80  relevant — cryptocurrency spot-market trading specific
+    Examples: bitcoin/altcoin return studies, crypto market microstructure,
+    exchange trading dynamics, crypto factor models
+
+  0.80–1.00  direct — actionable spot-trading intelligence
+    Examples: specific BTC/ETH/altcoin price analysis, on-chain flow studies
+    with a trading signal, halving-cycle studies, dominance/rotation regimes"""
+
 # ── Daemon scheduled jobs enabled for this market ─────────────────────────────
 # Allowlist enforced inside ResearchDaemon._job_due(). Bursa-specific scrapers/
 # monitors (klse_refresh, screener_ideas via the KLSE fundamental scanner,
 # cpo_daily, analyst_monitor) have no crypto counterpart in v1 and never fire
 # in this container.
 #
-# kb_hunt / alpha_seeds are DISABLED here even though they're nominally
-# "market-agnostic" jobs: DiversityEngine's 9 research angles and
-# ResearchHunter's relevance-rating prompt are hardcoded to hunt and score
-# Bursa Malaysia content (verified live — the crypto daemon was ingesting
-# "Web Document Analysis for Companies Listed in Bursa Malaysia" into its own
-# KB and burning crypto AI budget on it). Rewriting that content-generation
-# layer for crypto is its own scoped follow-up, not covered by this profile
-# extraction. Graph/vault/DB maintenance, briefing, and funnel report ARE
-# genuinely market-agnostic (they operate on whatever is already in the DB)
-# and stay enabled.
+# kb_hunt / alpha_seeds were disabled here (2026-07-09) after a live deploy
+# showed the crypto daemon ingesting Bursa-Malaysia content into its own KB —
+# DiversityEngine's research angles and ResearchHunter/KBIngester/AlphaSeedGenerator's
+# relevance-rating prompts were hardcoded to Bursa regardless of MARKET_MODE.
+# Fixed same day: RESEARCH_ANGLES / ANGLE_KEYWORDS / RESEARCH_QUERY_PERSONA /
+# ALPHA_SEED_SYSTEM / RELEVANCE_TARGET / RELEVANCE_SCALE / DATA_SOURCES_EXAMPLE
+# above are now crypto-authored profile fields consumed by all four modules —
+# re-enabled now that they're market-aware.
 ENABLED_JOBS = {
     "morning_briefing",
+    "kb_hunt",
+    "alpha_seeds",
     "graph_maintain",
     "vault_export",
     "funnel_report",

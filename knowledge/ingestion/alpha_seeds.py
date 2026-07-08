@@ -4,41 +4,25 @@ import re
 from datetime import datetime
 
 from agents.base_agent import BaseAgent
+from config import settings
 from config.settings import MODEL_MAIN
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
-SYSTEM = (
-    "You are a senior quant researcher specialising in Bursa Malaysia equity markets. "
-    "You are comfortable with both discretionary and quantitative approaches including "
-    "GARCH/ARIMA time series models, factor models (Fama-French, PCA), Hidden Markov "
-    "regime detection, cointegration, Kalman filters, Monte Carlo simulation, Bayesian "
-    "inference, machine learning applied to financial data, and statistical arbitrage. "
-    "When extracting alpha from statistical modelling papers, translate the quantitative "
-    "techniques into concrete, implementable KLSE strategies."
-)
-
-# Layer 2: phrases that indicate strategies not feasible on Bursa Malaysia
-_INFEASIBLE_PHRASES = [
-    "pairs trade", "pair trade", "long/short", "long short",
-    "short sell", "short selling", "shorting", "short the",
-    "futures spread", "arbitrage between two stocks",
-    "put option", "call option", "covered call", "options strategy",
-    "options spread", "collar strategy",
-]
-
-# Regex to detect non-Bursa tickers (NYSE/NASDAQ style: letters only, no .KL suffix)
-# Catches things like AAPL, MSFT, SPY, ^GSPC — but NOT "1155.KL" or sector labels
-_NON_KL_TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b(?!\s*\.KL)", re.UNICODE)
-_KL_TICKER_RE     = re.compile(r"\b[\dA-Z]{4,6}\.KL\b")
+# Persona (from active market profile — was hardcoded "Bursa Malaysia equity
+# markets" regardless of MARKET_MODE, verified live 2026-07-09).
+SYSTEM = settings.ALPHA_SEED_SYSTEM
 
 
-def is_bursa_feasible(h: dict) -> tuple[bool, str]:
+def is_market_feasible(h: dict) -> tuple[bool, str]:
     """Return (feasible: bool, reason: str) for a hypothesis dict.
 
-    Layer 2 quality gate — rejects strategies that cannot be executed on
-    Bursa Malaysia: short-selling, pairs trades, options, non-KL tickers.
+    Layer 2 quality gate — rejects strategies that cannot be executed in the
+    active market: short-selling/pairs/options-style phrases (reuses
+    settings.BLOCKED_MODES — the same list Gate 0 and the sandbox path already
+    enforce, instead of a second hardcoded phrase list to keep in sync), and
+    tickers that don't match this market's format (settings.TICKER_REGEX).
     """
     text      = " ".join([
         str(h.get("title", "")),
@@ -48,15 +32,20 @@ def is_bursa_feasible(h: dict) -> tuple[bool, str]:
     ticker    = str(h.get("ticker", "")).strip()
 
     # Check for infeasible phrases in combined text
-    for phrase in _INFEASIBLE_PHRASES:
+    for phrase in settings.BLOCKED_MODES:
         if phrase in text:
             return False, f"contains infeasible phrase: '{phrase}'"
 
-    # Check ticker field: if it looks like a pure uppercase ticker (no .KL, not a sector)
-    # and is not empty, flag it
-    if ticker and not ticker.lower().startswith("sector") and not ticker.lower() == "klci":
-        if not re.search(r"\d", ticker) and ticker.isupper() and len(ticker) <= 5 and "." not in ticker:
-            return False, f"ticker '{ticker}' appears to be a non-Bursa (non-.KL) symbol"
+    # Check ticker field: a single bare token (no spaces) that doesn't match
+    # this market's ticker format is a wrong-market symbol (e.g. "AAPL" in
+    # Bursa mode, "1155.KL" in crypto mode); multi-word "sector name" strings
+    # and "KLCI"/index labels pass through untouched.
+    if ticker and not ticker.lower().startswith("sector") and ticker.lower() != "klci":
+        if " " not in ticker and not settings.TICKER_REGEX.fullmatch(ticker):
+            return False, (
+                f"ticker '{ticker}' does not match this market's format "
+                f"({settings.TICKER_EXAMPLE})"
+            )
 
     return True, "ok"
 
@@ -108,6 +97,8 @@ class AlphaSeedGenerator(BaseAgent):
         content = row["content"] or ""
 
         # ── Claude call ─────────────────────────────────────────────────
+        ticker_example = settings.TICKER_EXAMPLE.split(" (")[0]
+        data_sources_json = json.dumps(settings.DATA_SOURCES_EXAMPLE)
         prompt = f"""Read this article and extract actionable alpha.
 
 Title: {title}
@@ -120,12 +111,12 @@ A) CORE INSIGHT (1 sentence):
    The single most actionable trading insight from this content.
 
 B) MARKET MECHANISM (2 sentences):
-   WHY does this edge exist specifically in Bursa Malaysia?
+   WHY does this edge exist specifically in {settings.MARKET_NAME}?
    What investor behaviour or market structure causes it?
 
 C) TESTABLE HYPOTHESES (generate 2-4):
    Convert insights into specific, testable alpha ideas.
-   Each must have a specific .KL ticker OR sector,
+   Each must have a specific {ticker_example}-style ticker OR sector,
    a measurable entry signal, expected return,
    and a failure condition.
 
@@ -137,10 +128,10 @@ Return JSON:
     {{
       "title": "Short descriptive name under 80 chars",
       "hypothesis": "Full explanation of the trade logic",
-      "ticker": "1155.KL or sector name",
+      "ticker": "{ticker_example} or sector name",
       "timeframe": "1d or 1wk",
       "factor_formula": "Signal description",
-      "data_sources": ["Yahoo Finance", "Bursa announcements"],
+      "data_sources": {data_sources_json},
       "novelty_score": 0.0,
       "logic_score": 0.0,
       "confidence": 0.0
@@ -218,8 +209,8 @@ Return JSON:
                 )
                 continue
 
-            # Layer 2: Bursa feasibility filter
-            feasible, reason = is_bursa_feasible(h)
+            # Layer 2: market feasibility filter
+            feasible, reason = is_market_feasible(h)
             if not feasible:
                 self.log_daemon(
                     "INFO",

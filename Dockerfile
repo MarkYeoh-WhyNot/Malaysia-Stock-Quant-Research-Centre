@@ -16,7 +16,7 @@ COPY requirements.lock .
 RUN pip install --no-cache-dir -r requirements.lock
 
 COPY . .
-RUN mkdir -p data logs backups && chown -R openclaw:openclaw /app
+RUN mkdir -p data logs backups runtime && chown -R openclaw:openclaw /app
 
 ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1

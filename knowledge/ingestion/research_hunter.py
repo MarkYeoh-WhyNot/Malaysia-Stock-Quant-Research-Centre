@@ -13,6 +13,7 @@ from typing import Optional
 import requests
 
 from agents.base_agent import BaseAgent
+from config import settings
 from config.settings import MODEL_FAST, SEMANTIC_SCHOLAR_API_KEY
 from knowledge.ingestion.kb_ingester import KBIngester
 
@@ -24,11 +25,6 @@ ARXIV_URL            = "https://export.arxiv.org/api/query"
 # Brave Search — quality domain allowlist for the research hunt
 BRAVE_RESEARCH_DOMAINS = (
     ".edu", ".ac.", "ssrn.com", "researchgate.net", "papers.ssrn.com",
-)
-
-QUERY_SYSTEM = (
-    "You are a research librarian generating academic database search queries for "
-    "quantitative equity research focused on Bursa Malaysia and ASEAN emerging markets."
 )
 
 
@@ -49,16 +45,16 @@ Context: {context[:600]}
 
 Each query should target one of these angles:
 1. The specific strategy factor (momentum, value, mean-reversion, event-driven, etc.)
-2. ASEAN / emerging-market / Malaysian equity markets
+2. {settings.MARKET_NAME} market context
 3. Quantitative finance or factor investing more broadly
 
-Return a JSON array of short query strings (6-10 words each). Example:
-["momentum premium ASEAN emerging market equities",
- "post-earnings drift Malaysia stock returns",
- "value factor Bursa Malaysia"]"""
+Return a JSON array of short query strings (6-10 words each), each grounded in
+{settings.MARKET_NAME} or its asset class where relevant. Example format:
+["momentum premium {settings.MARKET_NAME.lower()} returns",
+ "factor model {settings.MARKET_NAME.lower()} quantitative"]"""
 
         result = self.call_claude_json(
-            QUERY_SYSTEM,
+            settings.RESEARCH_QUERY_PERSONA,
             [{"role": "user", "content": prompt}],
             model=MODEL_FAST,
             max_tokens=512,
@@ -71,7 +67,7 @@ Return a JSON array of short query strings (6-10 words each). Example:
         base  = " ".join(words)
         return [
             f"{base} equity strategy",
-            f"{base} ASEAN emerging markets",
+            f"{base} {settings.MARKET_NAME}",
             f"{base} quantitative finance",
         ]
 
@@ -158,46 +154,29 @@ Return a JSON array of short query strings (6-10 words each). Example:
         return "direct"
 
     def _is_relevant(self, title: str, abstract: str) -> dict:
-        """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0-1.0).
+        """Call Claude Haiku to rate this market's relevance (0.0-1.0).
 
         Returns {'relevance': float, 'category': str, 'reason': str}.
         Category is one of: irrelevant / generic / partial / relevant / direct.
         Defaults to {'relevance': 1.0, 'category': 'relevant', 'reason': 'check_failed'}
         on any error so that ingest is never blocked by a transient API issue.
 
-        5-tier scoring:
-          0.00–0.20  irrelevant  — wrong market/asset class, crypto, forex, CFD, non-financial
-          0.20–0.40  generic     — general finance theory, no EM/Asian context
-          0.40–0.60  partial     — ASEAN / emerging-market / Asian equity context
-          0.60–0.80  relevant    — Bursa Malaysia or Malaysian equity specific
-          0.80–1.00  direct      — actionable KLSE intelligence
+        The target market and 5-tier scale text come from the active market
+        profile (settings.RELEVANCE_TARGET / settings.RELEVANCE_SCALE) — this
+        method is shared unchanged across markets.
         """
         prompt = (
-            f"Rate this academic paper's relevance to Bursa Malaysia equity trading.\n\n"
+            f"Rate this academic paper's relevance to {settings.RELEVANCE_TARGET}.\n\n"
             f"Title: {title}\n"
             f"Abstract: {abstract[:400]}\n\n"
             f"Use this 5-tier scale:\n\n"
-            f"  0.00–0.20  irrelevant — completely wrong market or asset class\n"
-            f"    Examples: Australian CFD trading, cryptocurrency, forex pairs,\n"
-            f"    US options pricing, bond market mechanics, ML for cybersecurity\n\n"
-            f"  0.20–0.40  generic — general finance, transferable concepts only\n"
-            f"    Examples: General momentum theory, generic valuation frameworks,\n"
-            f"    factor investing with no regional context, portfolio theory\n\n"
-            f"  0.40–0.60  partial — emerging market or Asian market context\n"
-            f"    Examples: ASEAN equity research, Southeast Asia fund flows,\n"
-            f"    EM factor models, Asian market microstructure, China/India/HK equity\n\n"
-            f"  0.60–0.80  relevant — Bursa Malaysia or Malaysian equity specific\n"
-            f"    Examples: KLSE stock returns, Malaysian market anomalies,\n"
-            f"    Bursa market microstructure, BNM policy effects, FBM KLCI factors\n\n"
-            f"  0.80–1.00  direct — actionable KLSE intelligence\n"
-            f"    Examples: Specific KLSE stock analysis, EPF flow studies,\n"
-            f"    CPO-plantation correlation, GLC ownership effects, Bursa volatility\n\n"
+            f"{settings.RELEVANCE_SCALE}\n\n"
             f"Return JSON only:\n"
             f'{{"relevance": 0.0, "category": "irrelevant|generic|partial|relevant|direct", "reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
-                "You are a relevance classifier for a Bursa Malaysia equity research system. "
+                f"You are a relevance classifier for a {settings.RELEVANCE_TARGET} research system. "
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
@@ -317,7 +296,7 @@ Return a JSON array of short query strings (6-10 words each). Example:
     def brave_search_hunt(self, topic: str, domain: str = "price_action") -> dict:
         """Search Brave for research articles on a topic, filter to quality domains, ingest top 3.
 
-        Query template: "{topic} trading strategy research Bursa Malaysia"
+        Query template: "{topic} trading strategy research {settings.MARKET_NAME}"
         Domain filter: .edu, .ac., ssrn.com, researchgate.net, papers.ssrn.com
 
         Returns {"papers_found": int, "papers_ingested": int, "titles": list}
@@ -329,7 +308,7 @@ Return a JSON array of short query strings (6-10 words each). Example:
             self.log_daemon("WARN", "ResearchHunter.brave_search_hunt: BRAVE_SEARCH_API_KEY not set — skipping")
             return {"papers_found": 0, "papers_ingested": 0, "titles": []}
 
-        query = f"{topic} trading strategy research Bursa Malaysia"
+        query = f"{topic} trading strategy research {settings.MARKET_NAME}"
         self.log_daemon("INFO", f"ResearchHunter.brave_search_hunt: '{query}'")
 
         try:

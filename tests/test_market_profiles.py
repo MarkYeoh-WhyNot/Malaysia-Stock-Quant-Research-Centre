@@ -134,5 +134,8 @@ def test_loader_modes_complete():
                      "TICKER_REGEX", "TICKER_EXAMPLE", "DATA_BACKEND", "BENCHMARK_SYMBOL",
                      "BLOCKED_MODES", "UNAVAILABLE_DATA_KEYWORDS", "MARKET_BRIEF",
                      "RED_TEAM_ATTACKS", "CONCENTRATION_SECTOR", "ENABLED_JOBS",
-                     "GATE_OVERRIDES", "trade_cost", "slippage_tier", "size_units"):
+                     "GATE_OVERRIDES", "trade_cost", "slippage_tier", "size_units",
+                     "RESEARCH_ANGLES", "ANGLE_KEYWORDS", "RESEARCH_QUERY_PERSONA",
+                     "ALPHA_SEED_SYSTEM", "DATA_SOURCES_EXAMPLE", "RELEVANCE_TARGET",
+                     "RELEVANCE_SCALE"):
             assert hasattr(p, attr), f"{mode} profile missing {attr}"

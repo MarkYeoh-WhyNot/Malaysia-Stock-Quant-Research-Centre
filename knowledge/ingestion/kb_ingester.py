@@ -8,13 +8,16 @@ from urllib.parse import urlparse
 import aiohttp
 import requests as _requests
 from agents.base_agent import BaseAgent
+from config import settings
 from config.settings import MODEL_FAST, MODEL_MAIN, BRAVE_SEARCH_API_KEY
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
-SYSTEM = """You are a quantitative finance knowledge engineer. Extract structured information
-from research documents to build a searchable knowledge base for Bursa Malaysia equity research."""
+SYSTEM = (
+    "You are a quantitative finance knowledge engineer. Extract structured information "
+    f"from research documents to build a searchable knowledge base for {settings.MARKET_NAME} research."
+)
 
 # Single unified taxonomy — matches DiversityEngine's 8 research angles exactly.
 # The domain field in kb_documents now uses these values so check_balance() can
@@ -26,7 +29,7 @@ VALID_DOMAINS = {
     "institutional",         # EPF flows, GLC ownership, institutional trading patterns
     "macro",                 # OPR cycle, MYR macro impacts on sector returns
     "commodity",             # CPO price impact on plantation stocks
-    "sector_rotation",       # KLSE sector rotation, defensive vs cyclical
+    "sector_rotation",       # sector rotation, defensive vs cyclical
     "behavioural",           # Investor behaviour biases, market anomalies
     "statistical_modelling", # GARCH/ARIMA, factor models, ML, cointegration, HMM, Monte Carlo
 }
@@ -224,8 +227,9 @@ class KBIngester(BaseAgent):
 
     def _summarise(self, content: str, title: str, domain: str) -> dict:
         truncated = content[:6000]
-        prompt = f"""Analyse this research document for a Bursa Malaysia (KLSE) quantitative
-equity research knowledge base.
+        ticker_example = settings.TICKER_EXAMPLE.split(" (")[0]
+        prompt = f"""Analyse this research document for a {settings.MARKET_NAME} quantitative
+research knowledge base.
 
 Title: {title}
 Domain: {domain}
@@ -235,14 +239,14 @@ Content (truncated):
 
 Return JSON:
 {{
-  "summary": "3-5 sentence summary focused on relevance to Bursa Malaysia equity alpha research",
+  "summary": "3-5 sentence summary focused on relevance to {settings.MARKET_NAME} alpha research",
   "tags": ["tag1", "tag2"],
   "key_concepts": [
     {{"name": "...", "description": "...", "domain": "{domain}"}}
   ],
   "trading_relevance": 0.0,
   "strategy_types": ["momentum|mean_reversion|value|quality|event_driven|macro|technical|fundamental"],
-  "applicable_tickers": ["1155.KL"],
+  "applicable_tickers": ["{ticker_example}"],
   "time_horizon": "intraday|swing|position|multi-year",
   "data_requirements": ["..."]
 }}"""
@@ -342,7 +346,8 @@ Return JSON:
     def _link_by_tags(self, doc_id: int, tags: list):
         """Create doc-to-doc links for every shared tag between this doc and existing docs.
 
-        Tags are short normalized strings (e.g. ["momentum", "EPF", "Bursa Malaysia"]).
+        Tags are short normalized strings (e.g. ["momentum", "EPF"] for Bursa or
+        ["momentum", "on-chain"] for crypto).
         For each tag, finds other documents that contain that same tag anywhere in their
         tags JSON, title, or summary, then creates a 'shared_tag' kb_links row.
         Called once after a document is fully saved with its tags.
@@ -388,46 +393,30 @@ Return JSON:
         return "direct"
 
     def relevance_check(self, title: str, content_preview: str) -> dict:
-        """Call Claude Haiku to rate Bursa Malaysia equity relevance (0.0–1.0).
+        """Call Claude Haiku to rate this market's relevance (0.0–1.0).
 
         Returns {'relevance': float, 'category': str, 'reason': str}.
         Category is one of: irrelevant / generic / partial / relevant / direct.
         Defaults to {'relevance': 1.0, 'category': 'relevant', 'reason': 'check_failed'}
         on any error so that ingest is never blocked by a transient API issue.
 
-        5-tier scoring:
-          0.00–0.20  irrelevant  — wrong market/asset class, non-financial, crypto, forex, CFD
-          0.20–0.40  generic     — transferable finance concepts but no EM/Asian context
-          0.40–0.60  partial     — ASEAN / emerging-market / Asian market context
-          0.60–0.80  relevant    — Bursa Malaysia or Malaysian equity specific
-          0.80–1.00  direct      — actionable KLSE intelligence (specific stocks, EPF, CPO, BNM)
+        The target market and 5-tier scale text come from the active market
+        profile (settings.RELEVANCE_TARGET / settings.RELEVANCE_SCALE) — this
+        is the same scale ResearchHunter._is_relevant uses, kept in one place
+        per market instead of two hardcoded near-duplicates.
         """
         prompt = (
-            f"Rate this content's relevance to Bursa Malaysia equity trading.\n\n"
+            f"Rate this content's relevance to {settings.RELEVANCE_TARGET}.\n\n"
             f"Title: {title}\n"
             f"Content preview: {content_preview[:500]}\n\n"
             f"Use this 5-tier scale:\n\n"
-            f"  0.00–0.20  irrelevant — completely wrong market or asset class\n"
-            f"    Examples: Australian CFD trading, cryptocurrency, forex pairs,\n"
-            f"    navigation/login pages, cybersecurity, non-financial content\n\n"
-            f"  0.20–0.40  generic — general finance, transferable concepts only\n"
-            f"    Examples: General momentum theory, generic valuation frameworks,\n"
-            f"    global market mechanics with no Asian or EM context\n\n"
-            f"  0.40–0.60  partial — emerging market or Asian market context\n"
-            f"    Examples: ASEAN equity research, Southeast Asia investment strategies,\n"
-            f"    EM factor models, regional market microstructure\n\n"
-            f"  0.60–0.80  relevant — Bursa Malaysia or Malaysian equity specific\n"
-            f"    Examples: KLSE analysis, Malaysian stock strategies,\n"
-            f"    Bursa market structure, BNM policy effects, FBM KLCI\n\n"
-            f"  0.80–1.00  direct — actionable KLSE intelligence\n"
-            f"    Examples: Specific stock analysis (.KL tickers), KLCI constituent data,\n"
-            f"    EPF flow data, CPO price impact on plantation stocks, Bursa announcements\n\n"
+            f"{settings.RELEVANCE_SCALE}\n\n"
             f"Return JSON only:\n"
             f'{{"relevance": 0.0, "category": "irrelevant|generic|partial|relevant|direct", "reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
-                "You are a relevance classifier for a Bursa Malaysia equity research system. "
+                f"You are a relevance classifier for a {settings.RELEVANCE_TARGET} research system. "
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
@@ -507,9 +496,9 @@ Return JSON:
         # ── Seeding logic — tier-aware ──────────────────────────────────────────
         #
         # irrelevant (<0.20): save only — no seeding
-        # generic    (0.20–0.40): save only — no seeding (transferable but not Bursa-specific)
-        # partial    (0.40–0.60): seed with confidence cap 0.65 (ASEAN/EM context, lower weight)
-        # relevant   (0.60–0.80): seed normally (Bursa-specific)
+        # generic    (0.20–0.40): save only — no seeding (transferable but not market-specific)
+        # partial    (0.40–0.60): seed with confidence cap 0.65 (adjacent context, lower weight)
+        # relevant   (0.60–0.80): seed normally (this market's RELEVANCE_TARGET)
         # direct     (0.80+):     seed immediately, priority processing
         #
         if relevance_category in ("irrelevant", "generic"):
@@ -580,33 +569,24 @@ Return JSON:
         Returns one of the 8 unified angle names. Falls back to 'price_action' on error.
         Always updates the DB record with the classified domain.
         """
+        # Angle descriptions come from the active market's RESEARCH_ANGLES — the
+        # same content DiversityEngine hunts against — instead of a third
+        # hardcoded copy of the taxonomy.
         domain_list = "\n".join(
-            f"  {d}" for d in INFER_DOMAINS
+            f"  {d}: {settings.RESEARCH_ANGLES.get(d, {}).get('description', d)}"
+            for d in INFER_DOMAINS
         )
         prompt = (
-            f"Classify this Bursa Malaysia equity research document into exactly one research angle.\n\n"
+            f"Classify this {settings.MARKET_NAME} research document into exactly one research angle.\n\n"
             f"Title: {title}\n"
             f"Summary: {summary[:600]}\n\n"
             f"Available angles:\n{domain_list}\n\n"
-            f"Angle descriptions:\n"
-            f"  price_action: technical analysis, momentum, moving averages, RSI, MACD, chart patterns\n"
-            f"  fundamental: value investing, earnings quality, P/E, ROE, dividend yield\n"
-            f"  event_driven: post-earnings drift, dividend capture, corporate events\n"
-            f"  institutional: EPF/GLC ownership, pension fund flows, index rebalancing\n"
-            f"  macro: OPR cycle, BNM policy, macroeconomic sector impacts\n"
-            f"  commodity: CPO/plantation stocks, energy sector, commodity correlations\n"
-            f"  sector_rotation: sector momentum, cyclical/defensive rotation, industry trends\n"
-            f"  behavioural: investor sentiment, anomalies, behavioural biases, herding\n"
-            f"  statistical_modelling: GARCH, ARIMA, Hidden Markov Models, Random Matrix Theory,\n"
-            f"    factor models, PCA, regression, machine learning for finance, cointegration,\n"
-            f"    stationarity, Kalman filter, Monte Carlo, Bayesian methods, time series analysis,\n"
-            f"    clustering algorithms, statistical arbitrage mathematics\n\n"
             f'Return JSON only: {{"domain": "<angle-name>", "confidence": 0.0, '
             f'"reason": "one sentence"}}'
         )
         try:
             result = self.call_claude_json(
-                "You are a knowledge base classifier for a Bursa Malaysia equity research system. "
+                f"You are a knowledge base classifier for a {settings.MARKET_NAME} research system. "
                 "Return only the requested JSON — no other text.",
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
