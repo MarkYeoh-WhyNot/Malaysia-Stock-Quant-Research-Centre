@@ -357,6 +357,92 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # Phase 1.1: versioned transaction-cost schedules (audit §3.2). Costs are
+        # date-dependent on Bursa (stamp-duty remission 0.15%→0.10% from
+        # 2023-07-13). Store schedules by effective date so a backtest spanning
+        # the boundary can apply the rate that was actually in force.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS fee_schedules (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                market            TEXT NOT NULL,
+                instrument_type   TEXT NOT NULL,
+                effective_from    TEXT NOT NULL,
+                effective_to      TEXT,
+                settlement_cycle  TEXT,
+                board_lot         INTEGER,
+                commission_rate   REAL,
+                commission_min_fee REAL,
+                clearing_rate     REAL,
+                clearing_cap      REAL,
+                stamp_duty_rate   REAL,
+                stamp_duty_cap    REAL,
+                notes             TEXT,
+                created_at        TEXT DEFAULT (datetime('now')),
+                UNIQUE(market, instrument_type, effective_from)
+            )
+        """)
+        # Seed the two known Bursa listed-equity schedules (idempotent).
+        conn.executemany("""
+            INSERT OR IGNORE INTO fee_schedules
+              (market, instrument_type, effective_from, effective_to,
+               settlement_cycle, board_lot, commission_rate, clearing_rate,
+               clearing_cap, stamp_duty_rate, stamp_duty_cap, notes)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, [
+            ("KLSE", "listed_equity", "2000-01-01", "2023-07-12",
+             "T+2", 100, 0.0008, 0.0003, 1000.0, 0.0015, 200.0,
+             "Pre-remission statutory stamp duty 0.15%, cap RM200 "
+             "(T+2 from 2019-04-29; T+3 before, not modelled separately)"),
+            ("KLSE", "listed_equity", "2023-07-13", "2028-07-12",
+             "T+2", 100, 0.0008, 0.0003, 1000.0, 0.0010, 1000.0,
+             "Remitted stamp duty 0.10%, cap RM1,000 per contract note"),
+        ])
+
+        # Phase 1.2: data-quality checks + Data Confidence Score (audit §6).
+        # One row per (idea, ticker) evaluation; confidence_score gates promotion.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS data_quality_checks (
+                id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+                idea_id               INTEGER,
+                ticker                TEXT NOT NULL,
+                source                TEXT,
+                bars                  INTEGER,
+                price_completeness    REAL,
+                volume_completeness   REAL,
+                stale_price_frac      REAL,
+                missing_day_frac      REAL,
+                corporate_action_flag INTEGER DEFAULT 0,
+                confidence_score      REAL,
+                passed                INTEGER,
+                notes                 TEXT,
+                created_at            TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dq_idea ON data_quality_checks(idea_id)")
+
+        # Phase 1.4: corporate actions (audit §7.2) — bonus/rights/splits/divs.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS corporate_actions (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker            TEXT NOT NULL,
+                event_date        TEXT NOT NULL,
+                ex_date           TEXT,
+                event_type        TEXT NOT NULL,
+                cash_amount       REAL,
+                ratio_numerator   REAL,
+                ratio_denominator REAL,
+                adjustment_factor REAL,
+                source            TEXT,
+                validation_status TEXT,
+                notes             TEXT,
+                created_at        TEXT DEFAULT (datetime('now')),
+                UNIQUE(ticker, event_date, event_type)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ca_ticker ON corporate_actions(ticker)")
+
         # Backtest Lab: equity curve / drawdown series cache
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_series (

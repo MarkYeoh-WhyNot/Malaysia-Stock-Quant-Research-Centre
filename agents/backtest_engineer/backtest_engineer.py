@@ -369,11 +369,23 @@ Rules:
             adv_value = float((tail["close"] * tail["volume"]).mean())
         tier = bursa_slippage_tier(adv_value)
         notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
+        # Phase 1.1: use the fee schedule in force at the backtest's midpoint so a
+        # run spanning the 2023-07-13 stamp-duty remission applies the rate that
+        # actually applied (single-schedule approximation per run). Falls back to
+        # the current constants when no dated schedule is available.
+        as_of = None
+        if len(df):
+            try:
+                as_of = df.index[len(df) // 2].strftime("%Y-%m-%d")
+            except Exception:
+                as_of = None
+        from data.fee_schedule import bursa_trade_cost_asof
         return {
-            "buy":  bursa_trade_cost(notional, "buy", tier) / notional,
-            "sell": bursa_trade_cost(notional, "sell", tier) / notional,
+            "buy":  bursa_trade_cost_asof(notional, "buy", tier, as_of) / notional,
+            "sell": bursa_trade_cost_asof(notional, "sell", tier, as_of) / notional,
             "tier": tier,
             "adv_value_myr": adv_value,
+            "fee_as_of": as_of,
         }
 
     def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str) -> dict:
@@ -1460,6 +1472,65 @@ Return JSON only:
 
     # ── Main backtest pipeline ────────────────────────────────────────────────
 
+    def _data_quality_gate(self, idea_id: int, symbol: str,
+                           df: pd.DataFrame, interval: str) -> dict:
+        """Gate DQ (Phase 1.2/1.3): score the price data, flag suspected
+        corporate-action gaps, persist to data_quality_checks, and decide pass.
+
+        Returns {"passed": bool, "confidence_score": float, "notes": str}.
+        Fails open (passes) if the gate is disabled or scoring errors.
+        """
+        from data.data_quality import (
+            compute_data_confidence, detect_corporate_action_anomalies)
+        try:
+            dq = compute_data_confidence(df, interval)
+            anomalies = detect_corporate_action_anomalies(
+                df, GATE_CONFIG.dq_corp_action_gap)
+        except Exception as _dq_exc:
+            self.log_daemon("WARN", f"[{idea_id}] Gate DQ scoring failed: {_dq_exc}")
+            return {"passed": True, "confidence_score": 0.0, "notes": "dq error (fail-open)"}
+
+        score = dq["confidence_score"]
+        # Each suspected unhandled corporate action dents confidence.
+        if anomalies:
+            score = max(0.0, score - 10.0 * len(anomalies))
+            dq["notes"] += f"; {len(anomalies)} suspected corp-action gap(s)"
+
+        passed = (not GATE_CONFIG.dq_gate_enabled) or (score >= GATE_CONFIG.dq_min_confidence)
+
+        try:
+            with db_session() as conn:
+                conn.execute("""
+                    INSERT INTO data_quality_checks
+                      (idea_id, ticker, source, bars, price_completeness,
+                       volume_completeness, stale_price_frac, missing_day_frac,
+                       corporate_action_flag, confidence_score, passed, notes)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (idea_id, symbol, "yfinance", dq["bars"],
+                      dq["price_completeness"], dq["volume_completeness"],
+                      dq["stale_price_frac"], dq["missing_day_frac"],
+                      1 if anomalies else 0, round(score, 1),
+                      1 if passed else 0, dq["notes"]))
+                for a in anomalies:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO corporate_actions
+                          (ticker, event_date, event_type, adjustment_factor,
+                           source, validation_status, notes)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (symbol, a["date"], "suspected_gap",
+                          1.0 + a["pct_change"], "gap_detector", "suspected",
+                          f"{a['pct_change']:+.1%} overnight move "
+                          f"({a['prev_close']}→{a['close']})"))
+        except Exception as _w_exc:
+            self.log_daemon("WARN", f"[{idea_id}] Gate DQ persist failed: {_w_exc}")
+
+        if not passed:
+            self.log_daemon(
+                "WARN", f"[{idea_id}] Gate DQ FAIL: {symbol} confidence "
+                        f"{score}/100 ({dq['notes']})")
+        return {"passed": passed, "confidence_score": round(score, 1),
+                "notes": dq["notes"]}
+
     def _reject_idea(self, idea_id: int, row, run_type: str, reason: str,
                      reason_category: str = "stage2") -> dict:
         """Uniform rejection: backtest_runs stub row, alpha_ideas status,
@@ -1691,6 +1762,15 @@ Return JSON only:
                 )
             return {"error": msg, "idea_id": idea_id, "symbol": symbol,
                     "gate3_pass": False}
+
+        # ── Gate DQ: data-quality gate (Phase 1.2/1.3) ────────────────────────
+        # Reject before expensive backtesting if the price data can't be trusted.
+        dq = self._data_quality_gate(idea_id, symbol, df, interval)
+        if not dq["passed"]:
+            msg = (f"Gate DQ: data confidence {dq['confidence_score']}/100 "
+                   f"< {GATE_CONFIG.dq_min_confidence} ({dq['notes']})")
+            return self._reject_idea(idea_id, row, "data_quality", msg,
+                                     reason_category="data_quality")
 
         self._log_progress(idea_id, 30, f"Computing factor signals ({symbol})")
         # Classify holding period for appropriate thresholds and warnings

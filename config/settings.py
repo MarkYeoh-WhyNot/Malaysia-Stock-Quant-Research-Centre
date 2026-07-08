@@ -197,6 +197,14 @@ class GateConfig:
         "MEDIUM_TERM": 60,    # ~1 quarter of daily bars
         "LONG_TERM":   120,   # low-turnover needs a longer live look
     })
+    # Gate DQ — data-quality gate (audit §6.4). A strategy is not backtested
+    # unless its price data clears a minimum Data Confidence Score (0–100). Clean
+    # daily blue-chip data scores ~95–100; thin/gappy/stale series score low.
+    dq_gate_enabled: bool               = True
+    dq_min_confidence: float            = 80.0
+    # Suspected-corporate-action gap threshold (unhandled bonus/rights issues):
+    # an overnight move beyond this magnitude is flagged and dents confidence.
+    dq_corp_action_gap: float           = 0.25
     # Benchmark-relative gate (audit §8.4): a strategy must beat a simple KLCI
     # baseline after costs, else its complexity is not justified. Gates on excess
     # annual return vs the equal-weight KLCI (the harder of the two baselines);
