@@ -10,40 +10,66 @@ import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-COMMODITY_WATCHLIST = {
-    "CPO=F": {
-        "name": "Crude Palm Oil",
-        "threshold_pct": 2.0,
-        "affected_sectors": ["plantation"],
-        "affected_tickers": ["5285.KL", "2291.KL", "5182.KL", "1961.KL", "5069.KL", "2445.KL"],
-        "lag_days": 3,
-        "event_type": "cpo_move",
-    },
-    "BZ=F": {
-        "name": "Brent Crude Oil",
-        "threshold_pct": 3.0,
-        "affected_sectors": ["oil_gas"],
-        "affected_tickers": ["5398.KL", "5183.KL", "6033.KL", "7277.KL"],
-        "lag_days": 3,
-        "event_type": "crude_oil_move",
-    },
-    "GC=F": {
-        "name": "Gold",
-        "threshold_pct": 2.0,
-        "affected_sectors": ["mining"],
-        "affected_tickers": [],
-        "lag_days": 1,
-        "event_type": "gold_move",
-    },
-    "CL=F": {
-        "name": "WTI Crude Oil",
-        "threshold_pct": 3.0,
-        "affected_sectors": ["oil_gas"],
-        "affected_tickers": ["5398.KL", "5183.KL", "6033.KL", "7277.KL"],
-        "lag_days": 3,
-        "event_type": "crude_oil_move",
-    },
-}
+from config.settings import MARKET_MODE
+
+# Watchlist is market-specific. Bursa watches commodities that drive KLSE
+# sectors; crypto watches the two majors whose big moves drive the whole
+# market (BTC/ETH beta). Both use yfinance tickers — BTC-USD/ETH-USD are
+# available there, so this monitor needs no ccxt path.
+if MARKET_MODE == "crypto":
+    COMMODITY_WATCHLIST = {
+        "BTC-USD": {
+            "name": "Bitcoin",
+            "threshold_pct": 5.0,
+            "affected_sectors": ["crypto_majors"],
+            "affected_tickers": ["ETH/USDT", "SOL/USDT", "AVAX/USDT", "LINK/USDT"],
+            "lag_days": 2,
+            "event_type": "btc_move",
+        },
+        "ETH-USD": {
+            "name": "Ethereum",
+            "threshold_pct": 6.0,
+            "affected_sectors": ["smart_contract", "defi", "layer2"],
+            "affected_tickers": ["ARB/USDT", "OP/USDT", "UNI/USDT", "AAVE/USDT"],
+            "lag_days": 2,
+            "event_type": "eth_move",
+        },
+    }
+else:
+    COMMODITY_WATCHLIST = {
+        "CPO=F": {
+            "name": "Crude Palm Oil",
+            "threshold_pct": 2.0,
+            "affected_sectors": ["plantation"],
+            "affected_tickers": ["5285.KL", "2291.KL", "5182.KL", "1961.KL", "5069.KL", "2445.KL"],
+            "lag_days": 3,
+            "event_type": "cpo_move",
+        },
+        "BZ=F": {
+            "name": "Brent Crude Oil",
+            "threshold_pct": 3.0,
+            "affected_sectors": ["oil_gas"],
+            "affected_tickers": ["5398.KL", "5183.KL", "6033.KL", "7277.KL"],
+            "lag_days": 3,
+            "event_type": "crude_oil_move",
+        },
+        "GC=F": {
+            "name": "Gold",
+            "threshold_pct": 2.0,
+            "affected_sectors": ["mining"],
+            "affected_tickers": [],
+            "lag_days": 1,
+            "event_type": "gold_move",
+        },
+        "CL=F": {
+            "name": "WTI Crude Oil",
+            "threshold_pct": 3.0,
+            "affected_sectors": ["oil_gas"],
+            "affected_tickers": ["5398.KL", "5183.KL", "6033.KL", "7277.KL"],
+            "lag_days": 3,
+            "event_type": "crude_oil_move",
+        },
+    }
 
 
 class CommodityMonitor:

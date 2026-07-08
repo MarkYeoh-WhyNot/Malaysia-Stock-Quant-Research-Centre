@@ -205,16 +205,19 @@ JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that r
 CONCENTRATION_SECTOR = "Smart Contract"
 
 # ── Daemon scheduled jobs enabled for this market ─────────────────────────────
-# Bursa-specific scrapers/monitors (KLSE screener, i3investor analyst coverage,
-# CPO, EPF) have no crypto counterpart in v1 — everything else (briefing, KB
-# hunt, graph maintenance, DB maintenance, vault export, screener ideas via
-# fundamental scanner is KLSE-bound too) is filtered by this allowlist.
+# Allowlist enforced inside ResearchDaemon._job_due(). Bursa-specific scrapers/
+# monitors (klse_refresh, screener_ideas via the KLSE fundamental scanner,
+# cpo_daily, analyst_monitor) have no crypto counterpart in v1 and never fire
+# in this container. Market-agnostic jobs (KB hunt, alpha seeds, graph/vault/DB
+# maintenance, briefing, funnel report) run normally against crypto's own DB.
 ENABLED_JOBS = {
     "morning_briefing",
-    "db_maintenance",
+    "kb_hunt",
+    "alpha_seeds",
     "graph_maintain",
     "vault_export",
-    "kb_hunt",
+    "funnel_report",
+    "db_maintenance",
 }
 
 # GateConfig overrides for this market: crypto Sharpe/vol norms differ and the
