@@ -1041,10 +1041,19 @@ def kb_search(q: str, domain: Optional[str] = None, limit: int = 20):
 
 
 @app.get("/api/kb/graph")
-def kb_graph(limit: int = 500, domain: Optional[str] = None):
-    """Nodes + typed edges for the knowledge-graph view."""
+def kb_graph(limit: int = 500, domain: Optional[str] = None,
+             since: Optional[str] = None):
+    """Nodes + typed edges for the knowledge-graph view.
+    Pass since=<as_of from a previous response> for a live delta."""
     from knowledge.graph.store import graph_json
-    return graph_json(limit=limit, domain=domain)
+    return graph_json(limit=limit, domain=domain, since=since)
+
+
+@app.get("/api/kb/graph/subgraph")
+def kb_subgraph(node_id: int, hops: int = 2):
+    """K-hop neighborhood of a node as a flat edge table (data extraction)."""
+    from knowledge.graph.store import subgraph_json
+    return subgraph_json(node_id=node_id, hops=min(hops, 4))
 
 
 @app.get("/api/kb/concepts")

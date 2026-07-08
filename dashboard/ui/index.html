@@ -416,6 +416,10 @@ svg text{font-family:'Courier New',monospace}
 [data-tip]:hover::after{opacity:1}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
 </head>
 <body>
 <div id="tt"><div class="tt-title" id="tt-title"></div><div class="tt-body" id="tt-body"></div></div>
@@ -1246,33 +1250,39 @@ svg text{font-family:'Courier New',monospace}
   <div id="kb-graph-tab" class="tab-content">
     <div class="panel" style="margin-top:0">
       <div class="panel-head">
-        <span class="panel-title">Knowledge Graph</span>
+        <span class="panel-title">Knowledge Graph
+          <span id="kb-graph-live" style="color:var(--green);font-size:9px;margin-left:8px">● LIVE</span>
+        </span>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <select id="kb-graph-domain" onchange="loadKBGraph()" style="font-size:10px;padding:3px 6px">
+          <input type="text" id="kb-graph-search" placeholder="GraphRAG search…"
+                 style="font-size:10px;padding:3px 8px;width:170px"
+                 onkeydown="if(event.key==='Enter')kbGraphSearch()">
+          <select id="kb-graph-domain" onchange="loadKBGraph(true)" style="font-size:10px;padding:3px 6px">
             <option value="">All Domains</option>
           </select>
-          <select id="kb-graph-limit" onchange="loadKBGraph()" style="font-size:10px;padding:3px 6px">
+          <select id="kb-graph-limit" onchange="loadKBGraph(true)" style="font-size:10px;padding:3px 6px">
             <option value="150">150 nodes</option>
             <option value="300" selected>300 nodes</option>
             <option value="500">500 nodes</option>
           </select>
-          <button class="btn btn-sm" onclick="loadKBGraph()">↻ Reload</button>
-          <button class="btn btn-sm" onclick="kbGraphResetView()">⤢ Fit</button>
+          <button class="btn btn-sm" onclick="loadKBGraph(true)">↻ Reload</button>
+          <button class="btn btn-sm" onclick="if(_cy)_cy.fit(undefined,30)">⤢ Fit</button>
+          <button class="btn btn-sm" onclick="kbGraphExport('json')">⬇ JSON</button>
+          <button class="btn btn-sm" onclick="kbGraphExport('nodes')">⬇ Nodes CSV</button>
+          <button class="btn btn-sm" onclick="kbGraphExport('edges')">⬇ Edges CSV</button>
         </div>
       </div>
 
       <div id="kb-graph-legend" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:9px;color:var(--muted2)"></div>
 
       <div id="kb-graph-container" style="position:relative;height:560px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;overflow:hidden">
-        <canvas id="kb-graph-canvas" style="display:block;width:100%;height:100%;cursor:grab"></canvas>
-        <div id="kb-graph-tooltip" style="position:absolute;display:none;pointer-events:none;
-             background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:5px 8px;
-             font-size:10px;color:var(--text);max-width:220px;z-index:5;box-shadow:0 2px 8px rgba(0,0,0,.4)"></div>
+        <div id="kb-cy" style="width:100%;height:100%"></div>
         <div id="kb-graph-empty" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;
              color:var(--muted);font-size:12px">No graph data yet — ingest documents or wait for the daemon's graph_maintain job.</div>
       </div>
 
       <div id="kb-graph-detail" style="display:none;margin-top:10px;background:var(--bg3);border-radius:4px;padding:12px"></div>
+      <div id="kb-graph-subgraph" style="display:none;margin-top:10px;background:var(--bg3);border-radius:4px;padding:12px"></div>
     </div>
   </div>
 
@@ -2779,10 +2789,12 @@ async function updateKBDomain(id, domain, selectEl) {
   else { showToast(`Domain update failed`, true); loadKBDocs(); }
 }
 
-// ── KB Graph View ────────────────────────────────────────────────────────────
-// Self-contained force-directed layout (no external graph library) rendered
-// on a canvas: spring edges + node repulsion + center gravity, cooled down
-// over ~2s then frozen; drag/pan/zoom/hover/click all hand-rolled.
+// ── KB Graph View (Cytoscape, live) ──────────────────────────────────────────
+// Force-directed interactive graph with live delta updates: polls
+// /api/kb/graph?since=<as_of> every 25s and merges new nodes/edges into the
+// running instance (layout runs only on the new neighborhood), with an hourly
+// full refresh to reconcile deletions. Extraction tools: JSON/CSV export,
+// k-hop subgraph tables, GraphRAG search highlighting.
 const KB_GRAPH_COLORS = {
   note: '#06b6d4', concept: '#8b5cf6', technique: '#3b82f6',
   idea: '#10b981', rejection_pattern: '#ef4444',
@@ -2794,16 +2806,74 @@ const KB_GRAPH_EDGE_COLORS = {
   shared_tag: '#64748b', mentions: '#64748b',
 };
 
-let _kbGraph = null; // { nodes, edges, byId, view:{x,y,scale}, dragging, selected }
+let _cy = null;
+let _cyAsOf = null;          // last graph_json as_of for delta polling
+let _cyPollTimer = null;
+let _cyLastFull = 0;         // ms timestamp of last full refresh
+const CY_POLL_MS = 25000;
+const CY_FULL_REFRESH_MS = 3600000;
 
-function kbGraphResetView() {
-  if (!_kbGraph) return;
-  const c = document.getElementById('kb-graph-canvas');
-  _kbGraph.view = { x: c.clientWidth / 2, y: c.clientHeight / 2, scale: 1 };
-  kbGraphDraw();
+function _cyStyles() {
+  return [
+    { selector: 'node', style: {
+        'background-color': ele => KB_GRAPH_COLORS[ele.data('type')] || '#64748b',
+        'label': 'data(label)',
+        'color': '#e2e8f0',
+        'font-size': '9px',
+        'text-valign': 'bottom',
+        'text-margin-y': 4,
+        'width': ele => 12 + Math.min(20, ele.degree() * 2),
+        'height': ele => 12 + Math.min(20, ele.degree() * 2),
+        'text-max-width': '110px',
+        'text-wrap': 'ellipsis',
+    }},
+    { selector: 'edge', style: {
+        'line-color': ele => KB_GRAPH_EDGE_COLORS[ele.data('relation')] || '#64748b',
+        'width': ele => Math.max(1, (ele.data('weight') || 0.5) * 3),
+        'opacity': 0.55,
+        'curve-style': 'haystack',
+    }},
+    { selector: 'node:selected', style: {
+        'border-width': 2, 'border-color': '#e2e8f0',
+    }},
+    { selector: '.cy-dim', style: { 'opacity': 0.12 } },
+    { selector: '.cy-hit', style: {
+        'border-width': 3, 'border-color': '#f59e0b', 'opacity': 1,
+    }},
+    { selector: '.cy-new', style: {
+        'border-width': 2, 'border-color': '#10b981',
+    }},
+  ];
 }
 
-async function loadKBGraph() {
+function _cyLayoutOpts(eles) {
+  const base = (typeof cytoscape !== 'undefined' && cytoscape('layout', 'fcose'))
+    ? { name: 'fcose', quality: 'default', animate: false, randomize: false,
+        nodeRepulsion: 6000, idealEdgeLength: 80 }
+    : { name: 'cose', animate: false };
+  if (eles) base.eles = eles;
+  base.fit = !eles;      // only fit viewport on full loads, never on deltas
+  base.padding = 30;
+  return base;
+}
+
+function _cyNodePayload(n) {
+  return { group: 'nodes', data: {
+      id: 'n' + n.id, nid: n.id, label: (n.title || n.slug || '').slice(0, 40),
+      title: n.title, slug: n.slug, type: n.type, domain: n.domain,
+      summary: n.summary || '',
+  }};
+}
+
+function _cyEdgePayload(e, i) {
+  return { group: 'edges', data: {
+      id: 'e' + e.source + '-' + e.target + '-' + e.relation,
+      source: 'n' + e.source, target: 'n' + e.target,
+      relation: e.relation, weight: e.weight,
+  }};
+}
+
+async function loadKBGraph(fullRefresh) {
   const domain = document.getElementById('kb-graph-domain')?.value || '';
   const limit = document.getElementById('kb-graph-limit')?.value || 300;
   const d = await apiFetch(`/kb/graph?limit=${limit}&domain=${domain}`);
@@ -2813,17 +2883,18 @@ async function loadKBGraph() {
     return;
   }
   if (empty) empty.style.display = 'none';
+  _cyAsOf = d.as_of;
+  _cyLastFull = Date.now();
 
-  // Populate domain filter once from the full node set (kept simple: derive
-  // from whatever's currently loaded rather than a separate stats call)
+  // domain filter options (derive once)
   const domSel = document.getElementById('kb-graph-domain');
   if (domSel && domSel.options.length <= 1) {
     const doms = [...new Set(d.nodes.map(n => n.domain).filter(Boolean))].sort();
     domSel.innerHTML = '<option value="">All Domains</option>' +
-      doms.map(dm => `<option value="${esc(dm)}">${esc(dm)}</option>`).join('');
+      doms.map(dm => `<option value="${escAttr(dm)}">${esc(dm)}</option>`).join('');
   }
 
-  // Legend: node types present + relation types present
+  // legend
   const typesPresent = [...new Set(d.nodes.map(n => n.type))];
   const relsPresent = [...new Set(d.edges.map(e => e.relation))];
   document.getElementById('kb-graph-legend').innerHTML =
@@ -2833,257 +2904,98 @@ async function loadKBGraph() {
     relsPresent.map(r => `<span><span style="display:inline-block;width:14px;height:2px;
       background:${KB_GRAPH_EDGE_COLORS[r]||'#64748b'};margin-right:4px;vertical-align:middle"></span>${r}</span>`).join('');
 
-  const canvas = document.getElementById('kb-graph-canvas');
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth, h = canvas.clientHeight;
-  canvas.width = w * dpr; canvas.height = h * dpr;
+  const nodeIds = new Set(d.nodes.map(n => n.id));
+  const elements = [
+    ...d.nodes.map(_cyNodePayload),
+    ...d.edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+              .map(_cyEdgePayload),
+  ];
 
-  const degree = {};
-  d.edges.forEach(e => { degree[e.source] = (degree[e.source]||0)+1; degree[e.target] = (degree[e.target]||0)+1; });
+  if (_cy) { _cy.destroy(); _cy = null; }
+  _cy = cytoscape({
+    container: document.getElementById('kb-cy'),
+    elements, style: _cyStyles(),
+    wheelSensitivity: 0.3,
+  });
+  _cy.layout(_cyLayoutOpts()).run();
 
-  const nodes = d.nodes.map(n => ({
-    ...n,
-    x: (Math.random() - 0.5) * 400, y: (Math.random() - 0.5) * 400,
-    vx: 0, vy: 0, r: Math.min(16, 4 + Math.sqrt(degree[n.id] || 0) * 3),
-  }));
-  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const edges = d.edges.filter(e => byId[e.source] && byId[e.target]);
+  _cy.on('tap', 'node', evt => kbGraphShowNode(evt.target));
+  _cy.on('tap', evt => {
+    if (evt.target === _cy) {
+      _cy.elements().removeClass('cy-dim cy-hit');
+      document.getElementById('kb-graph-detail').style.display = 'none';
+    }
+  });
 
-  _kbGraph = {
-    nodes, edges, byId, dpr,
-    view: { x: w / 2, y: h / 2, scale: 1 },
-    dragging: null, panStart: null, hovered: null, selected: null,
-  };
-
-  kbGraphSimulate(nodes, edges);
-  kbGraphAttachEvents(canvas);
-  kbGraphDraw();
+  _cyStartPolling();
 }
 
-function kbGraphSimulate(nodes, edges) {
-  // Cooling-schedule force layout, run synchronously for a few hundred
-  // nodes: O(n²) repulsion is fine at this scale (KB is hundreds of notes).
-  const iterations = 220;
-  let alpha = 1.0;
-  for (let iter = 0; iter < iterations; iter++) {
-    // repulsion
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const a = nodes[i], b = nodes[j];
-        let dx = a.x - b.x, dy = a.y - b.y;
-        let dist2 = dx*dx + dy*dy || 0.01;
-        const force = (2200 * alpha) / dist2;
-        const dist = Math.sqrt(dist2);
-        dx /= dist; dy /= dist;
-        a.vx += dx * force; a.vy += dy * force;
-        b.vx -= dx * force; b.vy -= dy * force;
+function _cyStartPolling() {
+  if (_cyPollTimer) clearInterval(_cyPollTimer);
+  _cyPollTimer = setInterval(async () => {
+    // only poll while the Graph tab is actually visible
+    const tab = document.getElementById('kb-graph-tab');
+    if (!tab || !tab.classList.contains('active') || !_cy) return;
+    if (Date.now() - _cyLastFull > CY_FULL_REFRESH_MS) { loadKBGraph(true); return; }
+    if (!_cyAsOf) return;
+    const domain = document.getElementById('kb-graph-domain')?.value || '';
+    const d = await apiFetch(`/kb/graph?limit=200&domain=${domain}&since=${encodeURIComponent(_cyAsOf)}`);
+    if (!d) return;
+    _cyAsOf = d.as_of;
+    if (!d.nodes.length && !d.edges.length) return;
+
+    const fresh = [];
+    d.nodes.forEach(n => {
+      if (_cy.getElementById('n' + n.id).length === 0) fresh.push(_cyNodePayload(n));
+    });
+    d.edges.forEach(e => {
+      const id = 'e' + e.source + '-' + e.target + '-' + e.relation;
+      if (_cy.getElementById(id).length === 0 &&
+          _cy.getElementById('n' + e.source).length &&
+          _cy.getElementById('n' + e.target).length) {
+        fresh.push(_cyEdgePayload(e));
       }
-    }
-    // springs along edges
-    for (const e of edges) {
-      const a = nodesById(nodes, e.source), b = nodesById(nodes, e.target);
-      if (!a || !b) continue;
-      let dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
-      const targetLen = 90;
-      const force = (dist - targetLen) * 0.02 * (0.3 + e.weight) * alpha;
-      dx /= dist; dy /= dist;
-      a.vx += dx * force; a.vy += dy * force;
-      b.vx -= dx * force; b.vy -= dy * force;
-    }
-    // center gravity + integrate + damping
-    for (const n of nodes) {
-      n.vx += -n.x * 0.008 * alpha;
-      n.vy += -n.y * 0.008 * alpha;
-      n.vx *= 0.85; n.vy *= 0.85;
-      n.x += n.vx; n.y += n.vy;
-    }
-    alpha *= 0.985;
-  }
-}
-function nodesById(nodes, id) { return nodes.find(n => n.id === id); }
-
-function kbGraphDraw() {
-  if (!_kbGraph) return;
-  const canvas = document.getElementById('kb-graph-canvas');
-  const ctx = canvas.getContext('2d');
-  const { nodes, edges, view, dpr, hovered, selected } = _kbGraph;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-  ctx.save();
-  ctx.translate(view.x, view.y);
-  ctx.scale(view.scale, view.scale);
-
-  const neighborIds = selected ? kbGraphNeighborSet(selected) : null;
-
-  // edges
-  for (const e of edges) {
-    const a = _kbGraph.byId[e.source], b = _kbGraph.byId[e.target];
-    if (!a || !b) continue;
-    const dim = neighborIds && !(neighborIds.has(a.id) && neighborIds.has(b.id));
-    ctx.strokeStyle = KB_GRAPH_EDGE_COLORS[e.relation] || '#64748b';
-    ctx.globalAlpha = dim ? 0.08 : (0.25 + Math.min(0.6, e.weight));
-    ctx.lineWidth = Math.max(0.6, e.weight * 2) / view.scale;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-  ctx.globalAlpha = 1;
-
-  // nodes
-  for (const n of nodes) {
-    const dim = neighborIds && !neighborIds.has(n.id);
-    ctx.globalAlpha = dim ? 0.25 : 1;
-    ctx.fillStyle = KB_GRAPH_COLORS[n.type] || '#64748b';
-    ctx.beginPath();
-    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-    ctx.fill();
-    if (n === hovered || n === selected) {
-      ctx.strokeStyle = '#e2e8f0';
-      ctx.lineWidth = 1.5 / view.scale;
-      ctx.stroke();
-    }
-    if (view.scale > 0.6 && (n.r > 6 || n === hovered || n === selected)) {
-      ctx.fillStyle = '#e2e8f0';
-      ctx.font = `${10 / view.scale}px sans-serif`;
-      ctx.fillText((n.title||'').slice(0, 28), n.x + n.r + 3, n.y + 3);
-    }
-  }
-  ctx.globalAlpha = 1;
-  ctx.restore();
+    });
+    if (!fresh.length) return;
+    const added = _cy.add(fresh);
+    added.nodes().addClass('cy-new');
+    setTimeout(() => added.nodes().removeClass('cy-new'), 5000);
+    // re-layout only the new neighborhood; don't move the user's viewport
+    _cy.layout(_cyLayoutOpts(added.closedNeighborhood())).run();
+    const live = document.getElementById('kb-graph-live');
+    if (live) { live.textContent = `● LIVE +${added.nodes().length}`;
+                setTimeout(() => live.textContent = '● LIVE', 5000); }
+  }, CY_POLL_MS);
 }
 
-function kbGraphNeighborSet(node) {
-  const s = new Set([node.id]);
-  _kbGraph.edges.forEach(e => {
-    if (e.source === node.id) s.add(e.target);
-    if (e.target === node.id) s.add(e.source);
-  });
-  return s;
-}
+function kbGraphShowNode(node) {
+  const data = node.data();
+  _cy.elements().removeClass('cy-dim cy-hit');
+  _cy.elements().difference(node.closedNeighborhood()).addClass('cy-dim');
 
-function kbGraphToGraphCoords(canvas, clientX, clientY) {
-  const rect = canvas.getBoundingClientRect();
-  const { view } = _kbGraph;
-  const x = (clientX - rect.left - view.x) / view.scale;
-  const y = (clientY - rect.top - view.y) / view.scale;
-  return { x, y };
-}
-
-function kbGraphNodeAt(clientX, clientY, canvas) {
-  const { x, y } = kbGraphToGraphCoords(canvas, clientX, clientY);
-  let best = null, bestDist = Infinity;
-  for (const n of _kbGraph.nodes) {
-    const d = Math.hypot(n.x - x, n.y - y);
-    if (d <= n.r + 3 && d < bestDist) { best = n; bestDist = d; }
-  }
-  return best;
-}
-
-let _kbGraphEventsBound = false;
-function kbGraphAttachEvents(canvas) {
-  if (_kbGraphEventsBound) return; // listeners persist across reloads (canvas element is stable)
-  _kbGraphEventsBound = true;
-  const tooltip = document.getElementById('kb-graph-tooltip');
-
-  canvas.addEventListener('mousedown', (ev) => {
-    const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
-    if (node) {
-      _kbGraph.dragging = node;
-    } else {
-      _kbGraph.panStart = { x: ev.clientX, y: ev.clientY, vx: _kbGraph.view.x, vy: _kbGraph.view.y };
-      canvas.style.cursor = 'grabbing';
-    }
-  });
-  window.addEventListener('mousemove', (ev) => {
-    if (!_kbGraph) return;
-    if (_kbGraph.dragging) {
-      const { x, y } = kbGraphToGraphCoords(canvas, ev.clientX, ev.clientY);
-      _kbGraph.dragging.x = x; _kbGraph.dragging.y = y;
-      _kbGraph.dragging.vx = 0; _kbGraph.dragging.vy = 0;
-      kbGraphDraw();
-    } else if (_kbGraph.panStart) {
-      _kbGraph.view.x = _kbGraph.panStart.vx + (ev.clientX - _kbGraph.panStart.x);
-      _kbGraph.view.y = _kbGraph.panStart.vy + (ev.clientY - _kbGraph.panStart.y);
-      kbGraphDraw();
-    } else {
-      const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
-      _kbGraph.hovered = node;
-      if (node) {
-        const rect = canvas.getBoundingClientRect();
-        tooltip.style.display = 'block';
-        tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
-        tooltip.style.top = (ev.clientY - rect.top + 12) + 'px';
-        tooltip.innerHTML = `<b>${esc(node.title)}</b><br><span style="color:var(--muted)">${node.type} · ${node.domain||''}</span>`;
-        canvas.style.cursor = 'pointer';
-      } else {
-        tooltip.style.display = 'none';
-        canvas.style.cursor = _kbGraph.panStart ? 'grabbing' : 'grab';
-      }
-      kbGraphDraw();
-    }
-  });
-  window.addEventListener('mouseup', (ev) => {
-    if (!_kbGraph) return;
-    if (_kbGraph.dragging === null && _kbGraph.panStart) {
-      // treat as pan release (no click-select)
-    } else if (_kbGraph.dragging) {
-      // small movement = click-select; always show detail on mouseup over a node
-      const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
-      if (node === _kbGraph.dragging) kbGraphSelectNode(node);
-    }
-    _kbGraph.dragging = null;
-    _kbGraph.panStart = null;
-    canvas.style.cursor = 'grab';
-  });
-  canvas.addEventListener('wheel', (ev) => {
-    if (!_kbGraph) return;
-    ev.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
-    const factor = ev.deltaY < 0 ? 1.1 : 0.9;
-    const { view } = _kbGraph;
-    const newScale = Math.max(0.15, Math.min(4, view.scale * factor));
-    // zoom toward cursor
-    view.x = mx - (mx - view.x) * (newScale / view.scale);
-    view.y = my - (my - view.y) * (newScale / view.scale);
-    view.scale = newScale;
-    kbGraphDraw();
-  }, { passive: false });
-
-  window.addEventListener('resize', () => {
-    if (!_kbGraph) return;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr;
-    kbGraphDraw();
-  });
-}
-
-function kbGraphSelectNode(node) {
-  _kbGraph.selected = node;
-  kbGraphDraw();
-  const neighbors = _kbGraph.edges
-    .filter(e => e.source === node.id || e.target === node.id)
-    .map(e => {
-      const otherId = e.source === node.id ? e.target : e.source;
-      const other = _kbGraph.byId[otherId];
-      const dir = e.source === node.id ? '→' : '←';
-      return { relation: e.relation, weight: e.weight, dir, title: other ? other.title : '?', type: other ? other.type : '' };
-    })
-    .sort((a,b) => b.weight - a.weight);
+  const neighbors = node.connectedEdges().map(e => {
+    const out = e.source().id() === node.id();
+    const other = out ? e.target() : e.source();
+    return { dir: out ? '→' : '←', relation: e.data('relation'),
+             weight: e.data('weight'), title: other.data('title'),
+             type: other.data('type') };
+  }).sort((a, b) => b.weight - a.weight);
 
   const panel = document.getElementById('kb-graph-detail');
   panel.style.display = 'block';
   panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:baseline">
       <div>
-        <span style="color:${KB_GRAPH_COLORS[node.type]||'var(--cyan)'};font-size:13px;font-weight:600">${esc(node.title)}</span>
-        <span class="badge stage" style="font-size:9px;margin-left:6px">${node.type}</span>
-        ${node.domain ? `<span class="badge stage" style="font-size:9px">${node.domain}</span>` : ''}
+        <span style="color:${KB_GRAPH_COLORS[data.type]||'var(--cyan)'};font-size:13px;font-weight:600">${esc(data.title)}</span>
+        <span class="badge stage" style="font-size:9px;margin-left:6px">${data.type}</span>
+        ${data.domain ? `<span class="badge stage" style="font-size:9px">${esc(data.domain)}</span>` : ''}
       </div>
-      <button class="btn btn-sm" onclick="document.getElementById('kb-graph-detail').style.display='none'; _kbGraph.selected=null; kbGraphDraw();">✕</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick="kbGraphExtractSubgraph(${data.nid}, 2)">⛏ Extract subgraph</button>
+        <button class="btn btn-sm" onclick="document.getElementById('kb-graph-detail').style.display='none'; _cy.elements().removeClass('cy-dim cy-hit');">✕</button>
+      </div>
     </div>
-    ${node.summary ? `<div style="color:var(--muted2);font-size:11px;margin:8px 0">${esc(node.summary)}</div>` : ''}
+    ${data.summary ? `<div style="color:var(--muted2);font-size:11px;margin:8px 0">${esc(data.summary)}</div>` : ''}
     <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px">
       ${neighbors.length} connection${neighbors.length===1?'':'s'}
     </div>
@@ -3093,10 +3005,101 @@ function kbGraphSelectNode(node) {
           <span style="color:${KB_GRAPH_EDGE_COLORS[nb.relation]||'var(--muted)'};min-width:14px">${nb.dir}</span>
           <span style="color:var(--muted);min-width:110px">${nb.relation}</span>
           <span style="color:var(--text)">${esc(nb.title)}</span>
-          <span style="color:var(--muted)">(${nb.weight.toFixed(2)})</span>
+          <span style="color:var(--muted)">(${(nb.weight||0).toFixed(2)})</span>
         </div>`).join('') || '<div style="color:var(--muted);font-size:10px">No graph edges yet — the extractor runs every 2h.</div>'}
     </div>
   `;
+}
+
+// ── Data extraction ──────────────────────────────────────────────────────────
+
+function _download(filename, text, mime) {
+  const blob = new Blob([text], { type: mime || 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function _csvCell(v) {
+  const s = String(v == null ? '' : v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function kbGraphExport(kind) {
+  if (!_cy) return;
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  if (kind === 'json') {
+    const payload = {
+      exported_at: new Date().toISOString(),
+      nodes: _cy.nodes().map(n => n.data()),
+      edges: _cy.edges().map(e => ({
+        source: e.source().data('slug'), target: e.target().data('slug'),
+        relation: e.data('relation'), weight: e.data('weight'),
+      })),
+    };
+    _download(`kb-graph-${stamp}.json`, JSON.stringify(payload, null, 2), 'application/json');
+  } else if (kind === 'nodes') {
+    const rows = [['id', 'slug', 'title', 'type', 'domain', 'degree', 'summary']];
+    _cy.nodes().forEach(n => rows.push([
+      n.data('nid'), n.data('slug'), n.data('title'), n.data('type'),
+      n.data('domain'), n.degree(), n.data('summary')]));
+    _download(`kb-nodes-${stamp}.csv`,
+              rows.map(r => r.map(_csvCell).join(',')).join('\n'), 'text/csv');
+  } else if (kind === 'edges') {
+    const rows = [['source', 'source_type', 'relation', 'weight', 'target', 'target_type']];
+    _cy.edges().forEach(e => rows.push([
+      e.source().data('slug'), e.source().data('type'), e.data('relation'),
+      e.data('weight'), e.target().data('slug'), e.target().data('type')]));
+    _download(`kb-edges-${stamp}.csv`,
+              rows.map(r => r.map(_csvCell).join(',')).join('\n'), 'text/csv');
+  }
+}
+
+async function kbGraphExtractSubgraph(nodeId, hops) {
+  const d = await apiFetch(`/kb/graph/subgraph?node_id=${nodeId}&hops=${hops}`);
+  const panel = document.getElementById('kb-graph-subgraph');
+  if (!d || !d.edges) { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  const csvRows = [['hop', 'source', 'source_type', 'relation', 'weight', 'target', 'target_type']]
+    .concat(d.edges.map(e => [e.hop, e.source, e.source_type, e.relation,
+                              e.weight, e.target, e.target_type]));
+  const csvText = csvRows.map(r => r.map(_csvCell).join(',')).join('\n');
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+      <span class="panel-title">Subgraph: ${esc(d.center?.title || '')} (${d.hops} hops, ${d.node_count} nodes, ${d.edges.length} links)</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" onclick='_download("kb-subgraph.csv", ${JSON.stringify(csvText)}, "text/csv")'>⬇ CSV</button>
+        <button class="btn btn-sm" onclick="navigator.clipboard.writeText(this.closest('div').parentElement.querySelector('table').innerText)">⧉ Copy</button>
+        <button class="btn btn-sm" onclick="document.getElementById('kb-graph-subgraph').style.display='none'">✕</button>
+      </div>
+    </div>
+    <div class="tbl-wrap" style="max-height:260px;overflow:auto"><table>
+      <thead><tr><th>Hop</th><th>Source</th><th>Relation</th><th>W</th><th>Target</th><th>Type</th></tr></thead>
+      <tbody>${d.edges.map(e => `
+        <tr><td>${e.hop}</td>
+            <td title="${escAttr(e.source_title||'')}">${esc(e.source)}</td>
+            <td style="color:${KB_GRAPH_EDGE_COLORS[e.relation]||'var(--muted)'}">${e.relation}</td>
+            <td>${(e.weight||0).toFixed(2)}</td>
+            <td title="${escAttr(e.target_title||'')}">${esc(e.target)}</td>
+            <td>${e.target_type}</td></tr>`).join('')}
+      </tbody>
+    </table></div>`;
+}
+
+async function kbGraphSearch() {
+  const q = (document.getElementById('kb-graph-search')?.value || '').trim();
+  if (!q || !_cy) return;
+  const d = await apiFetch(`/kb/search?q=${encodeURIComponent(q)}&limit=15`);
+  _cy.elements().removeClass('cy-dim cy-hit');
+  if (!d || !d.results || !d.results.length) { showToast('No graph hits'); return; }
+  const hitSlugs = new Set(d.results.map(r => r.slug));
+  const hits = _cy.nodes().filter(n => hitSlugs.has(n.data('slug')));
+  if (!hits.length) { showToast('Results not in the loaded graph view'); return; }
+  _cy.elements().difference(hits.closedNeighborhood()).addClass('cy-dim');
+  hits.addClass('cy-hit');
+  _cy.animate({ fit: { eles: hits.closedNeighborhood(), padding: 40 }, duration: 300 });
 }
 
 async function loadKBConcepts() {

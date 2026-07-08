@@ -126,33 +126,98 @@ def neighbors(node_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def graph_json(limit: int = 500, domain: str = None) -> dict:
-    """Nodes+edges payload for the dashboard graph view."""
+def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
+    """Nodes+edges payload for the dashboard graph view.
+
+    With `since` (an as_of timestamp from a previous call), returns only
+    nodes updated and edges created after that moment — the live-view delta
+    protocol. Delta edges may reference nodes outside the delta; the client
+    ignores edges whose endpoints it doesn't hold (an hourly full refresh
+    reconciles, including deletions which deltas can't see).
+    """
+    from datetime import datetime, timezone
+    as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    filters, params = [], []
+    if domain:
+        filters.append("domain=?")
+        params.append(domain)
+    if since:
+        filters.append("updated_at > ?")
+        params.append(since)
+    where = ("WHERE " + " AND ".join(filters)) if filters else ""
+
     with db_session() as conn:
-        if domain:
-            nodes = conn.execute(
-                "SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
-                "WHERE domain=? ORDER BY updated_at DESC LIMIT ?",
-                (domain, limit)).fetchall()
-        else:
-            nodes = conn.execute(
-                "SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
-                "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
-        ids = [n["id"] for n in nodes]
+        nodes = conn.execute(
+            f"SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
+            f"{where} ORDER BY updated_at DESC LIMIT ?",
+            params + [limit]).fetchall()
         edges = []
-        if ids:
-            marks = ",".join("?" * len(ids))
+        if since:
             edges = conn.execute(
-                f"SELECT source_id, target_id, relation, weight FROM kb_edges "
-                f"WHERE source_id IN ({marks}) AND target_id IN ({marks})",
-                ids + ids).fetchall()
+                "SELECT source_id, target_id, relation, weight FROM kb_edges "
+                "WHERE created_at > ? LIMIT ?", (since, limit * 4)).fetchall()
+        else:
+            ids = [n["id"] for n in nodes]
+            if ids:
+                marks = ",".join("?" * len(ids))
+                edges = conn.execute(
+                    f"SELECT source_id, target_id, relation, weight FROM kb_edges "
+                    f"WHERE source_id IN ({marks}) AND target_id IN ({marks})",
+                    ids + ids).fetchall()
     return {
+        "as_of": as_of,
+        "delta": bool(since),
         "nodes": [{"id": n["id"], "slug": n["slug"], "title": n["title"],
                    "type": n["node_type"], "domain": n["domain"],
                    "summary": (n["summary"] or "")[:280]} for n in nodes],
         "edges": [{"source": e["source_id"], "target": e["target_id"],
                    "relation": e["relation"], "weight": e["weight"]} for e in edges],
     }
+
+
+def subgraph_json(node_id: int, hops: int = 2, max_nodes: int = 150) -> dict:
+    """K-hop neighborhood of a node as a flat table-friendly payload — the
+    'extract subgraph' feature. BFS over kb_edges in both directions."""
+    frontier = {node_id}
+    seen = {node_id}
+    rows = []
+    with db_session() as conn:
+        for hop in range(1, max(1, hops) + 1):
+            if not frontier or len(seen) >= max_nodes:
+                break
+            marks = ",".join("?" * len(frontier))
+            ids = list(frontier)
+            edges = conn.execute(f"""
+                SELECT e.source_id, e.target_id, e.relation, e.weight,
+                       n1.slug AS source_slug, n1.title AS source_title,
+                       n2.slug AS target_slug, n2.title AS target_title,
+                       n2.node_type AS target_type, n1.node_type AS source_type
+                FROM kb_edges e
+                JOIN kb_nodes n1 ON n1.id = e.source_id
+                JOIN kb_nodes n2 ON n2.id = e.target_id
+                WHERE e.source_id IN ({marks}) OR e.target_id IN ({marks})
+            """, ids + ids).fetchall()
+            next_frontier = set()
+            for e in edges:
+                rows.append({"hop": hop, "source": e["source_slug"],
+                             "source_title": e["source_title"],
+                             "source_type": e["source_type"],
+                             "relation": e["relation"], "weight": e["weight"],
+                             "target": e["target_slug"],
+                             "target_title": e["target_title"],
+                             "target_type": e["target_type"]})
+                for nid in (e["source_id"], e["target_id"]):
+                    if nid not in seen and len(seen) < max_nodes:
+                        seen.add(nid)
+                        next_frontier.add(nid)
+            frontier = next_frontier
+        center = conn.execute(
+            "SELECT slug, title FROM kb_nodes WHERE id=?", (node_id,)).fetchone()
+    # dedupe edge rows (an edge can be touched from both endpoints)
+    unique = {(r["source"], r["target"], r["relation"]): r for r in rows}
+    return {"center": dict(center) if center else None,
+            "hops": hops, "node_count": len(seen),
+            "edges": sorted(unique.values(), key=lambda r: (r["hop"], -r["weight"]))}
 
 
 def ensure_node_for_document(doc_id: int) -> int | None:
