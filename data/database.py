@@ -298,6 +298,11 @@ def init_db(db_path: Path = DB_PATH):
             "trades INTEGER",
             "hp_class TEXT",
             "signal_type TEXT",
+            "n_trials INTEGER",
+            "deflated_hurdle REAL",
+            "benchmark_sharpe REAL",
+            "excess_ann_return REAL",
+            "ic_tstat_iid REAL",
         ):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
@@ -322,6 +327,32 @@ def init_db(db_path: Path = DB_PATH):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bs_idea ON backtest_series(idea_id)"
         )
+
+        # Paper trading: daily NAV series per idea (mark-to-market)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_equity (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                idea_id        INTEGER NOT NULL REFERENCES alpha_ideas(id),
+                date           TEXT NOT NULL,
+                nav            REAL NOT NULL,
+                cash           REAL,
+                position_units REAL DEFAULT 0,
+                mark_price     REAL,
+                created_at     TEXT DEFAULT (datetime('now')),
+                UNIQUE(idea_id, date)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pe_idea ON paper_equity(idea_id)"
+        )
+
+        # Paper trades: per-side transaction costs (Bursa cost model)
+        for _col in ("entry_cost REAL DEFAULT 0", "exit_cost REAL DEFAULT 0"):
+            try:
+                conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {_col}")
+                logger.info(f"Migration applied: paper_trades.{_col.split()[0]} added")
+            except Exception:
+                pass
 
         # CPO module: daily CPO spot price cache
         conn.execute("""

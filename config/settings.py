@@ -25,6 +25,15 @@ MARKET_NAME     = "Bursa Malaysia"
 # ── FBM KLCI Top-30 Universe ─────────────────────────────────────────────────
 # Yahoo Finance tickers use the .KL suffix for Bursa Malaysia
 # bursa_code = the 4-digit Bursa stock code
+#
+# SURVIVORSHIP BIAS WARNING: this is the constituent list AS OF the date below.
+# Backtests over past years use today's members and exclude stocks that were
+# dropped from the index, which upward-biases results. Until point-in-time
+# constituent history is added, treat all absolute backtest numbers as
+# optimistic and rely on the relative gates (cross-sectional IC, OOS
+# degradation, deflation hurdle) for idea ranking.
+UNIVERSE_ASOF = "2026-04-07"
+
 KLCI_STOCKS = [
     {"symbol": "1155.KL",   "name": "Maybank",                    "sector": "Banking",          "bursa_code": "1155"},
     {"symbol": "1295.KL",   "name": "Public Bank",                "sector": "Banking",          "bursa_code": "1295"},
@@ -54,18 +63,11 @@ KLCI_STOCKS = [
     {"symbol": "1082.KL",   "name": "Hong Leong Financial",       "sector": "Banking",          "bursa_code": "1082"},
     {"symbol": "4677.KL",   "name": "YTL Corporation",            "sector": "Utilities",        "bursa_code": "4677"},
     {"symbol": "5398.KL",   "name": "Gamuda",                     "sector": "Construction",     "bursa_code": "5398"},
-    {"symbol": "1082.KL",   "name": "Hong Leong Financial",       "sector": "Banking",          "bursa_code": "1082"},
     {"symbol": "5296.KL",   "name": "QL Resources",               "sector": "Consumer Staples", "bursa_code": "5296"},
 ]
 
-# Deduplicate and extract just the ticker symbols
-_seen = set()
-_klci_deduped = []
-for _s in KLCI_STOCKS:
-    if _s["symbol"] not in _seen:
-        _seen.add(_s["symbol"])
-        _klci_deduped.append(_s)
-KLCI_STOCKS = _klci_deduped
+assert len({_s["symbol"] for _s in KLCI_STOCKS}) == len(KLCI_STOCKS), \
+    "Duplicate symbol in KLCI_STOCKS"
 
 DEFAULT_SYMBOLS = [s["symbol"] for s in KLCI_STOCKS]
 
@@ -82,6 +84,56 @@ KLCI_SECTORS    = sorted(set(s["sector"] for s in KLCI_STOCKS))
 MARKET_OPEN_HOUR  = 9
 MARKET_CLOSE_HOUR = 17
 TRADING_DAYS_PER_YEAR = 252
+
+# ── Bursa Malaysia transaction cost model ─────────────────────────────────────
+# Single source of truth — the backtester and paper trading must both use these.
+BURSA_COMMISSION_RATE     = 0.0008     # 0.08% per side
+BURSA_STAMP_DUTY_RATE     = 0.0015     # 0.15%, buy-side only
+BURSA_STAMP_DUTY_CAP_MYR  = 200.0      # capped at RM200 per contract
+BURSA_CLEARING_RATE       = 0.0003     # 0.03% per side
+BURSA_CLEARING_CAP_MYR    = 1000.0     # capped at RM1,000 per side
+BURSA_BOARD_LOT           = 100        # minimum lot size (shares)
+
+# Slippage by liquidity tier (fraction of trade value, per side)
+BURSA_SLIPPAGE_TIERS = {
+    "BLUE_CHIP": 0.0005,   # ADV value ≥ RM20M
+    "MID_CAP":   0.0025,   # ADV value ≥ RM2M
+    "SMALL_CAP": 0.0075,   # below RM2M
+}
+BURSA_TIER_BLUE_CHIP_MYR = 20_000_000.0
+BURSA_TIER_MID_CAP_MYR   = 2_000_000.0
+
+# Liquidity floor: reject strategies on names below this avg daily traded value
+BURSA_MIN_DAILY_VALUE_MYR = 500_000.0
+
+# Notional capital allocated to each paper-traded idea
+PAPER_CAPITAL_MYR = 100_000.0
+PAPER_ALLOC_PCT   = 0.95     # fraction of idea NAV deployed per position
+
+
+def bursa_slippage_tier(avg_daily_value_myr: float) -> str:
+    """Classify a stock's liquidity tier from average daily traded value (MYR)."""
+    if avg_daily_value_myr >= BURSA_TIER_BLUE_CHIP_MYR:
+        return "BLUE_CHIP"
+    if avg_daily_value_myr >= BURSA_TIER_MID_CAP_MYR:
+        return "MID_CAP"
+    return "SMALL_CAP"
+
+
+def bursa_trade_cost(trade_value_myr: float, side: str,
+                     slippage_tier: str = "BLUE_CHIP") -> float:
+    """Total cost in MYR for one side of a Bursa trade.
+
+    side: 'buy' or 'sell'. Stamp duty applies to the buy side only and is
+    capped at RM200; clearing is capped at RM1,000 per side.
+    """
+    value = abs(trade_value_myr)
+    cost = value * BURSA_COMMISSION_RATE
+    cost += min(value * BURSA_CLEARING_RATE, BURSA_CLEARING_CAP_MYR)
+    if side == "buy":
+        cost += min(value * BURSA_STAMP_DUTY_RATE, BURSA_STAMP_DUTY_CAP_MYR)
+    cost += value * BURSA_SLIPPAGE_TIERS.get(slippage_tier, BURSA_SLIPPAGE_TIERS["MID_CAP"])
+    return cost
 
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PATH = BASE_DIR / "data" / "openclaw.db"

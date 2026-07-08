@@ -394,23 +394,57 @@ class ResearchDaemon:
     # ── Stage 4a — paper trading monitoring ──────────────────────────────────
 
     async def _process_paper_trading(self):
-        """Monitor stage4a/active ideas for drawdown breaches and Gate 4a evaluation.
+        """Drive stage4a/active ideas: signal-driven entries/exits, daily NAV
+        mark-to-market, drawdown breach rejection, and Gate 4a evaluation.
 
-        Uses RiskMonitor to check per-idea drawdown from closed paper trades.
-        If drawdown is breached, the idea is rejected.
-        If Gate 4a criteria are met (30+ days, Sharpe ≥ 0.80, DD ≤ 20%), the idea
-        advances to stage4b via PortfolioExecutor.evaluate_paper_performance().
+        Each idea's strategy signal is recomputed daily from the params stored
+        by its passing backtest run (no LLM cost). Positions are opened/closed
+        at the latest cached KLSE close via PortfolioExecutor.daily_update().
         """
+        import json as _json
+
         with db_session() as conn:
             ideas = conn.execute(
-                "SELECT id, title FROM alpha_ideas "
+                "SELECT id, title, ticker FROM alpha_ideas "
                 "WHERE stage='stage4a' AND status='active' LIMIT 5"
             ).fetchall()
 
+        today = datetime.utcnow().strftime("%Y-%m-%d")
         for row in ideas:
             try:
+                with db_session() as conn:
+                    done_today = conn.execute(
+                        "SELECT 1 FROM paper_equity WHERE idea_id=? AND date=?",
+                        (row["id"], today),
+                    ).fetchone()
+                if done_today:
+                    continue
+
+                with db_session() as conn:
+                    bt = conn.execute(
+                        "SELECT params, pair FROM backtest_runs "
+                        "WHERE idea_id=? AND passed=1 ORDER BY id DESC LIMIT 1",
+                        (row["id"],),
+                    ).fetchone()
+                if not bt or not bt["params"]:
+                    logger.warning(
+                        f"[Stage4a] No passed backtest params for [{row['id']}] — cannot paper trade"
+                    )
+                    continue
+                params = _json.loads(bt["params"])
+                ticker = row["ticker"] or bt["pair"]
+
+                update = await self.portfolio_executor.daily_update(row["id"], ticker, params)
+                logger.info(
+                    f"[Stage4a] [{row['id']}] {ticker} signal={update.get('signal')} "
+                    f"action={update.get('action')} nav={update.get('nav')}"
+                )
+
                 dd_result = self.risk_monitor.check_strategy_drawdown(row["id"])
                 if dd_result.get("breached"):
+                    open_trade = self.portfolio_executor._open_trade(row["id"])
+                    if open_trade:
+                        await self.portfolio_executor.paper_exit(open_trade["id"])
                     with db_session() as conn:
                         conn.execute(
                             "UPDATE alpha_ideas SET status='rejected', updated_at=datetime('now') "
@@ -421,15 +455,15 @@ class ResearchDaemon:
                         f"[Stage4a] Drawdown breach — rejecting [{row['id']}]: "
                         f"{row['title'][:40]} dd={dd_result.get('drawdown', 0):.1%}"
                     )
-                elif dd_result.get("trade_count", 0) > 0:
-                    # Evaluate Gate 4a if there are closed paper trades
-                    eval_result = await self.portfolio_executor.evaluate_paper_performance(row["id"])
-                    if eval_result.get("gate4a_pass"):
-                        logger.info(
-                            f"[Stage4a] GATE4A PASS [{row['id']}]: {row['title'][:40]} "
-                            f"sharpe={eval_result.get('sharpe', 0):.2f} "
-                            f"days={eval_result.get('total_days', 0)}"
-                        )
+                    continue
+
+                eval_result = await self.portfolio_executor.evaluate_paper_performance(row["id"])
+                if eval_result.get("gate4a_pass"):
+                    logger.info(
+                        f"[Stage4a] GATE4A PASS [{row['id']}]: {row['title'][:40]} "
+                        f"sharpe={eval_result.get('sharpe', 0):.2f} "
+                        f"days={eval_result.get('total_days', 0)}"
+                    )
                 await asyncio.sleep(1)
             except Exception as e:
                 logger.error(f"[Stage4a] Error {row['id']}: {e}")

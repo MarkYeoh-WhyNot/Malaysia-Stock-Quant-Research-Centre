@@ -4,18 +4,15 @@ import os
 import numpy as np
 import pandas as pd
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST, MODEL_MAIN, GATE_CONFIG, KLCI_BY_SYMBOL, DEFAULT_SYMBOLS
+from config.settings import (
+    MODEL_FAST, MODEL_MAIN, GATE_CONFIG, KLCI_BY_SYMBOL, DEFAULT_SYMBOLS,
+    PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT, BURSA_MIN_DAILY_VALUE_MYR,
+    bursa_trade_cost, bursa_slippage_tier,
+)
 from data.database import db_session
 from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
-
-# ── Bursa Malaysia realistic transaction cost model (QC3) ────────────────────
-# Applied once per completed round-trip trade (open + close).
-_BT_BROKERAGE       = 0.0020   # 0.20% per side (online broker)
-_BT_STAMP_DUTY      = 0.0015   # 0.15% per side (capped MYR 1000)
-_BT_SLIPPAGE        = 0.0010   # 0.10% market impact estimate
-_BT_ROUND_TRIP_COST = (_BT_BROKERAGE + _BT_STAMP_DUTY + _BT_SLIPPAGE) * 2  # 0.0090
 
 SYSTEM = """You are a quantitative backtesting engineer specialising in Bursa Malaysia equities.
 Parse equity strategy descriptions into structured signal parameters for vectorised backtesting.
@@ -230,6 +227,28 @@ Return JSON:
 
     # ── Performance metrics ───────────────────────────────────────────────────
 
+    def _cost_rates(self, df: pd.DataFrame) -> dict:
+        """Per-side Bursa cost rates for this stock (QC3).
+
+        Uses the shared cost model in config.settings — commission, buy-side
+        stamp duty (RM200 cap), clearing (RM1,000 cap), and slippage tiered by
+        the stock's average daily traded value over the last 60 bars. Rates are
+        expressed as a fraction of trade value at the paper-capital notional,
+        so the caps are reflected realistically for our trade size.
+        """
+        adv_value = 0.0
+        if "volume" in df.columns and len(df):
+            tail = df.tail(60)
+            adv_value = float((tail["close"] * tail["volume"]).mean())
+        tier = bursa_slippage_tier(adv_value)
+        notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
+        return {
+            "buy":  bursa_trade_cost(notional, "buy", tier) / notional,
+            "sell": bursa_trade_cost(notional, "sell", tier) / notional,
+            "tier": tier,
+            "adv_value_myr": adv_value,
+        }
+
     def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str) -> dict:
         """Compute performance with QC1 lookahead guard and QC3 realistic costs.
 
@@ -238,9 +257,9 @@ Return JSON:
           Enforced by pd.Series.shift(1) — signal_shifted[t] = signal[t-1].
           signal_shifted[0] is forced to 0 (no position at start).
 
-        QC3 — Realistic Bursa transaction costs:
-          BROKERAGE=0.20% + STAMP_DUTY=0.15% + SLIPPAGE=0.10% per side,
-          applied as a round-trip deduction on every position change.
+        QC3 — Realistic Bursa transaction costs (see _cost_rates):
+          asymmetric buy/sell rates (stamp duty is buy-side only, capped),
+          slippage tiered by liquidity, deducted on every position change.
           Returns both sharpe_gross (before costs) and sharpe_net (after costs).
         """
         close = df["close"]
@@ -257,9 +276,13 @@ Return JSON:
         gross_bar     = signal_shifted * bar_returns
         gross_returns = gross_bar.values[1:]   # drop bar 0 (always 0 after shift)
 
-        # ── QC3: subtract round-trip cost on every position change ────────────
-        signal_changes = np.abs(np.diff(signal_shifted.values))
-        net_returns    = gross_returns - signal_changes * _BT_ROUND_TRIP_COST
+        # ── QC3: per-side costs on every position change ──────────────────────
+        rates          = self._cost_rates(df)
+        deltas         = np.diff(signal_shifted.values)
+        buys           = np.clip(deltas, 0, None)
+        sells          = np.clip(-deltas, 0, None)
+        signal_changes = np.abs(deltas)
+        net_returns    = gross_returns - buys * rates["buy"] - sells * rates["sell"]
 
         n = len(net_returns)
         _empty = {
@@ -357,7 +380,9 @@ Return JSON:
         sig_shifted  = sig.shift(1).fillna(0)
 
         # Per-bar net return (same cost model as _compute_performance)
-        cost_bar     = sig_shifted.diff().abs() * _BT_ROUND_TRIP_COST
+        rates        = self._cost_rates(df)
+        deltas       = sig_shifted.diff().fillna(0)
+        cost_bar     = deltas.clip(lower=0) * rates["buy"] + (-deltas).clip(lower=0) * rates["sell"]
         net_bar      = (sig_shifted * daily_ret - cost_bar).fillna(0)
 
         valid_vol = rolling_vol.dropna()
@@ -597,6 +622,29 @@ Return JSON:
         denom = rx.std(ddof=0) * ry.std(ddof=0)
         return float(num / denom) if denom > 1e-10 else np.nan
 
+    # ── Newey-West t-stat (autocorrelation-robust) ────────────────────────────
+
+    @staticmethod
+    def _nw_tstat(series: np.ndarray, max_lag: int | None = None) -> float:
+        """t-stat of the series mean using Newey-West (Bartlett kernel) standard
+        errors. Daily IC observations are autocorrelated, so the iid t-stat
+        (mean / (std/√n)) overstates significance; this corrects for it."""
+        n = len(series)
+        if n < 3:
+            return 0.0
+        x = series - series.mean()
+        if max_lag is None:
+            max_lag = int(np.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
+        max_lag = max(0, min(max_lag, n - 1))
+        gamma0 = float(np.dot(x, x)) / n
+        lrv = gamma0
+        for lag in range(1, max_lag + 1):
+            w = 1.0 - lag / (max_lag + 1.0)
+            lrv += 2.0 * w * (float(np.dot(x[lag:], x[:-lag])) / n)
+        if lrv <= 1e-12:
+            return 0.0
+        return float(series.mean() / np.sqrt(lrv / n))
+
     # ── Cross-sectional validation ────────────────────────────────────────────
 
     def cross_sectional_test(self, factor_formula: str, idea_id: int) -> dict:
@@ -711,7 +759,10 @@ Return JSON:
         ic_arr  = np.array(ic_series)
         mean_ic = float(np.mean(ic_arr))
         ic_std  = float(np.std(ic_arr, ddof=1))
-        ic_tstat = (mean_ic / (ic_std / np.sqrt(len(ic_arr)))) if ic_std > 1e-10 else 0.0
+        # Daily ICs are strongly autocorrelated (signals persist for weeks), so
+        # the naive iid t-stat overstates significance. Use Newey-West SEs.
+        ic_tstat_iid = (mean_ic / (ic_std / np.sqrt(len(ic_arr)))) if ic_std > 1e-10 else 0.0
+        ic_tstat = self._nw_tstat(ic_arr)
 
         # ── Per-stock IC (how predictive is the factor within each ticker) ────
         stock_ics: dict[str, float] = {}
@@ -756,6 +807,7 @@ Return JSON:
             "idea_id":            idea_id,
             "mean_ic":            round(mean_ic, 4),
             "ic_tstat":           round(ic_tstat, 3),
+            "ic_tstat_iid":       round(ic_tstat_iid, 3),
             "stocks_tested":      n_stocks,
             "stocks_positive_ic": stocks_positive_ic,
             "quintile_sharpe":    quintile_sharpe,
@@ -1322,6 +1374,21 @@ Return JSON only:
             self.log_daemon("WARN", f"[{idea_id}] {msg}")
             return {"error": msg, "idea_id": idea_id, "symbol": symbol}
 
+        # ── Liquidity floor: reject names too thin to trade realistically ─────
+        _liq = self._cost_rates(df)
+        if _liq["adv_value_myr"] < BURSA_MIN_DAILY_VALUE_MYR:
+            msg = (f"Liquidity floor: {symbol} avg daily traded value "
+                   f"RM{_liq['adv_value_myr']:,.0f} < RM{BURSA_MIN_DAILY_VALUE_MYR:,.0f}")
+            self.log_daemon("WARN", f"[{idea_id}] {msg}")
+            with db_session() as conn:
+                conn.execute(
+                    "UPDATE alpha_ideas SET status='rejected', "
+                    "rejection_reason=?, updated_at=datetime('now') WHERE id=?",
+                    (msg, idea_id),
+                )
+            return {"error": msg, "idea_id": idea_id, "symbol": symbol,
+                    "gate3_pass": False}
+
         self._log_progress(idea_id, 30, f"Computing factor signals ({symbol})")
         # Classify holding period for appropriate thresholds and warnings
         hp_class = self.classify_holding_period(
@@ -1519,6 +1586,45 @@ Return JSON only:
                            f"— not robust enough")
             self.log_daemon("WARN", f"Backtest [{idea_id}] regime gate FAILED: {regime_note}")
 
+        # QC6: multiple-testing deflation — the best of N random strategies looks
+        # good by chance; require the net Sharpe to beat the expected maximum
+        # Sharpe of n_trials pure-noise strategies on this sample length
+        # (E[max SR of N iid trials] ≈ √(2·ln N / T), annualized).
+        with db_session() as conn:
+            n_trials = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs"
+            ).fetchone()["n"] + 1
+        _ann_qc6 = BARS_PER_YEAR.get(interval, 252)
+        _n_bars = max(len(train_df) + len(val_df) + len(test_df), 2)
+        deflated_hurdle = float(
+            np.sqrt(2.0 * np.log(max(n_trials, 2)) / _n_bars) * np.sqrt(_ann_qc6)
+        )
+        deflation_pass = test_sharpe_net >= deflated_hurdle
+        deflation_note = ""
+        if not deflation_pass:
+            deflation_note = (
+                f"Multiple-testing gate: net Sharpe {test_sharpe_net:.2f} below the "
+                f"expected max of {n_trials} noise trials ({deflated_hurdle:.2f}) — "
+                f"consistent with selection bias, not alpha"
+            )
+            self.log_daemon("WARN", f"Backtest [{idea_id}] deflation gate FAILED: {deflation_note}")
+
+        # ── Benchmark: excess performance vs FBM KLCI (^KLSE) ─────────────────
+        benchmark_sharpe, excess_ann_return = 0.0, 0.0
+        try:
+            bench_df = self._fetch_prices("^KLSE", interval, days=1825)
+            if not bench_df.empty:
+                bench_ret = bench_df["close"].pct_change().reindex(df.index).dropna()
+                if len(bench_ret) > 60 and float(np.std(bench_ret)) > 1e-10:
+                    benchmark_sharpe = float(
+                        np.mean(bench_ret) / np.std(bench_ret) * np.sqrt(_ann_qc6)
+                    )
+                    excess_ann_return = float(
+                        test_r.get("ann_return", 0.0) - np.mean(bench_ret) * _ann_qc6
+                    )
+        except Exception as _bench_exc:
+            self.log_daemon("WARN", f"Backtest [{idea_id}] benchmark fetch failed: {_bench_exc}")
+
         # ── Sanity flags (warn but do not auto-reject) ────────────────────────
         sanity_flags = self._detect_sanity_flags(
             test_sharpe_gross, test_r["max_dd"], test_r["win_rate"], actual_trades, interval,
@@ -1526,7 +1632,8 @@ Return JSON only:
         for flag in sanity_flags:
             self.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
 
-        overall_pass = gate3_pass and trade_count_pass and cost_pass and oos_pass and regime_pass
+        overall_pass = (gate3_pass and trade_count_pass and cost_pass
+                        and oos_pass and regime_pass and deflation_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
         if _is_fund_screen and overall_pass:
@@ -1551,6 +1658,7 @@ Return JSON only:
                 "" if oos_pass     else oos_note,
                 "" if regime_pass  else regime_note,
                 "" if trade_count_pass else trade_count_note,
+                "" if deflation_pass else deflation_note,
             ]))
 
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
@@ -1597,6 +1705,12 @@ Return JSON only:
                     "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",
                     (idea_id,),
                 ).fetchone()["id"]
+                conn.execute("""
+                    UPDATE backtest_runs
+                    SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?, excess_ann_return=?
+                    WHERE id=?
+                """, (n_trials, round(deflated_hurdle, 3),
+                      round(benchmark_sharpe, 3), round(excess_ann_return, 4), run_id))
 
                 # Only update stage/status from stage2 → stage3.
                 # If idea is already at stage3+ (e.g., after Red-Blue reviewed it),
@@ -1657,17 +1771,29 @@ Return JSON only:
                 sig_full = self._compute_signal_with_exits(df, sig_full, _exit_profile)
             sig_shifted = sig_full.shift(1).fillna(0)
             bar_returns = df["close"].pct_change().fillna(0)
-            net_bar     = (sig_shifted * bar_returns
-                           - sig_shifted.diff().abs() * _BT_ROUND_TRIP_COST)
+            _rates      = self._cost_rates(df)
+            _deltas     = sig_shifted.diff().fillna(0)
+            _cost_bar   = (_deltas.clip(lower=0) * _rates["buy"]
+                           + (-_deltas).clip(lower=0) * _rates["sell"])
+            net_bar     = sig_shifted * bar_returns - _cost_bar
             equity      = (1 + net_bar.clip(-0.5, 0.5)).cumprod()
             oos_start   = int(len(df) * 0.70)
             peak        = equity.expanding().max()
             dd_series   = (equity - peak) / peak.clip(lower=1e-9)
+            bench_curve = None
+            try:
+                _bdf = self._fetch_prices("^KLSE", interval, days=1825)
+                if not _bdf.empty:
+                    _bret = _bdf["close"].pct_change().reindex(df.index).fillna(0)
+                    bench_curve = (1 + _bret).cumprod()
+            except Exception:
+                bench_curve = None
             with db_session() as conn:
                 conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
                 rows_eq = [
                     (idea_id, str(d)[:10],
-                     float(v) - 1.0, 0.0,
+                     float(v) - 1.0,
+                     float(bench_curve.iloc[i]) - 1.0 if bench_curve is not None else 0.0,
                      float(dd_series.iloc[i]), 1 if i >= oos_start else 0)
                     for i, (d, v) in enumerate(zip(equity.index, equity.values))
                 ]
@@ -1714,6 +1840,11 @@ Return JSON only:
             "cost_pass":           cost_pass,
             "oos_pass":            oos_pass,
             "regime_pass":         regime_pass,
+            "deflation_pass":      deflation_pass,
+            "n_trials":            n_trials,
+            "deflated_hurdle":     round(deflated_hurdle, 3),
+            "benchmark_sharpe":    round(benchmark_sharpe, 3),
+            "excess_ann_return":   round(excess_ann_return, 4),
             "train":               train_r,
             "val":                 val_r,
             "test":                test_r,
@@ -2195,11 +2326,20 @@ Return JSON only:
             oos_start = int(len(nav) * 0.70)
             peak      = nav.expanding().max()
             dd_series = (nav - peak) / peak.clip(lower=1e-9)
+            bench_curve = None
+            try:
+                _bdf = self._fetch_prices("^KLSE", "1d", days=1825)
+                if not _bdf.empty:
+                    _bret = _bdf["close"].pct_change().reindex(nav.index).fillna(0)
+                    bench_curve = (1 + _bret).cumprod()
+            except Exception:
+                bench_curve = None
             with db_session() as conn:
                 conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
                 rows_eq = [
                     (idea_id, str(d)[:10],
-                     float(v) - 1.0, 0.0,
+                     float(v) - 1.0,
+                     float(bench_curve.iloc[i]) - 1.0 if bench_curve is not None else 0.0,
                      float(dd_series.iloc[i]), 1 if i >= oos_start else 0)
                     for i, (d, v) in enumerate(zip(nav.index, nav.values))
                 ]

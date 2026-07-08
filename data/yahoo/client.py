@@ -32,7 +32,12 @@ BARS_PER_YEAR = {
 
 
 def _normalise(df: pd.DataFrame) -> pd.DataFrame:
-    """Lowercase columns, ensure DatetimeIndex, drop timezone."""
+    """Lowercase columns, ensure DatetimeIndex, drop timezone.
+
+    Keeps the `dividends` column: with auto_adjust=True the price series hides
+    ex-date drops, so dividend-aware strategies (dividend capture is a promoted
+    idea class) need the raw dividend cash amounts per bar.
+    """
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.copy()
@@ -40,10 +45,11 @@ def _normalise(df: pd.DataFrame) -> pd.DataFrame:
     if df.index.tz is not None:
         df.index = df.index.tz_localize(None)
     df.index.name = "time"
-    # Drop yfinance metadata columns we don't need
-    for col in ("dividends", "stock splits", "capital gains"):
+    for col in ("stock splits", "capital gains"):
         if col in df.columns:
             df.drop(columns=[col], inplace=True)
+    if "dividends" in df.columns:
+        df["dividends"] = df["dividends"].fillna(0.0)
     return df
 
 

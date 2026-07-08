@@ -34,19 +34,37 @@ class RiskMonitor(BaseAgent):
         }
 
     def check_strategy_drawdown(self, idea_id):
-        with db_session() as conn:
-            trades = conn.execute("SELECT pnl FROM paper_trades WHERE idea_id=? AND status='closed' ORDER BY closed_at", (idea_id,)).fetchall()
-        if not trades:
-            return {"idea_id": idea_id, "status": "no_data"}
+        """Drawdown from the daily NAV series (paper_equity) so open-position
+        losses count; falls back to closed-trade cumulative PnL for ideas that
+        predate NAV tracking."""
         import numpy as np
-        pnls    = [t["pnl"] for t in trades]
-        cum_pnl = np.cumsum(pnls)
-        peak    = np.maximum.accumulate(cum_pnl)
-        dd      = ((peak - cum_pnl) / (np.abs(peak) + 1e-9)).max()
+        with db_session() as conn:
+            navs = conn.execute(
+                "SELECT nav FROM paper_equity WHERE idea_id=? ORDER BY date", (idea_id,)
+            ).fetchall()
+            trade_count = conn.execute(
+                "SELECT COUNT(*) as n FROM paper_trades WHERE idea_id=? AND status='closed'",
+                (idea_id,),
+            ).fetchone()["n"]
+        if len(navs) >= 2:
+            series = np.array([r["nav"] for r in navs], dtype=float)
+            peak = np.maximum.accumulate(series)
+            dd = float(((peak - series) / peak).max())
+        elif trade_count:
+            with db_session() as conn:
+                trades = conn.execute(
+                    "SELECT pnl FROM paper_trades WHERE idea_id=? AND status='closed' ORDER BY closed_at",
+                    (idea_id,),
+                ).fetchall()
+            cum_pnl = np.cumsum([t["pnl"] for t in trades])
+            peak = np.maximum.accumulate(cum_pnl)
+            dd = float(((peak - cum_pnl) / (np.abs(peak) + 1e-9)).max())
+        else:
+            return {"idea_id": idea_id, "status": "no_data"}
         breached = dd > GATE_CONFIG.stage4a_max_drawdown
         if breached:
             self.log_daemon("ERROR", f"Strategy [{idea_id}] drawdown breached: {dd:.1%}")
-        return {"idea_id": idea_id, "drawdown": round(float(dd),4), "breached": breached, "trade_count": len(pnls)}
+        return {"idea_id": idea_id, "drawdown": round(dd, 4), "breached": breached, "trade_count": trade_count}
 
     def pipeline_health_report(self):
         with db_session() as conn:
