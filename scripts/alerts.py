@@ -8,7 +8,7 @@ import logging
 
 import requests
 
-from config.settings import TELEGRAM_BOT_TOKEN, ALERT_TELEGRAM_CHAT_ID
+from config.settings import TELEGRAM_BOT_TOKEN, ALERT_TELEGRAM_CHAT_ID, MARKET
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ def send_alert(message: str, level: str = "INFO") -> bool:
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={"chat_id": ALERT_TELEGRAM_CHAT_ID,
-                  "text": f"{emoji} [{level}] Mark's Research Centre: {message}"},
+                  "text": f"{emoji} [{level}][{MARKET}] Mark's Research Centre: {message}"},
             timeout=10,
         )
         if resp.status_code != 200:

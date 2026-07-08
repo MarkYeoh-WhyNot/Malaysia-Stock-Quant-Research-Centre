@@ -1342,17 +1342,17 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN not set — bot cannot start")
         sys.exit(1)
     init_db()
+    from config.settings import MARKET_MODE, MARKET_NAME
+    _is_bursa = MARKET_MODE == "bursa"
+
     app = Application.builder().token(BOT_TOKEN).build()
+    # Market-agnostic commands (registered on both markets' bots)
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("status",    cmd_status))
     app.add_handler(CommandHandler("ideas",     cmd_ideas))
     app.add_handler(CommandHandler("spend",     cmd_spend))
     app.add_handler(CommandHandler("generate",  cmd_generate))
-    app.add_handler(CommandHandler("screen",             cmd_screen))
-    app.add_handler(CommandHandler("fundamentals",       cmd_fundamentals))
-    app.add_handler(CommandHandler("dividend_calendar",  cmd_dividend_calendar))
-    app.add_handler(CommandHandler("briefing",           cmd_briefing))
-    app.add_handler(CommandHandler("dividends",          cmd_dividends))
+    app.add_handler(CommandHandler("briefing",  cmd_briefing))
     app.add_handler(CommandHandler("kb",        cmd_kb))
     app.add_handler(CommandHandler("search",    cmd_search))
     app.add_handler(CommandHandler("vault",     cmd_vault))
@@ -1360,30 +1360,31 @@ def main():
     app.add_handler(CommandHandler("arsenal",   cmd_arsenal))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
     app.add_handler(CommandHandler("digest",    cmd_digest))
-    app.add_handler(CommandHandler("epf",         cmd_epf))
-    app.add_handler(CommandHandler("analyst",     cmd_analyst))
-    app.add_handler(CommandHandler("cpo",         cmd_cpo))
     app.add_handler(CommandHandler("events",      cmd_events))
-    app.add_handler(CommandHandler("calendar",    cmd_calendar))
     app.add_handler(CommandHandler("event_stats", cmd_event_stats))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf_document))
+    # Bursa-only commands (KLSE scrapers, dividends, EPF/CPO/analyst monitors,
+    # Bursa economic calendar) — no crypto counterpart, so the crypto bot
+    # simply doesn't register them instead of replying with errors.
+    if _is_bursa:
+        app.add_handler(CommandHandler("screen",             cmd_screen))
+        app.add_handler(CommandHandler("fundamentals",       cmd_fundamentals))
+        app.add_handler(CommandHandler("dividend_calendar",  cmd_dividend_calendar))
+        app.add_handler(CommandHandler("dividends",          cmd_dividends))
+        app.add_handler(CommandHandler("epf",         cmd_epf))
+        app.add_handler(CommandHandler("analyst",     cmd_analyst))
+        app.add_handler(CommandHandler("cpo",         cmd_cpo))
+        app.add_handler(CommandHandler("calendar",    cmd_calendar))
 
     # Register bot command menu (shows up in Telegram UI autocomplete)
     async def _set_commands(application):
-        await application.bot.set_my_commands([
+        commands = [
             BotCommand("start",     "Help & command list"),
             BotCommand("status",    "Pipeline health report"),
             BotCommand("ideas",     "Last 8 active alpha ideas"),
             BotCommand("spend",     "AI cost breakdown today"),
-            BotCommand("generate",  "Generate KLCI equity ideas"),
-            BotCommand("screen",             "8-screen KLSE fundamental scan"),
-            BotCommand("fundamentals",       "Full fundamentals for a ticker"),
-            BotCommand("dividend_calendar",  "Upcoming ex-dividend dates"),
+            BotCommand("generate",  f"Generate {MARKET_NAME} ideas"),
             BotCommand("briefing",  "Send morning briefing now"),
-            BotCommand("dividends", "Ex-dividend dates next 14 days"),
-            BotCommand("epf",       "EPF ownership tracker"),
-            BotCommand("analyst",   "Analyst coverage initiations"),
-            BotCommand("cpo",       "CPO plantation lag signals"),
             BotCommand("kb",        "Ingest URL or text into KB"),
             BotCommand("search",    "Search knowledge base"),
             BotCommand("diversity", "KB coverage by research angle"),
@@ -1391,9 +1392,20 @@ def main():
             BotCommand("digest",    "Generate ideas from KB documents"),
             BotCommand("arsenal",      "Quantitative techniques list"),
             BotCommand("events",       "Event feed (last 24h)"),
-            BotCommand("calendar",     "Upcoming macro events"),
             BotCommand("event_stats",  "Event engine health"),
-        ])
+        ]
+        if _is_bursa:
+            commands += [
+                BotCommand("screen",             "8-screen KLSE fundamental scan"),
+                BotCommand("fundamentals",       "Full fundamentals for a ticker"),
+                BotCommand("dividend_calendar",  "Upcoming ex-dividend dates"),
+                BotCommand("dividends", "Ex-dividend dates next 14 days"),
+                BotCommand("epf",       "EPF ownership tracker"),
+                BotCommand("analyst",   "Analyst coverage initiations"),
+                BotCommand("cpo",       "CPO plantation lag signals"),
+                BotCommand("calendar",  "Upcoming macro events"),
+            ]
+        await application.bot.set_my_commands(commands)
         logger.info("Telegram bot command menu registered")
 
     app.post_init = _set_commands

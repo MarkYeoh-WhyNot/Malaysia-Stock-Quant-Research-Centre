@@ -9,6 +9,7 @@ from config.settings import (
     PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT, BURSA_MIN_DAILY_VALUE_MYR,
     bursa_trade_cost, bursa_slippage_tier,
     MARKET_RULES_VERSION, FEE_MODEL_VERSION,
+    BENCHMARK_SYMBOL,
 )
 from data.database import db_session
 
@@ -22,7 +23,7 @@ def _stamp_versions(conn):
         "WHERE id=last_insert_rowid()",
         (MARKET_RULES_VERSION, FEE_MODEL_VERSION),
     )
-from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
+from data.market_data import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 
@@ -2070,11 +2071,11 @@ Return JSON only:
                 self.log_daemon(
                     "WARN", f"Backtest [{idea_id}] robustness gate FAILED: {robustness_note}")
 
-        # ── Benchmark: excess performance vs FBM KLCI (^KLSE) ─────────────────
+        # ── Benchmark: excess performance vs the market index (profile symbol) ─
         strat_ann = float(test_r.get("ann_return", 0.0))
         benchmark_sharpe, excess_ann_return = 0.0, 0.0
         try:
-            bench_df = self._fetch_prices("^KLSE", interval, days=1825)
+            bench_df = self._fetch_prices(BENCHMARK_SYMBOL, interval, days=1825)
             if not bench_df.empty:
                 bench_ret = bench_df["close"].pct_change().reindex(df.index).dropna()
                 if len(bench_ret) > 60 and float(np.std(bench_ret)) > 1e-10:
@@ -2295,7 +2296,7 @@ Return JSON only:
             dd_series   = (equity - peak) / peak.clip(lower=1e-9)
             bench_curve = None
             try:
-                _bdf = self._fetch_prices("^KLSE", interval, days=1825)
+                _bdf = self._fetch_prices(BENCHMARK_SYMBOL, interval, days=1825)
                 if not _bdf.empty:
                     _bret = _bdf["close"].pct_change().reindex(df.index).fillna(0)
                     bench_curve = (1 + _bret).cumprod()
@@ -2849,7 +2850,7 @@ Return JSON only:
             dd_series = (nav - peak) / peak.clip(lower=1e-9)
             bench_curve = None
             try:
-                _bdf = self._fetch_prices("^KLSE", "1d", days=1825)
+                _bdf = self._fetch_prices(BENCHMARK_SYMBOL, "1d", days=1825)
                 if not _bdf.empty:
                     _bret = _bdf["close"].pct_change().reindex(nav.index).fillna(0)
                     bench_curve = (1 + _bret).cumprod()

@@ -1,11 +1,34 @@
+"""Central settings — market-agnostic config + the active MARKET PROFILE.
+
+Dual-market design (2026-07-09): every market-specific value (universe, cost
+model, calendar, prompts, ticker rules) lives in a profile module under
+config/markets/, selected once per process by the MARKET_MODE env var
+(default "bursa" — bit-identical to the original single-market system).
+
+Legacy names (KLCI_STOCKS, BURSA_*, bursa_trade_cost, ...) are re-exported from
+the active profile so the ~20 existing import sites keep working unchanged; in
+crypto mode those same names simply carry crypto values. New code should prefer
+the generic names (MARKET_UNIVERSE, trade_cost, TICKER_REGEX, ...).
+
+One process = one market. Strict pipeline isolation comes from running separate
+containers with different MARKET_MODE + OPENCLAW_RUNTIME_DIR (separate DBs).
+"""
 import os
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent.parent
 load_dotenv(BASE_DIR / ".env", override=False)
+
+# ── Active market profile ─────────────────────────────────────────────────────
+MARKET_MODE = os.getenv("MARKET_MODE", "bursa").strip().lower()
+
+from config.markets import load_market_profile  # noqa: E402
+
+MARKET_PROFILE = load_market_profile(MARKET_MODE)
+_P = MARKET_PROFILE
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY        = os.getenv("ANTHROPIC_API_KEY", "")
@@ -24,58 +47,24 @@ CONCIERGE_MODEL           = os.getenv("CONCIERGE_MODEL", MODEL_MAIN)
 CONCIERGE_DAILY_BUDGET_USD = float(os.getenv("CONCIERGE_DAILY_BUDGET_USD", "5"))
 CONCIERGE_MAX_TOOL_ITERS  = int(os.getenv("CONCIERGE_MAX_TOOL_ITERS", "6"))
 
-# ── Market ────────────────────────────────────────────────────────────────────
-MARKET          = "KLSE"                    # Bursa Malaysia
-MARKET_CURRENCY = "MYR"
-MARKET_TIMEZONE = "Asia/Kuala_Lumpur"
-MARKET_NAME     = "Bursa Malaysia"
+# ── Market identity (from profile) ────────────────────────────────────────────
+MARKET          = _P.MARKET
+MARKET_CURRENCY = _P.MARKET_CURRENCY
+MARKET_TIMEZONE = _P.MARKET_TIMEZONE
+MARKET_NAME     = _P.MARKET_NAME
+UNIVERSE_NAME   = _P.UNIVERSE_NAME
 
-# ── FBM KLCI Top-30 Universe ─────────────────────────────────────────────────
-# Yahoo Finance tickers use the .KL suffix for Bursa Malaysia
-# bursa_code = the 4-digit Bursa stock code
-#
-# SURVIVORSHIP BIAS WARNING: this is the constituent list AS OF the date below.
-# Backtests over past years use today's members and exclude stocks that were
-# dropped from the index, which upward-biases results. Until point-in-time
-# constituent history is added, treat all absolute backtest numbers as
-# optimistic and rely on the relative gates (cross-sectional IC, OOS
-# degradation, deflation hurdle) for idea ranking.
-UNIVERSE_ASOF = "2026-04-07"
+# ── Universe (from profile) ───────────────────────────────────────────────────
+UNIVERSE_ASOF = _P.UNIVERSE_ASOF
 
-KLCI_STOCKS = [
-    {"symbol": "1155.KL",   "name": "Maybank",                    "sector": "Banking",          "bursa_code": "1155"},
-    {"symbol": "1295.KL",   "name": "Public Bank",                "sector": "Banking",          "bursa_code": "1295"},
-    {"symbol": "1023.KL",   "name": "CIMB Group",                 "sector": "Banking",          "bursa_code": "1023"},
-    {"symbol": "5347.KL",   "name": "Tenaga Nasional",            "sector": "Utilities",        "bursa_code": "5347"},
-    {"symbol": "5183.KL",   "name": "Petronas Chemicals",         "sector": "Chemicals",        "bursa_code": "5183"},
-    {"symbol": "5225.KL",   "name": "IHH Healthcare",             "sector": "Healthcare",       "bursa_code": "5225"},
-    {"symbol": "8869.KL",   "name": "Press Metal Aluminium",      "sector": "Materials",        "bursa_code": "8869"},
-    {"symbol": "6947.KL",   "name": "CelcomDigi",                 "sector": "Telecoms",         "bursa_code": "6947"},
-    {"symbol": "6012.KL",   "name": "Maxis",                      "sector": "Telecoms",         "bursa_code": "6012"},
-    {"symbol": "1066.KL",   "name": "RHB Bank",                   "sector": "Banking",          "bursa_code": "1066"},
-    {"symbol": "1961.KL",   "name": "IOI Corporation",            "sector": "Plantations",      "bursa_code": "1961"},
-    {"symbol": "5285.KL",   "name": "Sime Darby Plantation",      "sector": "Plantations",      "bursa_code": "5285"},
-    {"symbol": "5819.KL",   "name": "Hong Leong Bank",            "sector": "Banking",          "bursa_code": "5819"},
-    {"symbol": "3182.KL",   "name": "Genting",                    "sector": "Consumer Disc.",   "bursa_code": "3182"},
-    {"symbol": "4715.KL",   "name": "Genting Malaysia",           "sector": "Consumer Disc.",   "bursa_code": "4715"},
-    {"symbol": "4863.KL",   "name": "Telekom Malaysia",           "sector": "Telecoms",         "bursa_code": "4863"},
-    {"symbol": "4707.KL",   "name": "Nestle Malaysia",            "sector": "Consumer Staples", "bursa_code": "4707"},
-    {"symbol": "4065.KL",   "name": "PPB Group",                  "sector": "Consumer Staples", "bursa_code": "4065"},
-    {"symbol": "6033.KL",   "name": "Petronas Gas",               "sector": "Energy",           "bursa_code": "6033"},
-    {"symbol": "3816.KL",   "name": "MISC Berhad",                "sector": "Transportation",   "bursa_code": "3816"},
-    {"symbol": "5168.KL",   "name": "Hartalega",                  "sector": "Healthcare",       "bursa_code": "5168"},
-    {"symbol": "2445.KL",   "name": "Kuala Lumpur Kepong",        "sector": "Plantations",      "bursa_code": "2445"},
-    {"symbol": "7277.KL",   "name": "Dialog Group",               "sector": "Energy",           "bursa_code": "7277"},
-    {"symbol": "1015.KL",   "name": "AmBank Group",               "sector": "Banking",          "bursa_code": "1015"},
-    {"symbol": "4197.KL",   "name": "Sime Darby",                 "sector": "Industrial",       "bursa_code": "4197"},
-    {"symbol": "1082.KL",   "name": "Hong Leong Financial",       "sector": "Banking",          "bursa_code": "1082"},
-    {"symbol": "4677.KL",   "name": "YTL Corporation",            "sector": "Utilities",        "bursa_code": "4677"},
-    {"symbol": "5398.KL",   "name": "Gamuda",                     "sector": "Construction",     "bursa_code": "5398"},
-    {"symbol": "5296.KL",   "name": "QL Resources",               "sector": "Consumer Staples", "bursa_code": "5296"},
-]
+# Legacy name: "KLCI_STOCKS" is the universe of the ACTIVE market. In crypto
+# mode it holds the crypto universe — the name is kept only so existing import
+# sites don't change. New code: use MARKET_UNIVERSE.
+MARKET_UNIVERSE = _P.UNIVERSE
+KLCI_STOCKS     = MARKET_UNIVERSE
 
 assert len({_s["symbol"] for _s in KLCI_STOCKS}) == len(KLCI_STOCKS), \
-    "Duplicate symbol in KLCI_STOCKS"
+    "Duplicate symbol in market universe"
 
 DEFAULT_SYMBOLS = [s["symbol"] for s in KLCI_STOCKS]
 
@@ -87,78 +76,61 @@ KLCI_BY_SYMBOL  = {s["symbol"]: s for s in KLCI_STOCKS}
 KLCI_BY_CODE    = {s["bursa_code"]: s for s in KLCI_STOCKS}
 KLCI_SECTORS    = sorted(set(s["sector"] for s in KLCI_STOCKS))
 
-# ── Bursa Malaysia trading calendar ──────────────────────────────────────────
-# Morning session: 09:00–12:30 MYT, Afternoon: 14:30–17:00 MYT
-MARKET_OPEN_HOUR  = 9
-MARKET_CLOSE_HOUR = 17
-TRADING_DAYS_PER_YEAR = 252
+# ── Trading calendar (from profile) ──────────────────────────────────────────
+MARKET_OPEN_HOUR      = _P.MARKET_OPEN_HOUR
+MARKET_CLOSE_HOUR     = _P.MARKET_CLOSE_HOUR
+TRADING_DAYS_PER_YEAR = _P.TRADING_DAYS_PER_YEAR
+MARKET_CALENDAR       = _P.CALENDAR      # "business" | "daily"
 
-# ── Bursa Malaysia market rules & transaction cost model ──────────────────────
-# Single source of truth — the backtester and paper trading must both use these.
-#
+# ── Market rules & transaction cost model (from profile) ─────────────────────
 # MARKET_RULES_VERSION / FEE_MODEL_VERSION are stamped onto every backtest_runs
 # row so results are always traceable to the assumptions in force when they ran.
-# Bump these whenever a rule or fee below changes.
-MARKET_RULES_VERSION      = "2026-07-09"   # T+2 settlement, 100-share board lot, long-only
-FEE_MODEL_VERSION         = "2026-07-09"   # 0.10% remitted stamp (cap RM1000), 0.03% clearing
+MARKET_RULES_VERSION = _P.MARKET_RULES_VERSION
+FEE_MODEL_VERSION    = _P.FEE_MODEL_VERSION
 
-# Settlement: Bursa normal delivery & settlement is T+2 (effective 2019-04-29,
-# Bursa Malaysia Securities Clearing). Used in feasibility scoring + red-team
-# reasoning; it does not feed the cost math below.
-BURSA_SETTLEMENT_CYCLE    = "T+2"
+BURSA_SETTLEMENT_CYCLE    = _P.SETTLEMENT_CYCLE
+SETTLEMENT_CYCLE          = _P.SETTLEMENT_CYCLE
 
-BURSA_COMMISSION_RATE     = 0.0008     # 0.08% per side
-# Stamp duty: statutory RM1.50/RM1,000 (0.15%), but REMITTED to an effective
-# 0.10% for contract notes executed 2023-07-13 → 2028-07-12, capped at RM1,000
-# per contract note (raised from the old RM200 cap). At RM100k paper scale the
-# cap rarely binds; the 0.15→0.10 rate cut is the material change (lowers cost).
-BURSA_STAMP_DUTY_RATE     = 0.0010     # 0.10% remitted, buy-side only
-BURSA_STAMP_DUTY_CAP_MYR  = 1000.0     # capped at RM1,000 per contract note
-BURSA_STAMP_REMISSION_END = "2028-07-12"   # revert to 0.15% if not extended
-BURSA_CLEARING_RATE       = 0.0003     # 0.03% per side
-BURSA_CLEARING_CAP_MYR    = 1000.0     # capped at RM1,000 per side
-BURSA_BOARD_LOT           = 100        # minimum lot size (shares)
+BURSA_COMMISSION_RATE     = _P.COMMISSION_RATE
+BURSA_STAMP_DUTY_RATE     = _P.STAMP_DUTY_RATE
+BURSA_STAMP_DUTY_CAP_MYR  = _P.STAMP_DUTY_CAP
+BURSA_STAMP_REMISSION_END = _P.STAMP_REMISSION_END
+BURSA_CLEARING_RATE       = _P.CLEARING_RATE
+BURSA_CLEARING_CAP_MYR    = _P.CLEARING_CAP
+BURSA_BOARD_LOT           = _P.BOARD_LOT
 
-# Slippage by liquidity tier (fraction of trade value, per side)
-BURSA_SLIPPAGE_TIERS = {
-    "BLUE_CHIP": 0.0005,   # ADV value ≥ RM20M
-    "MID_CAP":   0.0025,   # ADV value ≥ RM2M
-    "SMALL_CAP": 0.0075,   # below RM2M
-}
-BURSA_TIER_BLUE_CHIP_MYR = 20_000_000.0
-BURSA_TIER_MID_CAP_MYR   = 2_000_000.0
+BURSA_SLIPPAGE_TIERS      = _P.SLIPPAGE_TIERS
+BURSA_TIER_BLUE_CHIP_MYR  = _P.TIER_BLUE_CHIP
+BURSA_TIER_MID_CAP_MYR    = _P.TIER_MID_CAP
+BURSA_MIN_DAILY_VALUE_MYR = _P.MIN_DAILY_VALUE
 
-# Liquidity floor: reject strategies on names below this avg daily traded value
-BURSA_MIN_DAILY_VALUE_MYR = 500_000.0
-
-# Notional capital allocated to each paper-traded idea
+# Notional capital allocated to each paper-traded idea (market-agnostic:
+# 100k MYR for Bursa, 100k USDT for crypto — same order of magnitude).
 PAPER_CAPITAL_MYR = 100_000.0
 PAPER_ALLOC_PCT   = 0.95     # fraction of idea NAV deployed per position
 
+# Cost / sizing functions — legacy names bound to the active profile.
+bursa_slippage_tier = _P.slippage_tier
+bursa_trade_cost    = _P.trade_cost
+slippage_tier       = _P.slippage_tier
+trade_cost          = _P.trade_cost
+size_units          = _P.size_units
 
-def bursa_slippage_tier(avg_daily_value_myr: float) -> str:
-    """Classify a stock's liquidity tier from average daily traded value (MYR)."""
-    if avg_daily_value_myr >= BURSA_TIER_BLUE_CHIP_MYR:
-        return "BLUE_CHIP"
-    if avg_daily_value_myr >= BURSA_TIER_MID_CAP_MYR:
-        return "MID_CAP"
-    return "SMALL_CAP"
-
-
-def bursa_trade_cost(trade_value_myr: float, side: str,
-                     slippage_tier: str = "BLUE_CHIP") -> float:
-    """Total cost in MYR for one side of a Bursa trade.
-
-    side: 'buy' or 'sell'. Stamp duty applies to the buy side only and is
-    capped at RM1,000; clearing is capped at RM1,000 per side.
-    """
-    value = abs(trade_value_myr)
-    cost = value * BURSA_COMMISSION_RATE
-    cost += min(value * BURSA_CLEARING_RATE, BURSA_CLEARING_CAP_MYR)
-    if side == "buy":
-        cost += min(value * BURSA_STAMP_DUTY_RATE, BURSA_STAMP_DUTY_CAP_MYR)
-    cost += value * BURSA_SLIPPAGE_TIERS.get(slippage_tier, BURSA_SLIPPAGE_TIERS["MID_CAP"])
-    return cost
+# ── Instruments / prompts / jobs (generic names, from profile) ───────────────
+TICKER_REGEX     = _P.TICKER_REGEX
+TICKER_EXAMPLE   = _P.TICKER_EXAMPLE
+DATA_BACKEND     = _P.DATA_BACKEND
+BENCHMARK_SYMBOL = _P.BENCHMARK_SYMBOL
+BLOCKED_MODES    = _P.BLOCKED_MODES
+UNAVAILABLE_DATA_KEYWORDS = _P.UNAVAILABLE_DATA_KEYWORDS
+EXOTIC_KEYWORDS  = _P.EXOTIC_KEYWORDS
+MARKET_BRIEF     = _P.MARKET_BRIEF
+RED_TEAM_ATTACKS = _P.RED_TEAM_ATTACKS
+BLUE_DEFENSE_NOTES = _P.BLUE_DEFENSE_NOTES
+JUDGE_REJECT_RULE  = _P.JUDGE_REJECT_RULE
+INSTRUMENT_TYPE  = _P.INSTRUMENT_TYPE
+CONCENTRATION_SECTOR = _P.CONCENTRATION_SECTOR
+ENABLED_JOBS     = _P.ENABLED_JOBS        # None = all jobs
 
 # ── Runtime state directory ───────────────────────────────────────────────────
 # All mutable runtime artifacts (SQLite DB, parquet cache, heartbeat, progress
@@ -167,6 +139,7 @@ def bursa_trade_cost(trade_value_myr: float, side: str,
 # source code (database.py, yahoo/, klse/...), and mounting a named volume
 # over /app/data shadowed those modules with first-deploy copies — code
 # updates under data/ silently never reached the running containers.
+# Each market's containers mount a DIFFERENT volume here → separate DBs.
 RUNTIME_DIR = Path(os.getenv("OPENCLAW_RUNTIME_DIR", str(BASE_DIR / "data")))
 
 # ── Database ──────────────────────────────────────────────────────────────────
@@ -221,37 +194,38 @@ class GateConfig:
     # Suspected-corporate-action gap threshold (unhandled bonus/rights issues):
     # an overnight move beyond this magnitude is flagged and dents confidence.
     dq_corp_action_gap: float           = 0.25
-    # Benchmark-relative gate (audit §8.4): a strategy must beat a simple KLCI
+    # Benchmark-relative gate (audit §8.4): a strategy must beat a simple
     # baseline after costs, else its complexity is not justified. Gates on excess
-    # annual return vs the equal-weight KLCI (the harder of the two baselines);
-    # KLCI buy-and-hold excess is also stored for reference.
+    # annual return vs the equal-weight universe (the harder of the two
+    # baselines); the index/benchmark-symbol excess is also stored for reference.
     benchmark_gate_enabled: bool        = True
-    benchmark_min_excess_ann: float     = 0.0    # strategy ann_return must exceed EW-KLCI by this
+    benchmark_min_excess_ann: float     = 0.0    # strategy ann_return must exceed EW baseline by this
     # Phase 3.4 — capacity test (audit §8.5). Don't trade more than
     # capacity_max_participation of 20-day ADV per day; a strategy whose position
     # takes longer than capacity_max_days to enter/exit is capacity-constrained.
-    # Rarely binds at RM100k paper scale but required for the capital-scaling story.
     capacity_gate_enabled: bool         = True
     capacity_max_participation: float   = 0.05
     capacity_max_days: float            = 5.0
-    # Phase 4.2 — portfolio concentration limits (audit §10.2), Malaysia-specific.
+    # Phase 4.2 — portfolio concentration limits (audit §10.2).
     max_single_name_pct: float          = 0.15
     max_sector_pct: float               = 0.35
-    max_bank_pct: float                 = 0.40   # KLCI is bank-heavy
+    max_bank_pct: float                 = 0.40   # watched sector = profile CONCENTRATION_SECTOR
     # QC7 — parameter robustness (DSL signals): fraction of ±20% parameter
     # perturbations that must retain > robustness_sharpe_ratio × base Sharpe
     robustness_min_fraction: float      = 0.6
     robustness_sharpe_ratio: float      = 0.5
     robustness_draws: int               = 8
 
-GATE_CONFIG = GateConfig()
+# Profile-specific threshold overrides (e.g. crypto's wider drawdown norms).
+# Bursa's overrides are {} — defaults ARE the Bursa values.
+GATE_CONFIG = replace(GateConfig(), **_P.GATE_OVERRIDES)
 
 # ── Messaging ─────────────────────────────────────────────────────────────────
 TELEGRAM_BOT_TOKEN  = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID    = os.getenv("TELEGRAM_CHAT_ID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 
-# ── OANDA (legacy — kept for backward compat, not used for KLSE) ──────────────
+# ── OANDA (legacy — kept for backward compat, not used) ──────────────────────
 OANDA_API_KEY     = os.getenv("OANDA_API_KEY", "")
 OANDA_ACCOUNT_ID  = os.getenv("OANDA_ACCOUNT_ID", "")
 OANDA_ENVIRONMENT = os.getenv("OANDA_ENVIRONMENT", "practice")

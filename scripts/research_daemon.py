@@ -61,7 +61,15 @@ class ResearchDaemon:
         onward — if the daemon was down or busy during the target hour, the job
         runs on the next cycle instead of being skipped for the day. A job that
         has never run is due immediately.
+
+        Market gating (dual-market): if the active profile declares an
+        ENABLED_JOBS allowlist (crypto does; Bursa's is None = all), jobs not
+        on it never fire — e.g. the KLSE scraper / CPO / analyst-coverage jobs
+        have no crypto counterpart and simply don't exist in that container.
         """
+        from config.settings import ENABLED_JOBS
+        if ENABLED_JOBS is not None and name not in ENABLED_JOBS:
+            return False
         now = datetime.utcnow()
         last = self._job_last_run.get(name)
         if last is None:

@@ -49,12 +49,11 @@ class PortfolioExecutor(BaseAgent):
 
     @staticmethod
     def size_shares(nav: float, price: float,
-                    alloc_pct: float = PAPER_ALLOC_PCT) -> int:
-        """Shares to buy: alloc_pct of NAV, rounded down to a 100-share board lot."""
-        if price <= 0:
-            return 0
-        lots = int((nav * alloc_pct) / price / BURSA_BOARD_LOT)
-        return lots * BURSA_BOARD_LOT
+                    alloc_pct: float = PAPER_ALLOC_PCT):
+        """Units to buy — delegates to the market profile's sizing rule
+        (Bursa: whole 100-share board lots; crypto: fractional 0.0001 steps)."""
+        from config.settings import size_units
+        return size_units(nav, price, alloc_pct)
 
     # ------------------------------------------------------------------
     # Idea NAV (cash accounting per idea)

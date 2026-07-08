@@ -68,20 +68,26 @@ class MorningBriefing:
         # a) Pipeline status
         health = self.risk_monitor.pipeline_health_report()
 
-        # b) Overnight research articles (top 5)
-        articles = []
-        try:
-            all_articles = self.scraper.get_research_articles(max_articles=20)
-            articles = all_articles[:5]
-        except Exception as e:
-            logger.warning(f"Morning briefing: research articles fetch failed: {e}")
+        # b) Overnight research articles (top 5) — i3investor is Bursa-only;
+        # crypto mode has no scraped-research source in v1, sections stay empty.
+        from config.settings import MARKET_MODE
+        _is_bursa = MARKET_MODE == "bursa"
 
-        # c) Dividend announcements in next 7 days
+        articles = []
+        if _is_bursa:
+            try:
+                all_articles = self.scraper.get_research_articles(max_articles=20)
+                articles = all_articles[:5]
+            except Exception as e:
+                logger.warning(f"Morning briefing: research articles fetch failed: {e}")
+
+        # c) Dividend announcements in next 7 days (Bursa-only concept)
         dividends = []
-        try:
-            dividends = self.scanner.scan_dividend_calendar(days_ahead=7)
-        except Exception as e:
-            logger.warning(f"Morning briefing: dividend calendar failed: {e}")
+        if _is_bursa:
+            try:
+                dividends = self.scanner.scan_dividend_calendar(days_ahead=7)
+            except Exception as e:
+                logger.warning(f"Morning briefing: dividend calendar failed: {e}")
 
         # d) Today's research angle from DiversityEngine
         research_angle = ""

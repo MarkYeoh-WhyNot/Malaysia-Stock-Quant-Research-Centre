@@ -12,32 +12,33 @@ from __future__ import annotations
 
 from config.settings import (
     BURSA_BOARD_LOT, BURSA_MIN_DAILY_VALUE_MYR, GATE_CONFIG,
-    bursa_trade_cost, bursa_slippage_tier,
+    bursa_trade_cost, bursa_slippage_tier, size_units,
+    TICKER_REGEX, TICKER_EXAMPLE, MARKET_CURRENCY,
 )
 
 
 def simulate_fill(nav: float, price: float, adv_value_myr: float,
                   alloc_pct: float) -> dict:
-    """Board-lot-rounded, capacity-aware fill simulation for one entry order.
+    """Lot-rounded, capacity-aware fill simulation for one entry order.
 
-    Two independent constraints on size: (1) NAV × alloc_pct (existing sizing),
-    (2) the audit's capacity rule — no more than capacity_max_participation of
-    ADV in one day. Whichever is smaller determines the fill; if the capacity
-    constraint binds, the order is a PARTIAL_FILL rather than a full one.
+    Sizing uses the market profile's rule (Bursa: whole 100-share board lots;
+    crypto: fractional 0.0001 steps). Two independent constraints: (1) NAV ×
+    alloc_pct, (2) the capacity rule — no more than capacity_max_participation
+    of ADV in one day. Whichever is smaller determines the fill; if the
+    capacity constraint binds, the order is a PARTIAL_FILL.
     """
     if price <= 0:
         return {"units": 0, "status": "FAILED", "reason": "invalid price"}
 
-    requested_value = nav * alloc_pct
-    requested_units = int(requested_value / price / BURSA_BOARD_LOT) * BURSA_BOARD_LOT
+    requested_units = size_units(nav, price, alloc_pct)
 
     capacity_value = adv_value_myr * GATE_CONFIG.capacity_max_participation
-    capacity_units = int(capacity_value / price / BURSA_BOARD_LOT) * BURSA_BOARD_LOT
+    capacity_units = size_units(capacity_value, price, 1.0)
 
     units = min(requested_units, capacity_units) if capacity_units > 0 else requested_units
-    if units < BURSA_BOARD_LOT:
+    if units < BURSA_BOARD_LOT or units <= 0:
         return {"units": 0, "status": "FAILED",
-                "reason": "insufficient NAV or capacity for one board lot",
+                "reason": "insufficient NAV or capacity for one minimum lot",
                 "requested_units": requested_units}
 
     status = "PARTIAL_FILL" if units < requested_units else "FILLED"
@@ -53,8 +54,8 @@ def pre_trade_check(ticker: str, nav: float, bar: dict | None,
     """
     reasons = []
 
-    if not ticker or not ticker.upper().endswith(".KL"):
-        reasons.append(f"invalid ticker '{ticker}' — must be a .KL instrument")
+    if not ticker or not TICKER_REGEX.fullmatch(ticker.strip()):
+        reasons.append(f"invalid ticker '{ticker}' — instruments look like {TICKER_EXAMPLE}")
 
     if bar is None:
         reasons.append("no price data available")
@@ -64,9 +65,10 @@ def pre_trade_check(ticker: str, nav: float, bar: dict | None,
         adv = bar.get("adv_value", 0.0)
         if adv < BURSA_MIN_DAILY_VALUE_MYR:
             reasons.append(
-                f"liquidity floor: ADV RM{adv:,.0f} < RM{BURSA_MIN_DAILY_VALUE_MYR:,.0f}")
-        if bar.get("close", 0) > 0 and nav * 0.95 / bar["close"] < BURSA_BOARD_LOT:
-            reasons.append("insufficient cash for one board lot")
+                f"liquidity floor: ADV {MARKET_CURRENCY} {adv:,.0f} < "
+                f"{MARKET_CURRENCY} {BURSA_MIN_DAILY_VALUE_MYR:,.0f}")
+        if bar.get("close", 0) > 0 and size_units(nav, bar["close"], 0.95) <= 0:
+            reasons.append("insufficient cash for one minimum lot")
 
     if dq_confidence is not None and dq_confidence < GATE_CONFIG.dq_min_confidence:
         reasons.append(

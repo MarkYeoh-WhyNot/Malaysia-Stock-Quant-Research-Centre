@@ -248,41 +248,53 @@ class EventWatcher:
         self._rss_cycle = 0  # fetch RSS every 3rd cycle
 
     def run_cycle(self):
-        """Single scan cycle."""
+        """Single scan cycle.
+
+        Dual-market: sources 1, 2 and 4 (Bursa announcements, Malaysian news
+        RSS, Bursa economic calendar) are Bursa-only and are skipped in crypto
+        mode. Source 3 (the price-move monitor) is market-aware — its
+        watchlist is profile-conditional (commodities for Bursa, BTC/ETH
+        majors for crypto).
+        """
+        from config.settings import MARKET_MODE
+        _is_bursa = MARKET_MODE == "bursa"
         raw_events = []
 
-        # 1. Bursa announcements — every cycle
-        try:
-            ann = self.bursa.fetch_announcements(hours_back=1)
-            raw_events.extend(ann)
-            logger.debug(f"Bursa announcements: {len(ann)}")
-        except Exception as exc:
-            _log_daemon("WARN", f"Bursa scraper error: {exc}")
-
-        # 2. RSS feeds — every 3rd cycle (15 min cadence)
-        self._rss_cycle += 1
-        if self._rss_cycle >= 3:
+        # 1. Bursa announcements — every cycle (Bursa only)
+        if _is_bursa:
             try:
-                rss = self.rss.fetch_all_feeds()
-                raw_events.extend(rss)
-                logger.debug(f"RSS: {len(rss)} entries")
+                ann = self.bursa.fetch_announcements(hours_back=1)
+                raw_events.extend(ann)
+                logger.debug(f"Bursa announcements: {len(ann)}")
             except Exception as exc:
-                _log_daemon("WARN", f"RSS error: {exc}")
-            self._rss_cycle = 0
+                _log_daemon("WARN", f"Bursa scraper error: {exc}")
 
-        # 3. Commodity moves — every cycle
+        # 2. RSS feeds — every 3rd cycle (15 min cadence; Bursa news sources)
+        if _is_bursa:
+            self._rss_cycle += 1
+            if self._rss_cycle >= 3:
+                try:
+                    rss = self.rss.fetch_all_feeds()
+                    raw_events.extend(rss)
+                    logger.debug(f"RSS: {len(rss)} entries")
+                except Exception as exc:
+                    _log_daemon("WARN", f"RSS error: {exc}")
+                self._rss_cycle = 0
+
+        # 3. Market price-move monitor — every cycle (watchlist per profile)
         try:
             comm = self.commodities.check_moves()
             raw_events.extend(comm)
-            logger.debug(f"Commodity events: {len(comm)}")
+            logger.debug(f"Price-move events: {len(comm)}")
         except Exception as exc:
-            _log_daemon("WARN", f"Commodity monitor error: {exc}")
+            _log_daemon("WARN", f"Price-move monitor error: {exc}")
 
-        # 4. Economic calendar check
-        try:
-            self.check_economic_calendar()
-        except Exception as exc:
-            _log_daemon("WARN", f"Calendar check error: {exc}")
+        # 4. Economic calendar check (Bursa only)
+        if _is_bursa:
+            try:
+                self.check_economic_calendar()
+            except Exception as exc:
+                _log_daemon("WARN", f"Calendar check error: {exc}")
 
         # Process all new events
         ideas_created = 0

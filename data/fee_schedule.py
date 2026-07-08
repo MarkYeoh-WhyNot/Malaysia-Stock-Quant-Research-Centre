@@ -15,7 +15,8 @@ from __future__ import annotations
 from functools import lru_cache
 
 from config.settings import (
-    MARKET, BURSA_COMMISSION_RATE, BURSA_CLEARING_RATE, BURSA_CLEARING_CAP_MYR,
+    MARKET, INSTRUMENT_TYPE,
+    BURSA_COMMISSION_RATE, BURSA_CLEARING_RATE, BURSA_CLEARING_CAP_MYR,
     BURSA_STAMP_DUTY_RATE, BURSA_STAMP_DUTY_CAP_MYR, BURSA_BOARD_LOT,
     BURSA_SETTLEMENT_CYCLE, BURSA_SLIPPAGE_TIERS,
 )
@@ -38,7 +39,7 @@ def _constants_schedule() -> dict:
 
 @lru_cache(maxsize=64)
 def get_fee_schedule(as_of: str | None = None,
-                     instrument_type: str = "listed_equity") -> dict:
+                     instrument_type: str = INSTRUMENT_TYPE) -> dict:
     """Return the fee schedule in force on `as_of` (YYYY-MM-DD).
 
     Falls back to the settings constants if the table is empty or has no row

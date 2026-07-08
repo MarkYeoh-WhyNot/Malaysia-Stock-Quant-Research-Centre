@@ -14,7 +14,18 @@
 }
 
 {$DASHBOARD_DOMAIN:localhost} {
-	reverse_proxy api:8001
 	encode gzip
 	tls internal
+
+	# Crypto pipeline: /crypto/* → the crypto api container. handle_path strips
+	# the prefix, so the same FastAPI app serves its /api/... routes and static
+	# UI unchanged — it doesn't know it lives under /crypto.
+	handle_path /crypto/* {
+		reverse_proxy api-crypto:8001
+	}
+
+	# Everything else: the Bursa pipeline (unchanged).
+	handle {
+		reverse_proxy api:8001
+	}
 }

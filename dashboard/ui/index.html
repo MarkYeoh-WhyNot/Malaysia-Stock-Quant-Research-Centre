@@ -431,6 +431,8 @@ svg text{font-family:'Courier New',monospace}
   <h1>🐋 MARK'S RESEARCH CENTRE</h1>
   <span style="color:var(--muted);font-size:11px">MISSION CONTROL</span>
   <span class="live-badge">LIVE</span>
+  <span id="market-badge" style="font-size:10px;font-weight:bold;padding:2px 8px;border-radius:3px;margin-left:6px"></span>
+  <a id="market-switch" style="font-size:10px;color:var(--muted);cursor:pointer;margin-left:4px;text-decoration:underline"></a>
   <span id="heartbeat-wrap" style="display:inline-flex;align-items:center;gap:4px;margin-left:10px">
     <span class="heartbeat-icon" id="heartbeat-icon">♥</span>
     <span class="heartbeat-label" id="heartbeat-label">Daemon…</span>
@@ -1524,7 +1526,24 @@ svg text{font-family:'Courier New',monospace}
 
 <!-- ═══ JAVASCRIPT ══════════════════════════════════════════════════════════ -->
 <script>
-const API = '/api';
+// Dual-market: the same UI is served at "/" (Bursa) and "/crypto/" (crypto
+// pipeline, via Caddy handle_path -> api-crypto). All API calls are prefixed so
+// each view talks only to its own market's backend/DB.
+const MARKET_BASE = location.pathname.startsWith('/crypto') ? '/crypto' : '';
+const IS_CRYPTO = MARKET_BASE === '/crypto';
+const API = MARKET_BASE + '/api';
+document.addEventListener('DOMContentLoaded', () => {
+  const b = document.getElementById('market-badge'), s = document.getElementById('market-switch');
+  if (b) {
+    b.textContent = IS_CRYPTO ? 'CRYPTO' : 'BURSA';
+    b.style.background = IS_CRYPTO ? '#f7931a' : 'var(--cyan)';
+    b.style.color = '#001';
+  }
+  if (s) {
+    s.textContent = IS_CRYPTO ? '\u21c4 Bursa' : '\u21c4 Crypto';
+    s.href = IS_CRYPTO ? '/' : '/crypto/';
+  }
+});
 let _allMCLogs = [];
 let _currentPage = 'mc';
 
@@ -2866,7 +2885,7 @@ async function loadKBDocs() {
 
 async function deleteKBDoc(id, title) {
   if (!confirm(`Delete document #${id}: "${title}"?\n\nThis will also remove all graph links for this document.`)) return;
-  const r = await fetch(`/api/kb/document/${id}`, {method:'DELETE'});
+  const r = await fetch(`${API}/kb/document/${id}`, {method:'DELETE'});
   if (r.ok) { showToast(`Deleted doc #${id}`); loadKBDocs(); loadKBStats(); }
   else showToast(`Delete failed: ${r.status}`, true);
 }
@@ -2876,7 +2895,7 @@ async function bulkDeleteKBDocs() {
   if (!checked.length) return;
   const ids = checked.map(cb => parseInt(cb.dataset.id));
   if (!confirm(`Delete ${ids.length} document(s)? This cannot be undone.`)) return;
-  const r = await fetch('/api/kb/documents/bulk', {
+  const r = await fetch(API + '/kb/documents/bulk', {
     method:'DELETE', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({doc_ids: ids})
   });
@@ -2889,7 +2908,7 @@ async function bulkDeleteKBDocs() {
 }
 
 async function updateKBDomain(id, domain, selectEl) {
-  const r = await fetch(`/api/kb/document/${id}/domain`, {
+  const r = await fetch(`${API}/kb/document/${id}/domain`, {
     method:'PATCH', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({domain})
   });
@@ -3233,7 +3252,7 @@ async function loadKBConcepts() {
 
 async function deleteKBConcept(id, name) {
   if (!confirm(`Delete concept "${name}"?`)) return;
-  const r = await fetch(`/api/kb/concept/${id}`, {method:'DELETE'});
+  const r = await fetch(`${API}/kb/concept/${id}`, {method:'DELETE'});
   if (r.ok) { showToast(`Deleted concept: ${name}`); loadKBConcepts(); }
   else showToast(`Delete failed: ${r.status}`, true);
 }
@@ -3285,7 +3304,7 @@ async function ingestPDF() {
   form.append('file', _pdfFile, _pdfFile.name);
 
   try {
-    const resp = await fetch('/api/kb/ingest-pdf', { method: 'POST', body: form });
+    const resp = await fetch(API + '/kb/ingest-pdf', { method: 'POST', body: form });
     const r = await resp.json();
     if (r?.doc_id) {
       const cat = r.relevance_category || '';
@@ -3371,8 +3390,8 @@ async function loadEventFeed() {
   if (_evFilter === 'kb_only') params.set('action', 'kb_only');
 
   const [evData, statsData] = await Promise.all([
-    fetch('/api/events?' + params).then(r => r.json()).catch(() => []),
-    fetch('/api/events/stats').then(r => r.json()).catch(() => ({})),
+    fetch(API + '/events?' + params).then(r => r.json()).catch(() => []),
+    fetch(API + '/events/stats').then(r => r.json()).catch(() => ({})),
   ]);
 
   // Stats
@@ -3423,7 +3442,7 @@ async function loadEventFeed() {
 }
 
 async function loadCalendarStrip() {
-  const data = await fetch('/api/events/calendar?days_ahead=30').then(r=>r.json()).catch(()=>[]);
+  const data = await fetch(API + '/events/calendar?days_ahead=30').then(r=>r.json()).catch(()=>[]);
   const strip = document.getElementById('calendar-strip');
   strip.innerHTML = '';
   const today = new Date().toISOString().slice(0,10);
