@@ -311,6 +311,7 @@ def init_db(db_path: Path = DB_PATH):
             "benchmark_sharpe REAL",
             "excess_ann_return REAL",
             "ic_tstat_iid REAL",
+            "robustness_score REAL",
         ):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")

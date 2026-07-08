@@ -69,38 +69,85 @@ class BacktestEngineer(BaseAgent):
     # ── Factor parsing ────────────────────────────────────────────────────────
 
     def _parse_factor(self, factor_formula: str, title: str, hypothesis: str) -> dict:
-        prompt = f"""Parse this Bursa Malaysia equity strategy into structured signal parameters.
+        """Parse the idea's free text into a signal DSL condition tree.
+
+        Honesty contract: if the idea cannot be expressed with the available
+        leaves, the parser must say so ({"representable": false, "reason"})
+        and the idea is rejected with that reason — it is NEVER silently
+        genericized onto the nearest template (the historical failure mode
+        that flattened every thesis into 20-day momentum).
+
+        The catalog shows parameter RANGES only, no example values — the old
+        prompt pre-filled defaults (20/50/14/35/65...) and Haiku anchored on
+        them instead of extracting the idea's own parameters.
+        """
+        from agents.backtest_engineer import signal_dsl
+
+        prompt = f"""Translate this Bursa Malaysia equity strategy into a signal condition tree.
 
 Factor formula: {factor_formula}
 Strategy title: {title}
 Hypothesis: {hypothesis}
 
-Return JSON:
+AVAILABLE CONDITIONS (parameters MUST come from the strategy text; ranges are hard limits):
+{signal_dsl.leaf_catalog_text()}
+
+Combinators: {{"op": "AND"|"OR", "children": [<node>, <node>, ...]}} and {{"op": "NOT", "child": <node>}}.
+A leaf node looks like {{"leaf": "<name>", <params>}}.
+
+Return JSON, one of these three shapes:
+
+1. Representable as price/volume/dividend/CPO conditions:
 {{
-  "signal_type": "sma_crossover|ema_crossover|rsi|momentum|bollinger|macd|value|quality|volume_breakout|gap_fill|short_term_reversal|cross_sectional_momentum|pead|cpo_correlation|cpo_lag|opr_banking_signal|opr_cycle",
-  "fast_period": 20,
-  "slow_period": 50,
-  "rsi_period": 14,
-  "rsi_oversold": 35,
-  "rsi_overbought": 65,
-  "bb_period": 20,
-  "bb_std": 2.0,
-  "momentum_period": 20,
-  "macd_signal_period": 9,
-  "volume_ma_period": 20,
-  "volume_threshold": 1.5,
-  "stop_loss_pct": 0.08,
-  "take_profit_pct": 0.15,
-  "long_only": true,
-  "notes": "brief signal description"
-}}"""
+  "representable": true,
+  "entry": <condition tree — when to be long>,
+  "exit": <condition tree or null — when to flatten; null means hold while entry condition is true>,
+  "notes": "one line: how the tree captures the strategy's actual thesis"
+}}
+
+2. A fundamental screen across 5+ stocks (ROE/PB/PE/DY ranking or filtering):
+{{"representable": true, "route": "fundamental_screen"}}
+
+3. NOT expressible with the available conditions (requires data or logic none of the leaves provide):
+{{"representable": false, "reason": "one specific sentence — what the strategy needs that is unavailable"}}
+
+Rules:
+- Extract every numeric parameter from the strategy text. If the text gives no value for a
+  required parameter, the strategy is underspecified — use shape 3 with reason "parameter X unspecified".
+- NEVER approximate an unrelated mechanism with a price proxy. If the thesis is about earnings
+  surprises, analyst coverage, sentiment, or anything with no matching leaf, use shape 3.
+- Long-only (Bursa short-selling restricted): the entry tree describes when to be LONG."""
         result = self.call_claude_json(
             SYSTEM,
             [{"role": "user", "content": prompt}],
             model=MODEL_FAST,
             task_label="parse_factor",
         )
-        return result if isinstance(result, dict) else {}
+        if not isinstance(result, dict):
+            return {"representable": False, "reason": "parser returned non-JSON"}
+        if "error" in result:
+            return {"representable": False, "reason": "parser JSON parse failure"}
+
+        if result.get("route") == "fundamental_screen":
+            return {"signal_type": "fundamental_screen", "route": "fundamental_screen",
+                    "representable": True}
+
+        if not result.get("representable"):
+            return {"representable": False,
+                    "reason": result.get("reason", "not representable (no reason given)")}
+
+        tree = {"entry": result.get("entry"), "exit": result.get("exit")}
+        errors = signal_dsl.validate(tree)
+        if errors:
+            return {"representable": False,
+                    "reason": f"invalid condition tree: {'; '.join(errors[:4])}"}
+        return {
+            "signal_type": "dsl",
+            "representable": True,
+            "dsl": tree,
+            "long_only": True,
+            "notes": result.get("notes", ""),
+        }
 
     # ── Signal computation ────────────────────────────────────────────────────
 
@@ -119,6 +166,21 @@ Return JSON:
         # designated securities only)
         long_only = bool(params.get("long_only", True))
         open_prices = df["open"] if "open" in df.columns else close
+
+        if stype == "dsl":
+            # Condition-tree path (see signal_dsl.py). Legacy template branches
+            # below stay intact: paper trading replays stored backtest params.
+            from agents.backtest_engineer import signal_dsl
+            frame = df
+            needed = signal_dsl.required_columns(params["dsl"])
+            if "cpo_close" in needed and "cpo_close" not in df.columns:
+                frame = df.copy()
+                frame["cpo_close"] = self._fetch_cpo_series(df.index)
+            if "dividends" in needed and "dividends" not in df.columns:
+                if frame is df:
+                    frame = df.copy()
+                frame["dividends"] = 0.0  # no dividend data cached — leaf never fires
+            return signal_dsl.signal_from_dsl(frame, params["dsl"])
 
         if stype in ("sma_crossover", "ema_crossover"):
             fp = int(params.get("fast_period", 20))
@@ -219,12 +281,38 @@ Return JSON:
             three_month_ret = close.pct_change(63)
             raw = (three_month_ret > 0.02).astype(float).values
 
-        else:  # momentum / default
+        else:  # momentum / default (legacy)
+            if stype not in ("momentum",):
+                # The old parser could emit types with no branch (value,
+                # quality) which silently became momentum — the new DSL
+                # parser can't, but legacy stored params might. Be loud.
+                logger.warning(
+                    f"_compute_signals: legacy signal_type {stype!r} has no "
+                    f"branch — falling back to momentum (legacy-compat only)"
+                )
             period = int(params.get("momentum_period", 20))
             ret    = close.pct_change(period)
             raw    = np.where(ret > 0, 1, 0 if long_only else -1)
 
         return pd.Series(raw, index=df.index, dtype=float)
+
+    def _fetch_cpo_series(self, index: pd.DatetimeIndex) -> pd.Series:
+        """CPO futures closes aligned to the given index (for cpo_change
+        leaves). Returns NaN series on failure — the leaf then never fires,
+        which surfaces in the deterministic never-fires verify gate instead
+        of silently degrading to a price proxy."""
+        try:
+            import yfinance as yf
+            cpo_dl = yf.download("FCPO=F", start=index[0], end=index[-1],
+                                 interval="1d", progress=False)["Close"]
+            if hasattr(cpo_dl, "squeeze"):
+                cpo_dl = cpo_dl.squeeze()
+            cpo = (pd.Series(cpo_dl.values.ravel(), index=cpo_dl.index)
+                   if not isinstance(cpo_dl, pd.Series) else cpo_dl)
+            return cpo.reindex(index).ffill()
+        except Exception as e:
+            logger.warning(f"CPO series fetch failed: {e}")
+            return pd.Series(np.nan, index=index)
 
     # ── Performance metrics ───────────────────────────────────────────────────
 
@@ -447,8 +535,11 @@ Return JSON:
         "klci yield", "constituent weight",
         "spread mean", "spread std", "spread zscore", "yield spread",
         "blended yield", "basket yield", "reference yield",
+        # NOTE: ex-date / ex-dividend timing is NO LONGER blocked — the
+        # dividends column is kept from yfinance and the DSL's div_days_to_ex
+        # leaf can express event-timed entries around announced ex-dates.
         "corporate announcement", "dividend cut", "dividend suspension",
-        "bursa announcement", "pdmr", "ex-date", "ex-dividend date",
+        "bursa announcement", "pdmr",
         "payout ratio", "earnings yield", "free cash flow yield",
         "book value", "price to book", "price-to-book", "p/b ratio", "p/b:",
         "roe", "return on equity", "debt equity", "debt-to-equity", "der",
@@ -624,6 +715,27 @@ Return JSON:
         return float(num / denom) if denom > 1e-10 else np.nan
 
     # ── Newey-West t-stat (autocorrelation-robust) ────────────────────────────
+
+    def _robustness_check(self, test_df: pd.DataFrame, dsl_tree: dict,
+                          base_sharpe: float, interval: str) -> float:
+        """QC7: fraction of ±20% parameter perturbations whose test-split net
+        Sharpe stays above robustness_sharpe_ratio × base. Seeded for
+        reproducibility; vectorized, no LLM cost."""
+        from agents.backtest_engineer import signal_dsl
+        rng = np.random.RandomState(1234)
+        ok, valid = 0, 0
+        for _ in range(GATE_CONFIG.robustness_draws):
+            perturbed = signal_dsl.perturb_tree(dsl_tree, rng)
+            try:
+                sig = self._compute_signals(
+                    test_df, {"signal_type": "dsl", "dsl": perturbed})
+                perf = self._compute_performance(test_df, sig, interval)
+                valid += 1
+                if perf["sharpe_net"] > GATE_CONFIG.robustness_sharpe_ratio * base_sharpe:
+                    ok += 1
+            except Exception as e:
+                logger.warning(f"Robustness draw failed: {e}")
+        return ok / max(valid, 1)
 
     @staticmethod
     def _nw_tstat(series: np.ndarray, max_lag: int | None = None) -> float:
@@ -1259,6 +1371,51 @@ Return JSON only:
 
     # ── Main backtest pipeline ────────────────────────────────────────────────
 
+    def _reject_idea(self, idea_id: int, row, run_type: str, reason: str,
+                     reason_category: str = "stage2") -> dict:
+        """Uniform rejection: backtest_runs stub row, alpha_ideas status,
+        pipeline event, gate decision, and RejectionMemory. Used by the data
+        pre-check, unrepresentable-DSL, verify, and robustness gates."""
+        self.log_daemon("WARN", f"Backtest [{idea_id}] REJECTED ({run_type}): {reason}")
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO backtest_runs
+                  (idea_id, run_type, pair, timeframe, factor_formula,
+                   train_sharpe, val_sharpe, test_sharpe,
+                   train_dd, val_dd, test_dd,
+                   train_val_gap, total_trades, win_rate, profit_factor,
+                   params, result_data, passed,
+                   needs_review, verification_note,
+                   sharpe_gross, sharpe_net,
+                   sharpe_is, sharpe_oos, oos_degradation,
+                   regimes_positive, sanity_flags,
+                   verdict, verdict_reason)
+                VALUES (?,?,?,?,?,0,0,0,1,1,1,0,0,0,0,'{}','{}',0,1,?,0,0,0,0,0,0,NULL,'REJECTED',?)
+            """, (idea_id, run_type,
+                  row["ticker"] or "", row["timeframe"] or "1d",
+                  row["factor_formula"] or "", reason, reason))
+            conn.execute("""
+                UPDATE alpha_ideas
+                SET status='rejected', rejection_reason=?, updated_at=datetime('now')
+                WHERE id=?
+            """, (reason[:500], idea_id))
+            conn.execute("""
+                INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
+                VALUES (?, 'stage2', 'rejected', 'BacktestEngineer', ?)
+            """, (idea_id, f"{run_type}: {reason[:300]}"))
+            conn.execute("""
+                INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
+                VALUES (?, ?, 'reject', 'BacktestEngineer', ?)
+            """, (idea_id, f"gate2_{run_type}"[:30], reason[:500]))
+        try:
+            from knowledge.ingestion.rejection_memory import RejectionMemory
+            RejectionMemory().record_rejection(idea_id, reason, reason_category)
+        except Exception:
+            pass
+        self._clear_progress(idea_id)
+        return {"gate3_pass": False, "error": run_type, "verdict": "REJECTED",
+                "verdict_reason": reason, "idea_id": idea_id}
+
     def _run_backtest(self, idea_id: int) -> dict:
         with db_session() as conn:
             row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
@@ -1327,14 +1484,44 @@ Return JSON only:
         self.log_daemon("INFO", f"Backtesting [{idea_id}] {row['title']} — {symbol} {interval}")
         self._log_progress(idea_id, 10, f"Fetching price data for {symbol}")
 
-        # Parse factor formula
+        # Parse factor formula into a signal DSL tree. Honesty gate: if the
+        # idea can't be expressed by the available conditions, REJECT with
+        # the parser's reason — never silently substitute a momentum proxy
+        # (the historical failure that flattened every thesis into the same
+        # template and made real edges indistinguishable from noise).
         params = self._parse_factor(
             row["factor_formula"] or "",
             row["title"],
             row["hypothesis"] or "",
         )
-        if not params or "error" in params:
-            params = {"signal_type": "momentum", "momentum_period": 20, "long_only": True}
+        if not params.get("representable"):
+            return self._reject_idea(
+                idea_id, row, "dsl_unrepresentable",
+                params.get("reason", "factor not representable as signal conditions"),
+                reason_category="unrepresentable",
+            )
+
+        _universe_kl = [t.strip() for t in (row["ticker"] or "").split(",")
+                        if t.strip() and ".KL" in t.strip()]
+        if params.get("route") == "fundamental_screen":
+            if len(_universe_kl) >= 5:
+                self.log_daemon(
+                    "INFO",
+                    f"Backtest [{idea_id}] parser routed to fundamental screen "
+                    f"({len(_universe_kl)} tickers) → portfolio backtest",
+                )
+                return self._run_fundamental_screen_backtest(idea_id, dict(row))
+            # Single-name fundamental idea: usable only if screener context
+            # exists (handled by the fund_context override below); otherwise
+            # honest rejection beats a price proxy.
+            if data_check.get("fund_context") is None:
+                return self._reject_idea(
+                    idea_id, row, "dsl_unrepresentable",
+                    "fundamental screen needs 5+ tickers or cached screener "
+                    "fundamentals for this name — neither available",
+                    reason_category="unrepresentable",
+                )
+            params = {"signal_type": "fundamental_screen", "long_only": True}
 
         # If fundamental context is available (from KLSE Screener DB), override to a
         # constant fundamental-screen signal.  The screen is quarterly-rebalanced so
@@ -1419,6 +1606,37 @@ Return JSON only:
             needs_review      = 0
             verification_note = ("Constant signal expected for fundamental screen "
                                  "(quarterly buy-and-hold) — formula verification N/A")
+        elif params.get("signal_type") == "dsl":
+            # Deterministic verification, and it BLOCKS — unlike the legacy
+            # LLM verify_formula which only ever set needs_review=1.
+            _full_sig = self._compute_signals(df, params)
+            _n_bars = len(_full_sig)
+            _fire_frac = float((_full_sig > 0).sum()) / max(_n_bars, 1)
+            if _fire_frac == 0.0:
+                return self._reject_idea(
+                    idea_id, row, "dsl_verify",
+                    "signal never fires on 5y of data — conditions unreachable "
+                    "(check thresholds vs. this stock's actual ranges)",
+                    reason_category="verify_failed",
+                )
+            if _full_sig.nunique() <= 1:
+                return self._reject_idea(
+                    idea_id, row, "dsl_verify",
+                    "signal is constant — always-on position is buy-and-hold, "
+                    "not a strategy",
+                    reason_category="verify_failed",
+                )
+            if _fire_frac > 0.90:
+                return self._reject_idea(
+                    idea_id, row, "dsl_verify",
+                    f"signal long {_fire_frac:.0%} of all bars — effectively "
+                    f"buy-and-hold with noise, conditions carry no information",
+                    reason_category="verify_failed",
+                )
+            needs_review = 0
+            verification_note = (f"DSL deterministic verify passed: long "
+                                 f"{_fire_frac:.1%} of bars")
+            verification = {"verified": True, "confidence": 1.0, "issue": ""}
         else:
             verification      = self.verify_formula(params, row["factor_formula"] or "", df)
             needs_review      = 0 if (verification["verified"] and verification["confidence"] >= 0.7) else 1
@@ -1610,6 +1828,25 @@ Return JSON only:
             )
             self.log_daemon("WARN", f"Backtest [{idea_id}] deflation gate FAILED: {deflation_note}")
 
+        # QC7: parameter robustness (DSL signals) — a real edge survives ±20%
+        # parameter jitter; a knife-edge fit does not. Pure numpy, no LLM cost.
+        robustness_score = None
+        robustness_pass = True
+        robustness_note = ""
+        if params.get("signal_type") == "dsl" and test_sharpe_net > 0:
+            robustness_score = self._robustness_check(
+                test_df, params["dsl"], test_sharpe_net, interval)
+            robustness_pass = robustness_score >= GATE_CONFIG.robustness_min_fraction
+            if not robustness_pass:
+                robustness_note = (
+                    f"Parameter fragility: only {robustness_score:.0%} of ±20% "
+                    f"parameter perturbations retain >"
+                    f"{GATE_CONFIG.robustness_sharpe_ratio:.0%} of base Sharpe "
+                    f"(need {GATE_CONFIG.robustness_min_fraction:.0%}) — knife-edge fit"
+                )
+                self.log_daemon(
+                    "WARN", f"Backtest [{idea_id}] robustness gate FAILED: {robustness_note}")
+
         # ── Benchmark: excess performance vs FBM KLCI (^KLSE) ─────────────────
         benchmark_sharpe, excess_ann_return = 0.0, 0.0
         try:
@@ -1634,7 +1871,8 @@ Return JSON only:
             self.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
 
         overall_pass = (gate3_pass and trade_count_pass and cost_pass
-                        and oos_pass and regime_pass and deflation_pass)
+                        and oos_pass and regime_pass and deflation_pass
+                        and robustness_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
         if _is_fund_screen and overall_pass:
@@ -1660,6 +1898,7 @@ Return JSON only:
                 "" if regime_pass  else regime_note,
                 "" if trade_count_pass else trade_count_note,
                 "" if deflation_pass else deflation_note,
+                "" if robustness_pass else robustness_note,
             ]))
 
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
@@ -1708,10 +1947,13 @@ Return JSON only:
                 ).fetchone()["id"]
                 conn.execute("""
                     UPDATE backtest_runs
-                    SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?, excess_ann_return=?
+                    SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?,
+                        excess_ann_return=?, robustness_score=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
-                      round(benchmark_sharpe, 3), round(excess_ann_return, 4), run_id))
+                      round(benchmark_sharpe, 3), round(excess_ann_return, 4),
+                      round(robustness_score, 3) if robustness_score is not None else None,
+                      run_id))
 
                 # Only update stage/status from stage2 → stage3.
                 # If idea is already at stage3+ (e.g., after Red-Blue reviewed it),

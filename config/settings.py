@@ -158,6 +158,11 @@ class GateConfig:
     stage4a_min_days: int               = 30
     stage4a_min_sharpe: float           = 0.8
     stage4a_max_drawdown: float         = 0.20
+    # QC7 — parameter robustness (DSL signals): fraction of ±20% parameter
+    # perturbations that must retain > robustness_sharpe_ratio × base Sharpe
+    robustness_min_fraction: float      = 0.6
+    robustness_sharpe_ratio: float      = 0.5
+    robustness_draws: int               = 8
 
 GATE_CONFIG = GateConfig()
 
