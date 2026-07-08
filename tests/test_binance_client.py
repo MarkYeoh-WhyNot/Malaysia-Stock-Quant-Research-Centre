@@ -77,3 +77,60 @@ def test_extract_tickers_crypto():
 def test_bars_per_year_is_365_daily():
     assert bc.BARS_PER_YEAR["1d"] == 365
     assert bc.BARS_PER_YEAR["1wk"] == 52
+
+
+# ── Live prices (dashboard Live Prices panel) ────────────────────────────────
+
+_FAKE_TICKERS = {
+    "BTC/USDT": {"last": 62000.0, "percentage": -1.5, "high": 63000.0,
+                 "low": 61000.0, "quoteVolume": 1.2e9},
+    "ETH/USDT": {"last": 3400.0, "percentage": 2.1, "high": 3500.0,
+                 "low": 3300.0, "quoteVolume": 8.0e8},
+}
+
+
+def test_fetch_live_prices_maps_fields_and_filters():
+    ex = MagicMock()
+    ex.fetch_tickers = MagicMock(return_value=_FAKE_TICKERS)
+    with patch.object(bc, "_get_exchange", return_value=ex):
+        # request a third pair the exchange didn't return → silently skipped
+        r = bc.fetch_live_prices(["BTC/USDT", "ETH/USDT", "ZZZ/USDT"])
+    assert r["errors"] == []
+    assert [p["symbol"] for p in r["prices"]] == ["BTC/USDT", "ETH/USDT"]
+    btc = r["prices"][0]
+    assert btc["last"] == 62000.0
+    assert btc["change_pct_24h"] == -1.5
+    assert btc["high_24h"] == 63000.0
+    assert btc["low_24h"] == 61000.0
+    assert btc["quote_volume_24h"] == 1.2e9
+
+
+def test_fetch_live_prices_skips_symbols_missing_last():
+    ex = MagicMock()
+    ex.fetch_tickers = MagicMock(return_value={
+        "BTC/USDT": {"last": 62000.0, "percentage": 1.0},
+        "ETH/USDT": {"last": None},   # present but no price → skip, not error
+    })
+    with patch.object(bc, "_get_exchange", return_value=ex):
+        r = bc.fetch_live_prices(["BTC/USDT", "ETH/USDT"])
+    assert [p["symbol"] for p in r["prices"]] == ["BTC/USDT"]
+    assert r["errors"] == []
+
+
+def test_fetch_live_prices_total_failure_is_graceful():
+    ex = MagicMock()
+    ex.fetch_tickers = MagicMock(side_effect=RuntimeError("geo blocked"))
+    with patch.object(bc, "_get_exchange", return_value=ex):
+        r = bc.fetch_live_prices(["BTC/USDT"])
+    assert r["prices"] == []
+    assert len(r["errors"]) == 1 and "geo blocked" in r["errors"][0]
+
+
+def test_fetch_live_prices_defaults_to_active_universe():
+    ex = MagicMock()
+    ex.fetch_tickers = MagicMock(return_value=_FAKE_TICKERS)
+    with patch.object(bc, "_get_exchange", return_value=ex):
+        bc.fetch_live_prices()   # no symbols → uses settings.DEFAULT_SYMBOLS
+    # in default (bursa) test process DEFAULT_SYMBOLS is the KLCI list; the point
+    # is simply that a symbol list was passed to fetch_tickers, not None
+    assert ex.fetch_tickers.call_args.args[0]  # non-empty list

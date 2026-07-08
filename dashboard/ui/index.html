@@ -462,6 +462,7 @@ svg text{font-family:'Courier New',monospace}
 
   <div class="sidebar-section">Trading</div>
   <a onclick="nav('paper-trades',this)"><span class="ico">📈</span>Paper Trades</a>
+  <a id="nav-live-prices" style="display:none" onclick="nav('live-prices',this)"><span class="ico">💹</span>Live Prices</a>
 
   <div class="sidebar-section">Knowledge</div>
   <a onclick="nav('kb',this)"><span class="ico">📚</span>KB Explorer</a>
@@ -1213,6 +1214,36 @@ svg text{font-family:'Courier New',monospace}
   </div>
 </div>
 
+<!-- ── Live Prices (crypto only) ───────────────────────────────────────────── -->
+<div id="page-live-prices" class="page">
+  <div class="panel">
+    <div class="panel-head">
+      <span class="panel-title">Live Prices — <span id="lp-market">Crypto</span></span>
+      <div style="display:flex;gap:10px;align-items:center">
+        <span id="lp-status" style="font-size:10px;color:var(--muted)">—</span>
+        <button class="btn btn-sm" onclick="loadLivePrices()">↻</button>
+      </div>
+    </div>
+    <div class="tbl-wrap-lg">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortLivePrices('name')" style="cursor:pointer">Pair</th>
+            <th onclick="sortLivePrices('last')" style="cursor:pointer;text-align:right">Last</th>
+            <th onclick="sortLivePrices('change_pct_24h')" style="cursor:pointer;text-align:right">24h %</th>
+            <th style="text-align:right">24h High</th>
+            <th style="text-align:right">24h Low</th>
+            <th onclick="sortLivePrices('quote_volume_24h')" style="cursor:pointer;text-align:right">24h Volume</th>
+          </tr>
+        </thead>
+        <tbody id="lp-body">
+          <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- ── KB Explorer ─────────────────────────────────────────────────────────── -->
 <div id="page-kb" class="page">
   <div class="stat-grid" id="kb-stats-cards"></div>
@@ -1543,6 +1574,12 @@ document.addEventListener('DOMContentLoaded', () => {
     s.textContent = IS_CRYPTO ? '\u21c4 Bursa' : '\u21c4 Crypto';
     s.href = IS_CRYPTO ? '/' : '/crypto/';
   }
+  // Live Prices is crypto-only (Bursa quotes are delayed) \u2014 reveal the nav item
+  // only on the crypto dashboard.
+  if (IS_CRYPTO) {
+    const lp = document.getElementById('nav-live-prices');
+    if (lp) lp.style.display = '';
+  }
 });
 let _allMCLogs = [];
 let _currentPage = 'mc';
@@ -1610,6 +1647,7 @@ function nav(id, el) {
     concierge: loadConcierge,
     'ai-usage': loadUsage, logs: loadLogsPage,
     'event-feed': () => { loadEventFeed(); loadCalendarStrip(); },
+    'live-prices': loadLivePrices,
   };
   if (loaders[id]) loaders[id]();
   // Auto-refresh event feed while on that page
@@ -1619,6 +1657,12 @@ function nav(id, el) {
     if (typeof _evAutoRefresh !== 'undefined' && _evAutoRefresh) {
       clearInterval(_evAutoRefresh); _evAutoRefresh = null;
     }
+  }
+  // Auto-refresh live prices (~10s) only while on that page
+  if (id === 'live-prices') {
+    if (!_priceAutoRefresh) _priceAutoRefresh = setInterval(loadLivePrices, 10000);
+  } else if (typeof _priceAutoRefresh !== 'undefined' && _priceAutoRefresh) {
+    clearInterval(_priceAutoRefresh); _priceAutoRefresh = null;
   }
 }
 
@@ -3355,6 +3399,87 @@ async function ingestKBURL() {
     loadKBStats();
   } else {
     document.getElementById('kb-url-result').innerHTML = `<span style="color:var(--red)">${esc(r?.error || 'Failed — check URL accessibility')}</span>`;
+  }
+}
+
+// ── Live Prices (crypto only) ─────────────────────────────────────────────────
+
+let _priceAutoRefresh = null;
+let _lpSort = { key: 'quote_volume_24h', dir: -1 };
+let _lpRows = [];
+
+function _lpFmtPrice(v) {
+  if (v == null) return '—';
+  // more decimals for sub-dollar assets so small alts don't show as 0.00
+  const dp = v >= 1000 ? 2 : v >= 1 ? 3 : 6;
+  return v.toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+}
+function _lpFmtVol(v) {
+  if (v == null) return '—';
+  if (v >= 1e9) return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M';
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+  return v.toFixed(0);
+}
+
+function _renderLivePrices() {
+  const rows = _lpRows.slice().sort((a, b) => {
+    const k = _lpSort.key;
+    const av = a[k] == null ? -Infinity : a[k];
+    const bv = b[k] == null ? -Infinity : b[k];
+    if (k === 'name') return _lpSort.dir * String(a.name).localeCompare(String(b.name));
+    return _lpSort.dir * (av - bv);
+  });
+  const body = document.getElementById('lp-body');
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No prices available</td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map(r => {
+    const ch = r.change_pct_24h;
+    const chColor = ch == null ? 'var(--muted)' : ch >= 0 ? '#10b981' : '#ef4444';
+    const chTxt = ch == null ? '—' : (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%';
+    return `<tr>
+      <td><b>${r.symbol}</b> <span style="color:var(--muted)">${r.name || ''}</span></td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${_lpFmtPrice(r.last)}</td>
+      <td style="text-align:right;color:${chColor};font-variant-numeric:tabular-nums">${chTxt}</td>
+      <td style="text-align:right;color:var(--muted);font-variant-numeric:tabular-nums">${_lpFmtPrice(r.high_24h)}</td>
+      <td style="text-align:right;color:var(--muted);font-variant-numeric:tabular-nums">${_lpFmtPrice(r.low_24h)}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums">${_lpFmtVol(r.quote_volume_24h)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function sortLivePrices(key) {
+  if (_lpSort.key === key) _lpSort.dir *= -1;
+  else _lpSort = { key, dir: key === 'name' ? 1 : -1 };
+  _renderLivePrices();
+}
+
+async function loadLivePrices() {
+  const status = document.getElementById('lp-status');
+  const body = document.getElementById('lp-body');
+  try {
+    const r = await fetch(API + '/prices').then(x => x.json());
+    if (!r.supported) {
+      body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Live prices are available on the crypto dashboard only.</td></tr>';
+      if (status) status.textContent = '';
+      return;
+    }
+    if (r.errors && r.errors.length && !(r.prices || []).length) {
+      body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:20px">${r.errors[0]}</td></tr>`;
+      if (status) status.textContent = 'error';
+      return;
+    }
+    _lpRows = r.prices || [];
+    _renderLivePrices();
+    if (status) {
+      const t = r.as_of ? new Date(r.as_of + 'Z').toLocaleTimeString() : '';
+      status.innerHTML = `<span style="color:#10b981">●</span> live · ${_lpRows.length} pairs · ${t}`;
+    }
+  } catch (e) {
+    if (body) body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:20px">Failed to load prices: ${e}</td></tr>`;
+    if (status) status.textContent = 'error';
   }
 }
 

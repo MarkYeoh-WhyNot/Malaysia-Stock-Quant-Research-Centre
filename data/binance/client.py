@@ -117,3 +117,48 @@ def get_historical_data(symbol: str, interval: str = "1d",
     df.index.name = "time"
     df["dividends"] = 0.0   # schema parity with the yahoo client
     return df
+
+
+def fetch_live_prices(symbols: list | None = None) -> dict:
+    """Live spot quotes for a set of pairs in ONE bulk request.
+
+    Display-only (never persisted, never fed to the pipeline) — powers the
+    dashboard Live Prices panel. Resilient like the rest of this client: never
+    raises. Returns:
+
+        {"prices": [{symbol, last, change_pct_24h, high_24h, low_24h,
+                     quote_volume_24h}, ...],
+         "errors": [str, ...]}
+
+    A pair the exchange doesn't return is skipped (not an error entry); a total
+    fetch failure (e.g. geo-block) yields empty prices + one error string so the
+    caller can show a message instead of a blank table.
+    """
+    from config.settings import DEFAULT_SYMBOLS
+    symbols = list(symbols) if symbols else list(DEFAULT_SYMBOLS)
+    ex = _get_exchange()
+
+    try:
+        # One call for everything; filter to our universe afterwards. fetch_tickers
+        # with an explicit symbol list is supported by binance/okx/kraken and is
+        # far cheaper than one request per pair.
+        tickers = ex.fetch_tickers(symbols)
+    except Exception as e:
+        logger.warning(f"binance client: fetch_tickers failed: {e}")
+        return {"prices": [], "errors": [f"live price fetch failed: {e}"]}
+
+    prices: list = []
+    errors: list = []
+    for sym in symbols:
+        t = tickers.get(sym)
+        if not t or t.get("last") is None:
+            continue   # pair not returned this cycle — skip, don't error
+        prices.append({
+            "symbol":            sym,
+            "last":              t.get("last"),
+            "change_pct_24h":    t.get("percentage"),
+            "high_24h":          t.get("high"),
+            "low_24h":           t.get("low"),
+            "quote_volume_24h":  t.get("quoteVolume"),
+        })
+    return {"prices": prices, "errors": errors}
