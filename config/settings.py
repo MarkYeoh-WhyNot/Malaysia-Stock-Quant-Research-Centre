@@ -211,6 +211,17 @@ class GateConfig:
     # KLCI buy-and-hold excess is also stored for reference.
     benchmark_gate_enabled: bool        = True
     benchmark_min_excess_ann: float     = 0.0    # strategy ann_return must exceed EW-KLCI by this
+    # Phase 3.4 — capacity test (audit §8.5). Don't trade more than
+    # capacity_max_participation of 20-day ADV per day; a strategy whose position
+    # takes longer than capacity_max_days to enter/exit is capacity-constrained.
+    # Rarely binds at RM100k paper scale but required for the capital-scaling story.
+    capacity_gate_enabled: bool         = True
+    capacity_max_participation: float   = 0.05
+    capacity_max_days: float            = 5.0
+    # Phase 4.2 — portfolio concentration limits (audit §10.2), Malaysia-specific.
+    max_single_name_pct: float          = 0.15
+    max_sector_pct: float               = 0.35
+    max_bank_pct: float                 = 0.40   # KLCI is bank-heavy
     # QC7 — parameter robustness (DSL signals): fraction of ±20% parameter
     # perturbations that must retain > robustness_sharpe_ratio × base Sharpe
     robustness_min_fraction: float      = 0.6

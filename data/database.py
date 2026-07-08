@@ -338,10 +338,11 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
-        # Phase 3.2: equal-weight KLCI benchmark + benchmark-relative gate result.
-        # (benchmark_sharpe / excess_ann_return vs cap-weighted ^KLSE already exist.)
+        # Phase 3.2 / 3.4: benchmark + capacity metrics on backtest_runs.
         for _col in ("equal_weight_sharpe REAL", "excess_vs_ew_ann_return REAL",
-                     "benchmark_pass INTEGER"):
+                     "benchmark_pass INTEGER",
+                     "capacity_pct_adv REAL", "days_to_enter REAL",
+                     "capacity_pass INTEGER"):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
                 logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
@@ -442,6 +443,40 @@ def init_db(db_path: Path = DB_PATH):
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ca_ticker ON corporate_actions(ticker)")
+
+        # Phase 4.1: liquidity features (audit §14.3) — historical tradability.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS liquidity_features (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker              TEXT NOT NULL,
+                trade_date          TEXT NOT NULL,
+                adv_20              REAL,
+                adv_60              REAL,
+                median_value_20     REAL,
+                zero_volume_days_60 INTEGER,
+                amihud_illiquidity  REAL,
+                capacity_score      REAL,
+                created_at          TEXT DEFAULT (datetime('now')),
+                UNIQUE(ticker, trade_date)
+            )
+        """)
+
+        # Phase 4.2: portfolio risk snapshots (audit §14) — concentration/exposure.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS risk_snapshots (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_at        TEXT DEFAULT (datetime('now')),
+                open_positions     INTEGER,
+                gross_exposure_myr REAL,
+                max_single_pct     REAL,
+                max_sector         TEXT,
+                max_sector_pct     REAL,
+                bank_pct           REAL,
+                concentration_ok   INTEGER,
+                kill_switch_active INTEGER,
+                detail             TEXT
+            )
+        """)
 
         # Backtest Lab: equity curve / drawdown series cache
         conn.execute("""

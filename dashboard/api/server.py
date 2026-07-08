@@ -952,6 +952,20 @@ def paper_trades(idea_id: Optional[int] = None, status: Optional[str] = None, li
     }
 
 
+@app.get("/api/risk/snapshot")
+def risk_snapshot():
+    """Phase 4.4: live portfolio concentration + kill-switch status (audit §10.4)."""
+    from agents.risk_monitor.risk_monitor import RiskMonitor
+    snap = RiskMonitor().portfolio_risk_snapshot()
+    with db_session() as conn:
+        history = conn.execute(
+            "SELECT snapshot_at, gross_exposure_myr, max_single_pct, max_sector_pct, "
+            "bank_pct, concentration_ok, kill_switch_active "
+            "FROM risk_snapshots ORDER BY id DESC LIMIT 20"
+        ).fetchall()
+    return {"current": snap, "history": [dict(r) for r in history]}
+
+
 class PaperEntryBody(BaseModel):
     idea_id: int
     pair: str

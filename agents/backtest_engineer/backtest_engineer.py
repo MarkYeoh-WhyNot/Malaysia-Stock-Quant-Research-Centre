@@ -1763,6 +1763,23 @@ Return JSON only:
             return {"error": msg, "idea_id": idea_id, "symbol": symbol,
                     "gate3_pass": False}
 
+        # ── Capacity test (Phase 3.4, audit §8.5) ─────────────────────────────
+        # How many days to enter/exit the position without exceeding
+        # capacity_max_participation of ADV? Rarely binds at paper scale but
+        # required before scaling capital.
+        _notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
+        _adv = _liq["adv_value_myr"]
+        capacity_pct_adv = (_notional / _adv) if _adv > 0 else float("inf")
+        _daily_cap = _adv * GATE_CONFIG.capacity_max_participation
+        days_to_enter = (_notional / _daily_cap) if _daily_cap > 0 else float("inf")
+        capacity_pass = ((not GATE_CONFIG.capacity_gate_enabled)
+                         or days_to_enter <= GATE_CONFIG.capacity_max_days)
+        capacity_note = ""
+        if not capacity_pass:
+            capacity_note = (f"Capacity: {days_to_enter:.1f} days to enter at "
+                             f"{GATE_CONFIG.capacity_max_participation:.0%} ADV "
+                             f"(> {GATE_CONFIG.capacity_max_days:.0f})")
+
         # ── Gate DQ: data-quality gate (Phase 1.2/1.3) ────────────────────────
         # Reject before expensive backtesting if the price data can't be trusted.
         dq = self._data_quality_gate(idea_id, symbol, df, interval)
@@ -2095,7 +2112,7 @@ Return JSON only:
 
         overall_pass = (gate3_pass and trade_count_pass and cost_pass
                         and oos_pass and regime_pass and deflation_pass
-                        and robustness_pass and benchmark_pass)
+                        and robustness_pass and benchmark_pass and capacity_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
         if _is_fund_screen and overall_pass:
@@ -2123,6 +2140,7 @@ Return JSON only:
                 "" if deflation_pass else deflation_note,
                 "" if robustness_pass else robustness_note,
                 "" if benchmark_pass else benchmark_note,
+                "" if capacity_pass else capacity_note,
             ]))
 
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
@@ -2174,13 +2192,17 @@ Return JSON only:
                     UPDATE backtest_runs
                     SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?,
                         excess_ann_return=?, robustness_score=?,
-                        equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?
+                        equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?,
+                        capacity_pct_adv=?, days_to_enter=?, capacity_pass=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
                       round(robustness_score, 3) if robustness_score is not None else None,
                       round(equal_weight_sharpe, 3), round(excess_vs_ew_ann_return, 4),
                       1 if benchmark_pass else 0,
+                      round(capacity_pct_adv, 4) if capacity_pct_adv != float("inf") else None,
+                      round(days_to_enter, 3) if days_to_enter != float("inf") else None,
+                      1 if capacity_pass else 0,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -2320,6 +2342,9 @@ Return JSON only:
             "regime_pass":         regime_pass,
             "deflation_pass":      deflation_pass,
             "benchmark_pass":      benchmark_pass,
+            "capacity_pass":       capacity_pass,
+            "capacity_pct_adv":    None if capacity_pct_adv == float("inf") else round(capacity_pct_adv, 4),
+            "days_to_enter":       None if days_to_enter == float("inf") else round(days_to_enter, 3),
             "n_trials":            n_trials,
             "deflated_hurdle":     round(deflated_hurdle, 3),
             "benchmark_sharpe":    round(benchmark_sharpe, 3),
