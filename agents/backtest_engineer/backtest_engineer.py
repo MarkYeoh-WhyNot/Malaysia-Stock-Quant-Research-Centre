@@ -19,7 +19,8 @@ Parse equity strategy descriptions into structured signal parameters for vectori
 Output only valid JSON."""
 
 
-_PROGRESS_FILE = "/tmp/openclaw_progress.json"
+from config.settings import PROGRESS_FILE as _PROGRESS_FILE_PATH
+_PROGRESS_FILE = str(_PROGRESS_FILE_PATH)
 
 
 class BacktestEngineer(BaseAgent):

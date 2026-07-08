@@ -5,19 +5,44 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
 
-_PROGRESS_FILE = "/tmp/openclaw_progress.json"
-
-from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File
+from fastapi import FastAPI, BackgroundTasks, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from data.database import db_session, init_db
-from config.settings import AI_DAILY_BUDGET_USD, key_health_check
+from config.settings import (
+    AI_DAILY_BUDGET_USD, key_health_check,
+    OPENCLAW_API_KEY, DASHBOARD_ORIGIN, PROGRESS_FILE,
+)
+
+_PROGRESS_FILE = str(PROGRESS_FILE)
 
 app = FastAPI(title="OpenClaw Mission Control", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[DASHBOARD_ORIGIN],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    """All /api routes require the OPENCLAW_API_KEY shared secret in the
+    X-API-Key header. /api/health stays open for container healthchecks and
+    uptime monitors; the static UI is public (it holds no data — every panel
+    loads through /api). Empty OPENCLAW_API_KEY disables auth (local dev)."""
+    path = request.url.path
+    if (
+        OPENCLAW_API_KEY
+        and path.startswith("/api")
+        and path != "/api/health"
+        and request.headers.get("x-api-key", "") != OPENCLAW_API_KEY
+    ):
+        return JSONResponse(status_code=401, content={"error": "invalid or missing API key"})
+    return await call_next(request)
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -1875,4 +1900,4 @@ if os.path.exists(ui_path):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("dashboard.api.server:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("dashboard.api.server:app", host="0.0.0.0", port=8001)

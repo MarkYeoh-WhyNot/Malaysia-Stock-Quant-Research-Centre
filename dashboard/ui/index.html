@@ -1448,6 +1448,40 @@ const API = '/api';
 let _allMCLogs = [];
 let _currentPage = 'mc';
 
+// ── API-key auth ─────────────────────────────────────────────────────────────
+// Every /api request carries the X-API-Key header. The key is asked for once,
+// kept in localStorage, and re-prompted on any 401.
+(function () {
+  const nativeFetch = window.fetch.bind(window);
+  function getKey(force) {
+    let k = localStorage.getItem('openclaw_api_key');
+    if (!k || force) {
+      k = prompt('OpenClaw API key (OPENCLAW_API_KEY from .env):') || '';
+      if (k) localStorage.setItem('openclaw_api_key', k.trim());
+    }
+    return (k || '').trim();
+  }
+  window.fetch = async function (input, init) {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const isApi = url.startsWith('/api') || url.startsWith(API + '/') ||
+                  url.startsWith(location.origin + '/api');
+    if (!isApi || url.includes('/api/health')) return nativeFetch(input, init);
+    init = init || {};
+    init.headers = new Headers(init.headers || {});
+    const key = getKey(false);
+    if (key) init.headers.set('X-API-Key', key);
+    let resp = await nativeFetch(input, init);
+    if (resp.status === 401) {
+      const fresh = getKey(true);
+      if (fresh) {
+        init.headers.set('X-API-Key', fresh);
+        resp = await nativeFetch(input, init);
+      }
+    }
+    return resp;
+  };
+})();
+
 // ── Routing ─────────────────────────────────────────────────────────────────
 function nav(id, el) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));

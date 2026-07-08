@@ -182,6 +182,18 @@ DASHBOARD_PORT = 8001
 LOG_DIR        = BASE_DIR / "logs"
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
 
+# API auth: shared secret required in the X-API-Key header on all /api routes
+# (except /api/health). Empty = auth disabled (local development only).
+OPENCLAW_API_KEY = os.getenv("OPENCLAW_API_KEY", "")
+# Origin allowed by CORS, e.g. "https://openclaw.example.com"
+DASHBOARD_ORIGIN = os.getenv("DASHBOARD_ORIGIN", "http://localhost")
+
+# Cross-process progress file written by BacktestEngineer, read by the API
+PROGRESS_FILE = BASE_DIR / "data" / "openclaw_progress.json"
+
+# Operational alerts (daemon crash/restart, budget exhausted) via Telegram
+ALERT_TELEGRAM_CHAT_ID = os.getenv("ALERT_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
+
 
 # ── Security / Key health ─────────────────────────────────────────────────────
 
