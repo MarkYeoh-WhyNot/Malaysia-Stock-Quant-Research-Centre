@@ -586,6 +586,23 @@ wired to portfolio concentration breaches (WARNING) and kill switches (CRITICAL)
 
 See plan file `users-markyeoh-downloads-bursa-quant-re-prancy-milner.md` for full status.
 
+### CONCIERGE CHAT AGENT (2026-07-09, branch `concierge-agent`)
+Dashboard chat that turns a natural-language idea into a structured strategy, feeds it
+through the factor sandbox into the gated pipeline, and reports progress — "customer service"
+for research. `agents/concierge/concierge_agent.py` (`ConciergeAgent`), a tool-calling agent
+built on the new `BaseAgent.call_claude_tools()` primitive. Toolset (guardrailed — no
+live/approve/delete): `submit_strategy_idea`, `get_idea_status`, `list_session_ideas`,
+`search_knowledge_base`, `resolve_tickers`.
+- Ideas enter at `stage2/pending` via `pipeline/sandbox.py:submit_sandbox_idea()` (shared
+  with `/api/sandbox/run`), which adds a feasibility + hard long-only/no-intraday pre-check.
+  The daemon then carries them stage2 → stage3 → stage4a automatically. **Never reaches live
+  trading** — Stage 4a→4b stays human-only.
+- Own budget sub-cap: `CONCIERGE_DAILY_BUDGET_USD` (default $5) so chat can't starve the
+  research pipeline. Config: `CONCIERGE_MODEL`, `CONCIERGE_MAX_TOOL_ITERS`.
+- Tables: `concierge_sessions`, `concierge_messages`, `concierge_idea_links`.
+- Endpoints: `POST /api/concierge/chat`, `GET /api/concierge/sessions/{id}`. Dashboard: 🤖
+  Concierge nav item + chat panel in `dashboard/ui/index.html`.
+
 ### MINIMUM TRADE COUNTS BY HOLDING PERIOD
 | Class | Min Trades |
 |-------|-----------|

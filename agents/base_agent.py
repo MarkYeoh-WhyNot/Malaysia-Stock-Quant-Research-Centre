@@ -42,6 +42,17 @@ def get_daily_spend():
         ).fetchone()
     return float(row["total"])
 
+def get_agent_daily_spend(agent: str):
+    """Today's AI spend for a single agent (e.g. the Concierge sub-cap)."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) as total FROM ai_usage "
+            "WHERE agent=? AND created_at LIKE ?",
+            (agent, f"{today}%"),
+        ).fetchone()
+    return float(row["total"])
+
 class BaseAgent(ABC):
     name: str = "BaseAgent"
     description: str = ""
@@ -72,6 +83,74 @@ class BaseAgent(ABC):
         self._log_usage(model, input_tokens, output_tokens, cost, task_label)
         self.logger.debug(f"[{self.name}] {model} | ${cost:.4f} | {elapsed:.1f}s")
         return response.content[0].text
+
+    def call_claude_tools(self, system, messages, tools, tool_handler,
+                          model=None, max_tokens=2048, task_label="tools",
+                          max_iters=6, budget_check=True):
+        """Tool-use conversation loop.
+
+        Runs Claude with `tools`; whenever it emits tool_use blocks, dispatches
+        each through `tool_handler(name, input_dict) -> result` (result is
+        JSON-serialisable), feeds the results back, and repeats — up to
+        `max_iters` rounds to bound cost. Budget + cost tracking mirror
+        call_claude(). Mutates and returns via a dict:
+
+          {"text": <final assistant text>,
+           "tool_calls": [{"name","input","result"}...],
+           "stopped": "end_turn" | "max_iters"}
+
+        `messages` is copied, not mutated in place.
+        """
+        model = model or self.default_model
+        convo = list(messages)
+        tool_calls = []
+
+        for _ in range(max_iters):
+            if budget_check:
+                spend = get_daily_spend()
+                if spend >= AI_DAILY_BUDGET_USD:
+                    raise RuntimeError(f"Daily AI budget cap reached (${spend:.2f})")
+            response = self.client.messages.create(
+                model=model, max_tokens=max_tokens, system=system,
+                messages=convo, tools=tools,
+            )
+            cost = estimate_cost(model, response.usage.input_tokens,
+                                 response.usage.output_tokens)
+            self._log_usage(model, response.usage.input_tokens,
+                            response.usage.output_tokens, cost, task_label)
+
+            if response.stop_reason != "tool_use":
+                text = "".join(b.text for b in response.content if b.type == "text")
+                return {"text": text, "tool_calls": tool_calls, "stopped": "end_turn"}
+
+            # Echo the assistant's tool_use turn, then answer each tool call.
+            convo.append({"role": "assistant", "content": response.content})
+            results_block = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                try:
+                    result = tool_handler(block.name, block.input)
+                except Exception as e:
+                    result = {"error": f"tool '{block.name}' failed: {e}"}
+                tool_calls.append({"name": block.name, "input": block.input,
+                                   "result": result})
+                results_block.append({
+                    "type": "tool_result", "tool_use_id": block.id,
+                    "content": json.dumps(result, default=str),
+                })
+            convo.append({"role": "user", "content": results_block})
+
+        # Hit the iteration cap — ask for a final plain-text summary, no tools.
+        response = self.client.messages.create(
+            model=model, max_tokens=max_tokens, system=system, messages=convo,
+        )
+        cost = estimate_cost(model, response.usage.input_tokens,
+                             response.usage.output_tokens)
+        self._log_usage(model, response.usage.input_tokens,
+                        response.usage.output_tokens, cost, task_label)
+        text = "".join(b.text for b in response.content if b.type == "text")
+        return {"text": text, "tool_calls": tool_calls, "stopped": "max_iters"}
 
     def call_claude_json(self, system, messages, model=None, max_tokens=4096, task_label="",
                          raise_on_error: bool = False):

@@ -452,6 +452,7 @@ svg text{font-family:'Courier New',monospace}
   <a onclick="nav('ideas',this)"><span class="ico">💡</span>Ideas Queue</a>
 
   <div class="sidebar-section">Research</div>
+  <a onclick="nav('concierge',this)"><span class="ico">🤖</span>Concierge</a>
   <a onclick="nav('arsenal',this)"><span class="ico">⚙️</span>Technique Arsenal</a>
   <a onclick="nav('backtest-lab',this)"><span class="ico">🔬</span>Backtest Lab</a>
   <a onclick="nav('factor-sandbox',this)"><span class="ico">🧪</span>Factor Sandbox</a>
@@ -1086,6 +1087,41 @@ svg text{font-family:'Courier New',monospace}
   </div>
 </div>
 
+<!-- ── Concierge ──────────────────────────────────────────────────────────── -->
+<div id="page-concierge" class="page">
+  <div class="row">
+    <div class="col">
+      <div class="panel" style="display:flex;flex-direction:column;height:70vh">
+        <div class="panel-head">
+          <span class="panel-title">🤖 Research Concierge</span>
+          <span style="font-size:10px;color:var(--muted)">Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long-only, paper-only — I never trigger live trades.)</span>
+        </div>
+        <div id="cc-messages" style="flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:10px"></div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <input type="text" id="cc-input" placeholder="e.g. Test a 20/50 MA crossover on Malaysian banks"
+                 style="flex:1" onkeydown="if(event.key==='Enter')sendConcierge()">
+          <button class="btn btn-cyan" id="cc-send" onclick="sendConcierge()">Send</button>
+        </div>
+      </div>
+    </div>
+    <div class="col" style="max-width:280px">
+      <div class="panel">
+        <div class="panel-head"><span class="panel-title">Ideas from this chat</span></div>
+        <div id="cc-ideas" style="font-size:12px;color:var(--muted)">None yet.</div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span class="panel-title">Try asking</span></div>
+        <div style="font-size:11px;color:var(--muted2);line-height:1.7">
+          • "Test a 20/50 MA crossover on Maybank"<br>
+          • "Try an RSI oversold strategy on plantation stocks"<br>
+          • "How is idea 123 doing?"<br>
+          • "List the ideas I've submitted"
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Paper Trades ────────────────────────────────────────────────────────── -->
 <div id="page-paper-trades" class="page">
   <div class="stat-grid" id="pt-stats"></div>
@@ -1552,6 +1588,7 @@ function nav(id, el) {
     mc: loadMC, analytics: loadAnalytics, 'gate-queue': loadGateQueue,
     ideas: loadIdeas, 'backtest-lab': loadBacktestLab,
     'paper-trades': loadPaperTrades, kb: loadKBStats,
+    concierge: loadConcierge,
     'ai-usage': loadUsage, logs: loadLogsPage,
     'event-feed': () => { loadEventFeed(); loadCalendarStrip(); },
   };
@@ -2547,6 +2584,62 @@ function viewInBtLab(id) {
     const sel = document.getElementById('btl-select');
     if (sel) { sel.value = id; await loadBtlDetail(id); }
   }, 350);
+}
+
+// ── Concierge chat ───────────────────────────────────────────────────────────
+let _ccSession = null;
+let _ccGreeted = false;
+
+function loadConcierge() {
+  if (_ccGreeted) return;
+  _ccGreeted = true;
+  ccAppend('assistant',
+    "Hi — I'm your research concierge. Describe a strategy idea in plain English " +
+    "and I'll structure it, run it through the backtest → red/blue → paper pipeline, " +
+    "and report back. I'm long-only and paper-only: I can get an idea ready for a live " +
+    "decision, but you make the live call.");
+}
+
+function ccAppend(role, text) {
+  const box = document.getElementById('cc-messages');
+  const mine = role === 'user';
+  const div = document.createElement('div');
+  div.style.cssText = 'max-width:80%;padding:8px 12px;border-radius:8px;font-size:13px;line-height:1.5;white-space:pre-wrap;' +
+    (mine ? 'align-self:flex-end;background:var(--cyan);color:#001;'
+          : 'align-self:flex-start;background:var(--bg3);color:var(--text)');
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  return div;
+}
+
+async function sendConcierge() {
+  const input = document.getElementById('cc-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  ccAppend('user', msg);
+  const btn = document.getElementById('cc-send');
+  btn.disabled = true;
+  const thinking = ccAppend('assistant', '…');
+  const r = await apiPost('/concierge/chat', { message: msg, session_id: _ccSession });
+  btn.disabled = false;
+  if (!r || r.error) { thinking.textContent = '⚠️ ' + (r?.error || 'Chat failed'); return; }
+  _ccSession = r.session_id;
+  thinking.textContent = r.reply;
+  if (r.idea_ids && r.idea_ids.length) loadConciergeIdeas();
+}
+
+async function loadConciergeIdeas() {
+  if (!_ccSession) return;
+  const r = await apiFetch('/concierge/sessions/' + _ccSession);
+  const box = document.getElementById('cc-ideas');
+  if (!r || !r.ideas || !r.ideas.length) { box.textContent = 'None yet.'; return; }
+  box.innerHTML = r.ideas.map(i =>
+    `<div style="padding:6px 0;border-bottom:1px solid var(--bg3)">
+       <a onclick="openIdeaModal(${i.id})" style="color:var(--cyan);cursor:pointer">#${i.id} ${i.title}</a>
+       <div style="color:var(--muted2);font-size:10px">${i.stage} · ${i.status}</div>
+     </div>`).join('');
 }
 
 // ── Factor Sandbox ──────────────────────────────────────────────────────────

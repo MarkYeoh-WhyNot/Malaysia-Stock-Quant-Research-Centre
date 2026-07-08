@@ -647,6 +647,38 @@ def init_db(db_path: Path = DB_PATH):
             )
         """)
 
+        # Concierge chat agent: sessions, message history, and links from a
+        # session to the ideas it submitted (powers list_session_ideas).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS concierge_sessions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                label       TEXT,
+                created_at  TEXT DEFAULT (datetime('now')),
+                last_active TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS concierge_messages (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id     INTEGER NOT NULL,
+                role           TEXT NOT NULL,
+                content        TEXT,
+                tool_calls_json TEXT,
+                created_at     TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cm_session ON concierge_messages(session_id)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS concierge_idea_links (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  INTEGER NOT NULL,
+                idea_id     INTEGER NOT NULL,
+                created_at  TEXT DEFAULT (datetime('now')),
+                UNIQUE(session_id, idea_id)
+            )
+        """)
+
         # Backtest Lab: equity curve / drawdown series cache
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_series (
