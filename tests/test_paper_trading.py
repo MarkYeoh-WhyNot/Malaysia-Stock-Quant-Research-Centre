@@ -40,6 +40,9 @@ def executor(monkeypatch):
 
 def _cleanup():
     with db_session() as conn:
+        conn.execute(
+            "DELETE FROM paper_trade_reconciliation WHERE trade_id IN "
+            "(SELECT id FROM paper_trades WHERE idea_id=?)", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM paper_trades WHERE idea_id=?", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM paper_equity WHERE idea_id=?", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM pipeline_events WHERE idea_id=?", (TEST_IDEA_ID,))
@@ -59,6 +62,34 @@ def test_entry_fills_at_close_with_board_lots(executor):
     # duplicate entry is refused
     dup = asyncio.run(ex.paper_entry(TEST_IDEA_ID, "1155.KL"))
     assert "error" in dup
+
+
+def test_entry_and_exit_write_reconciliation_rows(executor):
+    ex, state = executor
+    entry = asyncio.run(ex.paper_entry(TEST_IDEA_ID, "1155.KL"))
+    state["close"] = 10.20
+    exit_res = asyncio.run(ex.paper_exit(entry["trade_id"]))
+
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM paper_trade_reconciliation WHERE trade_id=? ORDER BY id",
+            (entry["trade_id"],)
+        ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["side"] == "buy" and rows[0]["actual_cost"] == entry["entry_cost"]
+    assert rows[1]["side"] == "sell" and rows[1]["actual_cost"] == exit_res["exit_cost"]
+    assert all(r["clean"] == 1 for r in rows)
+
+
+def test_illiquid_ticker_rejected_by_pre_trade_check(executor):
+    ex, state = executor
+    # ADV below the liquidity floor → pre-trade check should refuse the order
+    def thin_bar(self, ticker):
+        return {"close": state["close"], "date": "2026-07-08", "adv_value": 100_000.0}
+    ex._latest_bar = thin_bar.__get__(ex)
+    result = asyncio.run(ex.paper_entry(TEST_IDEA_ID, "1155.KL"))
+    assert "error" in result
+    assert "Pre-trade check failed" in result["error"]
 
 
 def test_short_entries_rejected(executor):

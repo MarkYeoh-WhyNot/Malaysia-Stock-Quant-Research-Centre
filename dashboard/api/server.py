@@ -960,6 +960,17 @@ def family_quotas():
             "next_underquota_family": next_underquota_family()}
 
 
+@app.get("/api/paper-trades/{trade_id}/reconciliation")
+def paper_trade_reconciliation(trade_id: int):
+    """Phase 6.3/§11.3: expected-vs-actual trail for one paper trade."""
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM paper_trade_reconciliation WHERE trade_id=? ORDER BY id",
+            (trade_id,)
+        ).fetchall()
+    return {"trade_id": trade_id, "reconciliation": [dict(r) for r in rows]}
+
+
 @app.get("/api/risk/snapshot")
 def risk_snapshot():
     """Phase 4.4: live portfolio concentration + kill-switch status (audit §10.4)."""

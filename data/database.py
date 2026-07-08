@@ -590,6 +590,29 @@ def init_db(db_path: Path = DB_PATH):
             "CREATE INDEX IF NOT EXISTS idx_cemetery_family "
             "ON strategy_cemetery(factor_type, sector)")
 
+        # Phase 6.3: post-trade reconciliation (audit §11.3/§14). Paper trading
+        # has no independent fill source to reconcile against yet — expected and
+        # actual are computed from the same cost model by construction — but the
+        # table + writer establish the auditable trail ready for when execution
+        # (Stage 4b) can diverge from the model.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paper_trade_reconciliation (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id            INTEGER NOT NULL,
+                side                TEXT NOT NULL,
+                expected_price      REAL,
+                actual_price        REAL,
+                expected_cost       REAL,
+                actual_cost         REAL,
+                price_diff          REAL,
+                cost_diff           REAL,
+                clean               INTEGER,
+                created_at          TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recon_trade ON paper_trade_reconciliation(trade_id)")
+
         # Phase 4.1: liquidity features (audit §14.3) — historical tradability.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS liquidity_features (

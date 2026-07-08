@@ -128,6 +128,13 @@ class RiskMonitor(BaseAgent):
 
         for b in breaches:
             self.log_daemon("WARN", f"Concentration breach: {b}")
+        if breaches:
+            try:
+                from scripts.alerts import send_alert
+                send_alert(f"Portfolio concentration breach: {'; '.join(breaches)}",
+                          level="WARNING")
+            except Exception:
+                pass
         return {
             "open_positions": len(rows), "gross_exposure_myr": round(gross, 2),
             "max_single_pct": round(max_single_pct, 4),
@@ -171,6 +178,16 @@ class RiskMonitor(BaseAgent):
                                   "detail": f"{unresolved} unresolved"})
         for t in triggered:
             self.log_daemon("ERROR", f"KILL SWITCH [{t['idea_id']}] {t['trigger']}: {t['detail']}")
+        if triggered:
+            try:
+                from scripts.alerts import send_alert
+                send_alert(
+                    f"{len(triggered)} kill switch(es) triggered: " +
+                    "; ".join(f"idea {t['idea_id']} {t['trigger']} ({t['detail']})"
+                             for t in triggered),
+                    level="CRITICAL")
+            except Exception:
+                pass
         return {"triggered": triggered, "count": len(triggered)}
 
     def pipeline_health_report(self):

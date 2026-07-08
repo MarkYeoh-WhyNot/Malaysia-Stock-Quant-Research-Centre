@@ -566,10 +566,25 @@ Every KB document and every alpha idea must map to one:
 ### AUDIT-DRIVEN TABLES (2026-07-09, from external system audit)
 `fee_schedules` (date-versioned costs), `data_quality_checks`, `corporate_actions`,
 `universe_membership` (point-in-time constituents), `liquidity_features`,
-`risk_snapshots`. New `backtest_runs` columns: benchmark/capacity metrics,
-`market_rules_version` / `fee_model_version` / `production_eligible` / `universe_asof`.
+`risk_snapshots`, `announcement_events`, `fundamental_features`, `macro_features`,
+`sector_features`, `strategy_cemetery`, `paper_trade_reconciliation`. New
+`backtest_runs` columns: benchmark/capacity metrics, `market_rules_version` /
+`fee_model_version` / `production_eligible` / `universe_asof`. New `alpha_ideas.family`
+(strategy-family classification, report-only quotas — not a hard gate).
 Cost/market-rule sources of truth: `config/settings.py` (constants + `MARKET_RULES_VERSION`),
-`data/fee_schedule.py` (date-aware). See plan file `users-markyeoh-downloads-bursa-quant-re-prancy-milner.md`.
+`data/fee_schedule.py` (date-aware).
+
+**Phase 6 — execution readiness (paper-only, no live broker wired):**
+`agents/portfolio_executor/execution_simulator.py` — `pre_trade_check()` (liquidity,
+data confidence, unresolved corp actions, board-lot affordability) and
+`simulate_fill()` (capacity-aware partial fills), both wired into `paper_entry()`.
+`paper_trade_reconciliation` records expected-vs-actual on every entry/exit
+(currently always "clean" — paper mode has no independent fill source to diverge
+from yet; the trail is ready for when Stage 4b execution exists).
+`scripts/alerts.send_alert(message, level=...)` — INFO/WATCH/WARNING/CRITICAL,
+wired to portfolio concentration breaches (WARNING) and kill switches (CRITICAL).
+
+See plan file `users-markyeoh-downloads-bursa-quant-re-prancy-milner.md` for full status.
 
 ### MINIMUM TRADE COUNTS BY HOLDING PERIOD
 | Class | Min Trades |
