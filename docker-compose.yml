@@ -90,6 +90,107 @@ services:
     depends_on:
       - api
 
+  # ── Crypto market pipeline (dual-market) ────────────────────────────────────
+  # Same image, MARKET_MODE=crypto, and a SEPARATE runtime volume — its own
+  # SQLite DB, cache, KB, and budgets. Strictly independent of the Bursa stack.
+  # The crypto Telegram bot needs its OWN token (TELEGRAM_BOT_TOKEN_CRYPTO in
+  # .env) — two pollers cannot share one bot token.
+  api-crypto:
+    build: .
+    container_name: openclaw-api-crypto
+    command: uvicorn dashboard.api.server:app --host 0.0.0.0 --port 8001
+    environment:
+      - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
+      - MARKET_MODE=crypto
+      - AI_DAILY_BUDGET_USD=${CRYPTO_AI_DAILY_BUDGET_USD:-20}
+    env_file:
+      - .env
+    volumes:
+      - openclaw-crypto-data:/app/runtime
+      - openclaw-crypto-logs:/app/logs
+      - openclaw-crypto-backups:/app/backups
+    restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  daemon-crypto:
+    build: .
+    container_name: openclaw-daemon-crypto
+    command: python scripts/research_daemon.py
+    environment:
+      - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
+      - MARKET_MODE=crypto
+      - AI_DAILY_BUDGET_USD=${CRYPTO_AI_DAILY_BUDGET_USD:-20}
+    env_file:
+      - .env
+    volumes:
+      - openclaw-crypto-data:/app/runtime
+      - openclaw-crypto-logs:/app/logs
+      - openclaw-crypto-backups:/app/backups
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api-crypto
+    healthcheck:
+      test: ["CMD", "sh", "docker/healthcheck_daemon.sh"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  telegram-crypto:
+    build: .
+    container_name: openclaw-telegram-crypto
+    # Idle (instead of crash-looping) until a dedicated crypto bot token is set.
+    command: >
+      sh -c 'if [ -z "$$TELEGRAM_BOT_TOKEN" ]; then
+               echo "telegram-crypto: TELEGRAM_BOT_TOKEN_CRYPTO not set - idling";
+               sleep infinity;
+             fi;
+             python scripts/telegram_bot.py'
+    environment:
+      - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
+      - MARKET_MODE=crypto
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN_CRYPTO:-}
+      - AI_DAILY_BUDGET_USD=${CRYPTO_AI_DAILY_BUDGET_USD:-20}
+    env_file:
+      - .env
+    volumes:
+      - openclaw-crypto-data:/app/runtime
+      - openclaw-crypto-logs:/app/logs
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api-crypto
+
+  event-watcher-crypto:
+    build: .
+    container_name: openclaw-event-watcher-crypto
+    command: python scripts/event_watcher.py
+    environment:
+      - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
+      - MARKET_MODE=crypto
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN_CRYPTO:-}
+      - AI_DAILY_BUDGET_USD=${CRYPTO_AI_DAILY_BUDGET_USD:-20}
+    env_file:
+      - .env
+    volumes:
+      - openclaw-crypto-data:/app/runtime
+      - openclaw-crypto-logs:/app/logs
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - api-crypto
+
   caddy:
     image: caddy:2
     container_name: openclaw-caddy
@@ -111,5 +212,8 @@ volumes:
   openclaw-data:
   openclaw-logs:
   openclaw-backups:
+  openclaw-crypto-data:
+  openclaw-crypto-logs:
+  openclaw-crypto-backups:
   caddy-data:
   caddy-config:

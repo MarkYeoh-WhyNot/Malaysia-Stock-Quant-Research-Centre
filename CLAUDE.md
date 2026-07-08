@@ -1,5 +1,30 @@
 # Mark's Research Centre — Project Briefing
 
+## DUAL-MARKET MODES (2026-07-09)
+
+The system runs TWO strictly independent pipelines from one codebase, selected
+per-process by the `MARKET_MODE` env var (default `bursa` — bit-identical to the
+original single-market system, regression-pinned in tests/test_market_profiles.py):
+
+- **Market profiles** live in `config/markets/{bursa,crypto}.py`; `config/settings.py`
+  loads exactly one per process and re-exports the SAME legacy names
+  (`KLCI_STOCKS`, `BURSA_*`, `bursa_trade_cost`, …) so call sites never changed.
+  In crypto mode those names carry crypto values (documented; new code uses the
+  generic aliases `MARKET_UNIVERSE`, `trade_cost`, `TICKER_REGEX`, `MARKET_BRIEF`,
+  `size_units`, `DATA_BACKEND`, `BENCHMARK_SYMBOL`, `ENABLED_JOBS`).
+- **Crypto profile:** Binance long-only SPOT, 20 USDT pairs, 0.10% taker +
+  ADV-tiered slippage, 365-day calendar (√365 annualization), T+0, fractional
+  sizing, BTC/USDT benchmark, crypto red/blue briefs, wider DD/concentration
+  gate overrides. Data via ccxt (`data/binance/client.py`; facade
+  `data/market_data.py` dispatches on `DATA_BACKEND`).
+- **Isolation:** each market's containers set `MARKET_MODE` + their own
+  `OPENCLAW_RUNTIME_DIR` volume → separate SQLite DBs, KBs, caches, budgets.
+  Crypto containers: `api-crypto` / `daemon-crypto` / `telegram-crypto` (own bot
+  token `TELEGRAM_BOT_TOKEN_CRYPTO` — two pollers can't share one) /
+  `event-watcher-crypto`; dashboard at `/crypto/` via Caddy `handle_path`;
+  alerts prefixed `[LEVEL][MARKET]`.
+- **One process = one market.** Never mix; a typo'd MARKET_MODE fails at startup.
+
 ## Purpose
 
 Mark's Research Centre is a Claude-powered quantitative equity research and backtesting pipeline for **Bursa Malaysia (KLSE/FBM KLCI)** equities. It automatically generates alpha ideas, screens them through quality gates, backtests them, and paper-trades survivors — all driven by Claude AI agents with Telegram and REST API interfaces.

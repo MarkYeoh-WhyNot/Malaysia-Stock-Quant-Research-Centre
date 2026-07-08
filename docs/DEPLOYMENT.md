@@ -156,3 +156,22 @@ doc drift, async restructuring). Operationally still missing: CI/tests in
 a pipeline, offsite backup replication (rclone to S3/B2 — the backup file is
 just a gzip, easy to wire up later), and a real uptime monitor pinging
 `/api/health` from outside the VPS.
+
+## 11. Dual-market: the Crypto pipeline (2026-07-09)
+
+The stack now runs TWO strictly independent pipelines from one codebase:
+
+| | Bursa | Crypto |
+|---|---|---|
+| Containers | `api`, `daemon`, `telegram`, `event-watcher` | `api-crypto`, `daemon-crypto`, `telegram-crypto`, `event-watcher-crypto` |
+| Selector | (default) | `MARKET_MODE=crypto` env |
+| Volumes / DB | `openclaw-data` etc. | `openclaw-crypto-data` etc. (own SQLite DB, KB, budgets) |
+| Dashboard | `https://<host>/` | `https://<host>/crypto/` (Caddy `handle_path`) |
+| Data | yfinance `.KL` | ccxt/Binance spot OHLCV (public endpoints) |
+| Telegram | `TELEGRAM_BOT_TOKEN` | `TELEGRAM_BOT_TOKEN_CRYPTO` (**separate bot** — create via BotFather; two pollers can't share a token; blank = telegram-crypto idles) |
+| Budget | `AI_DAILY_BUDGET_USD` | `CRYPTO_AI_DAILY_BUDGET_USD` (default $20) |
+
+Deploy is unchanged: `git pull && docker compose up -d --build` — 9 containers.
+The two DBs share nothing; alerts are prefixed `[LEVEL][KLSE]` / `[LEVEL][CRYPTO]`.
+Bursa behavior with `MARKET_MODE` unset is bit-identical to the single-market
+system (regression-pinned in tests/test_market_profiles.py).
