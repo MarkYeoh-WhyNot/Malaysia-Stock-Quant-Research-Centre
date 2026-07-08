@@ -16,6 +16,14 @@ MODEL_MAIN          = "claude-sonnet-4-6"
 MODEL_HEAVY         = "claude-opus-4-6"
 AI_DAILY_BUDGET_USD = float(os.getenv("AI_DAILY_BUDGET_USD", "50"))
 
+# ── Concierge chat agent ──────────────────────────────────────────────────────
+# The dashboard Concierge is a tool-calling agent that lets a human submit ideas
+# in natural language and check their status. It has its own daily sub-cap so a
+# chatty session can't starve the research pipeline's AI_DAILY_BUDGET_USD.
+CONCIERGE_MODEL           = os.getenv("CONCIERGE_MODEL", MODEL_MAIN)
+CONCIERGE_DAILY_BUDGET_USD = float(os.getenv("CONCIERGE_DAILY_BUDGET_USD", "5"))
+CONCIERGE_MAX_TOOL_ITERS  = int(os.getenv("CONCIERGE_MAX_TOOL_ITERS", "6"))
+
 # ── Market ────────────────────────────────────────────────────────────────────
 MARKET          = "KLSE"                    # Bursa Malaysia
 MARKET_CURRENCY = "MYR"

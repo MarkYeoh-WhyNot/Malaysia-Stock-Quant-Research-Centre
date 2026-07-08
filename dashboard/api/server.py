@@ -898,28 +898,23 @@ class SandboxBody(BaseModel):
 
 @app.post("/api/sandbox/run")
 async def sandbox_run(body: SandboxBody):
-    import re
-    from data.database import db_session
+    """Synchronous manual sandbox: insert at stage2 + backtest inline. Now goes
+    through the shared submit path, which adds a feasibility pre-check + dedup."""
+    from pipeline.sandbox import submit_sandbox_idea
 
-    slug = re.sub(r"[^a-z0-9]+", "-", body.title.lower()).strip("-")
-    slug = f"sandbox-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{slug[:40]}"
-
-    with db_session() as conn:
-        conn.execute("""
-            INSERT OR IGNORE INTO alpha_ideas
-            (slug, title, hypothesis, ticker, timeframe, factor_formula, data_sources, stage, status, novelty_score, logic_score)
-            VALUES (?, ?, ?, ?, ?, ?, '[]', 'stage2', 'active', 0.7, 0.7)
-        """, (slug, body.title, body.hypothesis, body.ticker, body.timeframe, body.factor_formula))
-        row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
-        idea_id = row["id"]
-
-    def _run():
-        from agents.backtest_engineer.backtest_engineer import BacktestEngineer
-        return BacktestEngineer().run({"action": "backtest", "idea_id": idea_id})
-
-    result = await _in_thread(_run)
-    result["idea_id"] = idea_id
-    result["slug"] = slug
+    brief = {"title": body.title, "hypothesis": body.hypothesis,
+             "ticker": body.ticker, "timeframe": body.timeframe,
+             "factor_formula": body.factor_formula}
+    submission = await _in_thread(
+        lambda: submit_sandbox_idea(brief, run_backtest=True, source="sandbox"))
+    if not submission.get("ok"):
+        return {"error": submission.get("error"),
+                "feasibility": submission.get("feasibility"),
+                "duplicate_of": submission.get("duplicate_of")}
+    result = submission.get("result", {})
+    result["idea_id"] = submission["idea_id"]
+    result["slug"] = submission["slug"]
+    result["feasibility"] = submission["feasibility"]
     return result
 
 
@@ -950,6 +945,34 @@ def paper_trades(idea_id: Optional[int] = None, status: Optional[str] = None, li
         "trades": [dict(r) for r in rows],
         "stats": dict(stats),
     }
+
+
+class ConciergeChatBody(BaseModel):
+    message: str
+    session_id: Optional[int] = None
+
+
+@app.post("/api/concierge/chat")
+async def concierge_chat(body: ConciergeChatBody):
+    """Concierge chat turn: NL idea -> factor sandbox -> pipeline, or status Q&A."""
+    from agents.concierge.concierge_agent import ConciergeAgent
+    agent = ConciergeAgent()
+    return await _in_thread(lambda: agent.handle(body.session_id, body.message))
+
+
+@app.get("/api/concierge/sessions/{session_id}")
+def concierge_session(session_id: int):
+    with db_session() as conn:
+        msgs = conn.execute(
+            "SELECT role, content, tool_calls_json, created_at FROM concierge_messages "
+            "WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+        ideas = conn.execute(
+            "SELECT a.id, a.title, a.stage, a.status FROM concierge_idea_links l "
+            "JOIN alpha_ideas a ON a.id=l.idea_id WHERE l.session_id=? ORDER BY l.id DESC",
+            (session_id,)).fetchall()
+    return {"session_id": session_id,
+            "messages": [dict(m) for m in msgs],
+            "ideas": [dict(i) for i in ideas]}
 
 
 @app.get("/api/pipeline/family-quotas")
