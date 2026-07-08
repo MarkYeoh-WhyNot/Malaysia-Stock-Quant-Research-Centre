@@ -1496,7 +1496,22 @@ let _currentPage = 'mc';
 // Every /api request carries the X-API-Key header when one is stored. The key
 // is only ever asked for reactively — after the server actually returns 401 —
 // so local/no-auth deployments (OPENCLAW_API_KEY unset) never see a prompt.
+//
+// One-time magic link: visiting ?key=<key> stores it into localStorage and
+// scrubs it from the visible URL/history, so a device only needs the link
+// bookmarked once — no copy-pasting the key on every visit. The key still
+// never touches the server-rendered HTML (each device fetches it into its
+// own localStorage via a URL only you hold), so it stays an actual secret.
 (function () {
+  const params = new URLSearchParams(location.search);
+  const linkKey = params.get('key');
+  if (linkKey) {
+    localStorage.setItem('openclaw_api_key', linkKey.trim());
+    params.delete('key');
+    const clean = location.pathname + (params.toString() ? '?' + params.toString() : '') + location.hash;
+    history.replaceState({}, '', clean);
+  }
+
   const nativeFetch = window.fetch.bind(window);
   function promptForKey() {
     const k = prompt('OpenClaw API key (OPENCLAW_API_KEY from .env):') || '';
