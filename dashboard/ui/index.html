@@ -1179,6 +1179,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="tab active" onclick="switchTab('kb','search-tab',this)">Search</div>
     <div class="tab" onclick="switchTab('kb','docs-tab',this);loadKBDocs()">Documents</div>
     <div class="tab" onclick="switchTab('kb','concepts-tab',this);loadKBConcepts()">Concepts</div>
+    <div class="tab" onclick="switchTab('kb','graph-tab',this);loadKBGraph()">Graph</div>
     <div class="tab" onclick="switchTab('kb','ingest-tab',this)">Ingest</div>
   </div>
 
@@ -1239,6 +1240,39 @@ svg text{font-family:'Courier New',monospace}
         <thead><tr><th>Concept</th><th>Domain</th><th>Description</th><th>Frequency</th><th></th></tr></thead>
         <tbody id="kb-concepts-table"></tbody>
       </table></div>
+    </div>
+  </div>
+
+  <div id="kb-graph-tab" class="tab-content">
+    <div class="panel" style="margin-top:0">
+      <div class="panel-head">
+        <span class="panel-title">Knowledge Graph</span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="kb-graph-domain" onchange="loadKBGraph()" style="font-size:10px;padding:3px 6px">
+            <option value="">All Domains</option>
+          </select>
+          <select id="kb-graph-limit" onchange="loadKBGraph()" style="font-size:10px;padding:3px 6px">
+            <option value="150">150 nodes</option>
+            <option value="300" selected>300 nodes</option>
+            <option value="500">500 nodes</option>
+          </select>
+          <button class="btn btn-sm" onclick="loadKBGraph()">↻ Reload</button>
+          <button class="btn btn-sm" onclick="kbGraphResetView()">⤢ Fit</button>
+        </div>
+      </div>
+
+      <div id="kb-graph-legend" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:9px;color:var(--muted2)"></div>
+
+      <div id="kb-graph-container" style="position:relative;height:560px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <canvas id="kb-graph-canvas" style="display:block;width:100%;height:100%;cursor:grab"></canvas>
+        <div id="kb-graph-tooltip" style="position:absolute;display:none;pointer-events:none;
+             background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:5px 8px;
+             font-size:10px;color:var(--text);max-width:220px;z-index:5;box-shadow:0 2px 8px rgba(0,0,0,.4)"></div>
+        <div id="kb-graph-empty" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;
+             color:var(--muted);font-size:12px">No graph data yet — ingest documents or wait for the daemon's graph_maintain job.</div>
+      </div>
+
+      <div id="kb-graph-detail" style="display:none;margin-top:10px;background:var(--bg3);border-radius:4px;padding:12px"></div>
     </div>
   </div>
 
@@ -1449,17 +1483,15 @@ let _allMCLogs = [];
 let _currentPage = 'mc';
 
 // ── API-key auth ─────────────────────────────────────────────────────────────
-// Every /api request carries the X-API-Key header. The key is asked for once,
-// kept in localStorage, and re-prompted on any 401.
+// Every /api request carries the X-API-Key header when one is stored. The key
+// is only ever asked for reactively — after the server actually returns 401 —
+// so local/no-auth deployments (OPENCLAW_API_KEY unset) never see a prompt.
 (function () {
   const nativeFetch = window.fetch.bind(window);
-  function getKey(force) {
-    let k = localStorage.getItem('openclaw_api_key');
-    if (!k || force) {
-      k = prompt('OpenClaw API key (OPENCLAW_API_KEY from .env):') || '';
-      if (k) localStorage.setItem('openclaw_api_key', k.trim());
-    }
-    return (k || '').trim();
+  function promptForKey() {
+    const k = prompt('OpenClaw API key (OPENCLAW_API_KEY from .env):') || '';
+    if (k) localStorage.setItem('openclaw_api_key', k.trim());
+    return k.trim();
   }
   window.fetch = async function (input, init) {
     const url = typeof input === 'string' ? input : (input && input.url) || '';
@@ -1468,11 +1500,11 @@ let _currentPage = 'mc';
     if (!isApi || url.includes('/api/health')) return nativeFetch(input, init);
     init = init || {};
     init.headers = new Headers(init.headers || {});
-    const key = getKey(false);
-    if (key) init.headers.set('X-API-Key', key);
+    const stored = (localStorage.getItem('openclaw_api_key') || '').trim();
+    if (stored) init.headers.set('X-API-Key', stored);
     let resp = await nativeFetch(input, init);
     if (resp.status === 401) {
-      const fresh = getKey(true);
+      const fresh = promptForKey();
       if (fresh) {
         init.headers.set('X-API-Key', fresh);
         resp = await nativeFetch(input, init);
@@ -2745,6 +2777,326 @@ async function updateKBDomain(id, domain, selectEl) {
   });
   if (r.ok) showToast(`Doc #${id} → ${domain}`);
   else { showToast(`Domain update failed`, true); loadKBDocs(); }
+}
+
+// ── KB Graph View ────────────────────────────────────────────────────────────
+// Self-contained force-directed layout (no external graph library) rendered
+// on a canvas: spring edges + node repulsion + center gravity, cooled down
+// over ~2s then frozen; drag/pan/zoom/hover/click all hand-rolled.
+const KB_GRAPH_COLORS = {
+  note: '#06b6d4', concept: '#8b5cf6', technique: '#3b82f6',
+  idea: '#10b981', rejection_pattern: '#ef4444',
+};
+const KB_GRAPH_EDGE_COLORS = {
+  contradicts: '#ef4444', supports: '#10b981', refines: '#3b82f6',
+  derived_from: '#f97316', about_ticker: '#ec4899', uses_technique: '#3b82f6',
+  rejected_because: '#ef4444', shared_concept: '#64748b',
+  shared_tag: '#64748b', mentions: '#64748b',
+};
+
+let _kbGraph = null; // { nodes, edges, byId, view:{x,y,scale}, dragging, selected }
+
+function kbGraphResetView() {
+  if (!_kbGraph) return;
+  const c = document.getElementById('kb-graph-canvas');
+  _kbGraph.view = { x: c.clientWidth / 2, y: c.clientHeight / 2, scale: 1 };
+  kbGraphDraw();
+}
+
+async function loadKBGraph() {
+  const domain = document.getElementById('kb-graph-domain')?.value || '';
+  const limit = document.getElementById('kb-graph-limit')?.value || 300;
+  const d = await apiFetch(`/kb/graph?limit=${limit}&domain=${domain}`);
+  const empty = document.getElementById('kb-graph-empty');
+  if (!d || !d.nodes || !d.nodes.length) {
+    if (empty) empty.style.display = 'flex';
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+
+  // Populate domain filter once from the full node set (kept simple: derive
+  // from whatever's currently loaded rather than a separate stats call)
+  const domSel = document.getElementById('kb-graph-domain');
+  if (domSel && domSel.options.length <= 1) {
+    const doms = [...new Set(d.nodes.map(n => n.domain).filter(Boolean))].sort();
+    domSel.innerHTML = '<option value="">All Domains</option>' +
+      doms.map(dm => `<option value="${esc(dm)}">${esc(dm)}</option>`).join('');
+  }
+
+  // Legend: node types present + relation types present
+  const typesPresent = [...new Set(d.nodes.map(n => n.type))];
+  const relsPresent = [...new Set(d.edges.map(e => e.relation))];
+  document.getElementById('kb-graph-legend').innerHTML =
+    typesPresent.map(t => `<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;
+      background:${KB_GRAPH_COLORS[t]||'#64748b'};margin-right:4px"></span>${t}</span>`).join('') +
+    '<span style="color:var(--border)">|</span>' +
+    relsPresent.map(r => `<span><span style="display:inline-block;width:14px;height:2px;
+      background:${KB_GRAPH_EDGE_COLORS[r]||'#64748b'};margin-right:4px;vertical-align:middle"></span>${r}</span>`).join('');
+
+  const canvas = document.getElementById('kb-graph-canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+
+  const degree = {};
+  d.edges.forEach(e => { degree[e.source] = (degree[e.source]||0)+1; degree[e.target] = (degree[e.target]||0)+1; });
+
+  const nodes = d.nodes.map(n => ({
+    ...n,
+    x: (Math.random() - 0.5) * 400, y: (Math.random() - 0.5) * 400,
+    vx: 0, vy: 0, r: Math.min(16, 4 + Math.sqrt(degree[n.id] || 0) * 3),
+  }));
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const edges = d.edges.filter(e => byId[e.source] && byId[e.target]);
+
+  _kbGraph = {
+    nodes, edges, byId, dpr,
+    view: { x: w / 2, y: h / 2, scale: 1 },
+    dragging: null, panStart: null, hovered: null, selected: null,
+  };
+
+  kbGraphSimulate(nodes, edges);
+  kbGraphAttachEvents(canvas);
+  kbGraphDraw();
+}
+
+function kbGraphSimulate(nodes, edges) {
+  // Cooling-schedule force layout, run synchronously for a few hundred
+  // nodes: O(n²) repulsion is fine at this scale (KB is hundreds of notes).
+  const iterations = 220;
+  let alpha = 1.0;
+  for (let iter = 0; iter < iterations; iter++) {
+    // repulsion
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i], b = nodes[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let dist2 = dx*dx + dy*dy || 0.01;
+        const force = (2200 * alpha) / dist2;
+        const dist = Math.sqrt(dist2);
+        dx /= dist; dy /= dist;
+        a.vx += dx * force; a.vy += dy * force;
+        b.vx -= dx * force; b.vy -= dy * force;
+      }
+    }
+    // springs along edges
+    for (const e of edges) {
+      const a = nodesById(nodes, e.source), b = nodesById(nodes, e.target);
+      if (!a || !b) continue;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx*dx + dy*dy) || 0.01;
+      const targetLen = 90;
+      const force = (dist - targetLen) * 0.02 * (0.3 + e.weight) * alpha;
+      dx /= dist; dy /= dist;
+      a.vx += dx * force; a.vy += dy * force;
+      b.vx -= dx * force; b.vy -= dy * force;
+    }
+    // center gravity + integrate + damping
+    for (const n of nodes) {
+      n.vx += -n.x * 0.008 * alpha;
+      n.vy += -n.y * 0.008 * alpha;
+      n.vx *= 0.85; n.vy *= 0.85;
+      n.x += n.vx; n.y += n.vy;
+    }
+    alpha *= 0.985;
+  }
+}
+function nodesById(nodes, id) { return nodes.find(n => n.id === id); }
+
+function kbGraphDraw() {
+  if (!_kbGraph) return;
+  const canvas = document.getElementById('kb-graph-canvas');
+  const ctx = canvas.getContext('2d');
+  const { nodes, edges, view, dpr, hovered, selected } = _kbGraph;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+  ctx.save();
+  ctx.translate(view.x, view.y);
+  ctx.scale(view.scale, view.scale);
+
+  const neighborIds = selected ? kbGraphNeighborSet(selected) : null;
+
+  // edges
+  for (const e of edges) {
+    const a = _kbGraph.byId[e.source], b = _kbGraph.byId[e.target];
+    if (!a || !b) continue;
+    const dim = neighborIds && !(neighborIds.has(a.id) && neighborIds.has(b.id));
+    ctx.strokeStyle = KB_GRAPH_EDGE_COLORS[e.relation] || '#64748b';
+    ctx.globalAlpha = dim ? 0.08 : (0.25 + Math.min(0.6, e.weight));
+    ctx.lineWidth = Math.max(0.6, e.weight * 2) / view.scale;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // nodes
+  for (const n of nodes) {
+    const dim = neighborIds && !neighborIds.has(n.id);
+    ctx.globalAlpha = dim ? 0.25 : 1;
+    ctx.fillStyle = KB_GRAPH_COLORS[n.type] || '#64748b';
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+    ctx.fill();
+    if (n === hovered || n === selected) {
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 1.5 / view.scale;
+      ctx.stroke();
+    }
+    if (view.scale > 0.6 && (n.r > 6 || n === hovered || n === selected)) {
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = `${10 / view.scale}px sans-serif`;
+      ctx.fillText((n.title||'').slice(0, 28), n.x + n.r + 3, n.y + 3);
+    }
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function kbGraphNeighborSet(node) {
+  const s = new Set([node.id]);
+  _kbGraph.edges.forEach(e => {
+    if (e.source === node.id) s.add(e.target);
+    if (e.target === node.id) s.add(e.source);
+  });
+  return s;
+}
+
+function kbGraphToGraphCoords(canvas, clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  const { view } = _kbGraph;
+  const x = (clientX - rect.left - view.x) / view.scale;
+  const y = (clientY - rect.top - view.y) / view.scale;
+  return { x, y };
+}
+
+function kbGraphNodeAt(clientX, clientY, canvas) {
+  const { x, y } = kbGraphToGraphCoords(canvas, clientX, clientY);
+  let best = null, bestDist = Infinity;
+  for (const n of _kbGraph.nodes) {
+    const d = Math.hypot(n.x - x, n.y - y);
+    if (d <= n.r + 3 && d < bestDist) { best = n; bestDist = d; }
+  }
+  return best;
+}
+
+let _kbGraphEventsBound = false;
+function kbGraphAttachEvents(canvas) {
+  if (_kbGraphEventsBound) return; // listeners persist across reloads (canvas element is stable)
+  _kbGraphEventsBound = true;
+  const tooltip = document.getElementById('kb-graph-tooltip');
+
+  canvas.addEventListener('mousedown', (ev) => {
+    const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
+    if (node) {
+      _kbGraph.dragging = node;
+    } else {
+      _kbGraph.panStart = { x: ev.clientX, y: ev.clientY, vx: _kbGraph.view.x, vy: _kbGraph.view.y };
+      canvas.style.cursor = 'grabbing';
+    }
+  });
+  window.addEventListener('mousemove', (ev) => {
+    if (!_kbGraph) return;
+    if (_kbGraph.dragging) {
+      const { x, y } = kbGraphToGraphCoords(canvas, ev.clientX, ev.clientY);
+      _kbGraph.dragging.x = x; _kbGraph.dragging.y = y;
+      _kbGraph.dragging.vx = 0; _kbGraph.dragging.vy = 0;
+      kbGraphDraw();
+    } else if (_kbGraph.panStart) {
+      _kbGraph.view.x = _kbGraph.panStart.vx + (ev.clientX - _kbGraph.panStart.x);
+      _kbGraph.view.y = _kbGraph.panStart.vy + (ev.clientY - _kbGraph.panStart.y);
+      kbGraphDraw();
+    } else {
+      const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
+      _kbGraph.hovered = node;
+      if (node) {
+        const rect = canvas.getBoundingClientRect();
+        tooltip.style.display = 'block';
+        tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
+        tooltip.style.top = (ev.clientY - rect.top + 12) + 'px';
+        tooltip.innerHTML = `<b>${esc(node.title)}</b><br><span style="color:var(--muted)">${node.type} · ${node.domain||''}</span>`;
+        canvas.style.cursor = 'pointer';
+      } else {
+        tooltip.style.display = 'none';
+        canvas.style.cursor = _kbGraph.panStart ? 'grabbing' : 'grab';
+      }
+      kbGraphDraw();
+    }
+  });
+  window.addEventListener('mouseup', (ev) => {
+    if (!_kbGraph) return;
+    if (_kbGraph.dragging === null && _kbGraph.panStart) {
+      // treat as pan release (no click-select)
+    } else if (_kbGraph.dragging) {
+      // small movement = click-select; always show detail on mouseup over a node
+      const node = kbGraphNodeAt(ev.clientX, ev.clientY, canvas);
+      if (node === _kbGraph.dragging) kbGraphSelectNode(node);
+    }
+    _kbGraph.dragging = null;
+    _kbGraph.panStart = null;
+    canvas.style.cursor = 'grab';
+  });
+  canvas.addEventListener('wheel', (ev) => {
+    if (!_kbGraph) return;
+    ev.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+    const { view } = _kbGraph;
+    const newScale = Math.max(0.15, Math.min(4, view.scale * factor));
+    // zoom toward cursor
+    view.x = mx - (mx - view.x) * (newScale / view.scale);
+    view.y = my - (my - view.y) * (newScale / view.scale);
+    view.scale = newScale;
+    kbGraphDraw();
+  }, { passive: false });
+
+  window.addEventListener('resize', () => {
+    if (!_kbGraph) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr;
+    kbGraphDraw();
+  });
+}
+
+function kbGraphSelectNode(node) {
+  _kbGraph.selected = node;
+  kbGraphDraw();
+  const neighbors = _kbGraph.edges
+    .filter(e => e.source === node.id || e.target === node.id)
+    .map(e => {
+      const otherId = e.source === node.id ? e.target : e.source;
+      const other = _kbGraph.byId[otherId];
+      const dir = e.source === node.id ? '→' : '←';
+      return { relation: e.relation, weight: e.weight, dir, title: other ? other.title : '?', type: other ? other.type : '' };
+    })
+    .sort((a,b) => b.weight - a.weight);
+
+  const panel = document.getElementById('kb-graph-detail');
+  panel.style.display = 'block';
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:baseline">
+      <div>
+        <span style="color:${KB_GRAPH_COLORS[node.type]||'var(--cyan)'};font-size:13px;font-weight:600">${esc(node.title)}</span>
+        <span class="badge stage" style="font-size:9px;margin-left:6px">${node.type}</span>
+        ${node.domain ? `<span class="badge stage" style="font-size:9px">${node.domain}</span>` : ''}
+      </div>
+      <button class="btn btn-sm" onclick="document.getElementById('kb-graph-detail').style.display='none'; _kbGraph.selected=null; kbGraphDraw();">✕</button>
+    </div>
+    ${node.summary ? `<div style="color:var(--muted2);font-size:11px;margin:8px 0">${esc(node.summary)}</div>` : ''}
+    <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px">
+      ${neighbors.length} connection${neighbors.length===1?'':'s'}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:3px;max-height:160px;overflow-y:auto">
+      ${neighbors.map(nb => `
+        <div style="display:flex;gap:6px;align-items:center;font-size:10px">
+          <span style="color:${KB_GRAPH_EDGE_COLORS[nb.relation]||'var(--muted)'};min-width:14px">${nb.dir}</span>
+          <span style="color:var(--muted);min-width:110px">${nb.relation}</span>
+          <span style="color:var(--text)">${esc(nb.title)}</span>
+          <span style="color:var(--muted)">(${nb.weight.toFixed(2)})</span>
+        </div>`).join('') || '<div style="color:var(--muted);font-size:10px">No graph edges yet — the extractor runs every 2h.</div>'}
+    </div>
+  `;
 }
 
 async function loadKBConcepts() {

@@ -131,12 +131,12 @@ def graph_json(limit: int = 500, domain: str = None) -> dict:
     with db_session() as conn:
         if domain:
             nodes = conn.execute(
-                "SELECT id, slug, title, node_type, domain FROM kb_nodes "
+                "SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
                 "WHERE domain=? ORDER BY updated_at DESC LIMIT ?",
                 (domain, limit)).fetchall()
         else:
             nodes = conn.execute(
-                "SELECT id, slug, title, node_type, domain FROM kb_nodes "
+                "SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
                 "ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
         ids = [n["id"] for n in nodes]
         edges = []
@@ -148,7 +148,8 @@ def graph_json(limit: int = 500, domain: str = None) -> dict:
                 ids + ids).fetchall()
     return {
         "nodes": [{"id": n["id"], "slug": n["slug"], "title": n["title"],
-                   "type": n["node_type"], "domain": n["domain"]} for n in nodes],
+                   "type": n["node_type"], "domain": n["domain"],
+                   "summary": (n["summary"] or "")[:280]} for n in nodes],
         "edges": [{"source": e["source_id"], "target": e["target_id"],
                    "relation": e["relation"], "weight": e["weight"]} for e in edges],
     }
