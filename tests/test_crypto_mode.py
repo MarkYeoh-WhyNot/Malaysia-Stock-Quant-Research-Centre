@@ -101,6 +101,31 @@ print(json.dumps({
                               "red_crypto", "judge_crypto"))
 
 
+def test_concierge_resolves_crypto_names_and_prompt_switches():
+    out = run_crypto("""
+import json
+from data.database import init_db
+init_db()
+from agents.concierge.concierge_agent import ConciergeAgent, TOOLS, _system_prompt
+c = ConciergeAgent()
+res = c._tool_resolve_tickers(["bitcoin", "DeFi"])
+prompt = _system_prompt()
+submit_desc = next(t for t in TOOLS if t["name"] == "submit_strategy_idea")["description"]
+print(json.dumps({
+    "btc": res["matches"]["bitcoin"],
+    "defi_has_uni": "UNI/USDT" in res["matches"]["DeFi"],
+    "prompt_crypto": "BTC/USDT" in prompt and "CRYPTO SPOT MARKET" in prompt,
+    "prompt_no_klci": "1155.KL" not in prompt,
+    "tools_crypto": "BTC/USDT" in submit_desc,
+    "guardrail": "human-only decision" in prompt,
+}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert r["btc"] == ["BTC/USDT"]
+    assert r["defi_has_uni"] is True
+    assert all(r[k] for k in ("prompt_crypto", "prompt_no_klci", "tools_crypto", "guardrail"))
+
+
 def test_fractional_fill_simulation_in_crypto_mode():
     out = run_crypto("""
 import json

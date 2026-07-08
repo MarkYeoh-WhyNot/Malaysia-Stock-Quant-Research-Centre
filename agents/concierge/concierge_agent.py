@@ -19,23 +19,28 @@ from agents.base_agent import BaseAgent, get_agent_daily_spend
 from config.settings import (
     CONCIERGE_MODEL, CONCIERGE_DAILY_BUDGET_USD, CONCIERGE_MAX_TOOL_ITERS,
     KLCI_STOCKS, KLCI_BY_SYMBOL, KLCI_SECTORS,
+    MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE,
 )
 from data.database import db_session
+
+# First token of the profile's example, e.g. "1155.KL" or "BTC/USDT"
+_EXAMPLE_TICKER = TICKER_EXAMPLE.split(" ")[0]
 
 TOOLS = [
     {
         "name": "submit_strategy_idea",
-        "description": "Submit a fully-specified long-only Bursa strategy into the "
-                       "factor sandbox. It enters at the backtest stage and the "
+        "description": f"Submit a fully-specified long-only {MARKET_NAME} strategy into "
+                       "the factor sandbox. It enters at the backtest stage and the "
                        "pipeline carries it through backtest -> red/blue -> paper "
                        "automatically. Use ONLY after you have a concrete factor_formula "
-                       "and a valid .KL ticker. Never for short-selling/pairs/intraday.",
+                       f"and a valid ticker like {_EXAMPLE_TICKER}. "
+                       "Never for short-selling/pairs/intraday/derivatives.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Short strategy name"},
                 "hypothesis": {"type": "string", "description": "1-2 sentence economic rationale"},
-                "ticker": {"type": "string", "description": "One or more .KL tickers, comma-separated (e.g. 1155.KL)"},
+                "ticker": {"type": "string", "description": f"One or more tickers, comma-separated (e.g. {_EXAMPLE_TICKER})"},
                 "timeframe": {"type": "string", "description": "Bar/holding timeframe, e.g. 1d, 1wk"},
                 "factor_formula": {"type": "string", "description": "Concrete entry/exit rule in terms of price/volume/indicators"},
             },
@@ -59,8 +64,9 @@ TOOLS = [
     },
     {
         "name": "search_knowledge_base",
-        "description": "Search the research knowledge base for relevant Bursa strategy "
-                       "knowledge, prior ideas, or rejection lessons before proposing a strategy.",
+        "description": f"Search the research knowledge base for relevant {MARKET_NAME} "
+                       "strategy knowledge, prior ideas, or rejection lessons before "
+                       "proposing a strategy.",
         "input_schema": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -69,8 +75,8 @@ TOOLS = [
     },
     {
         "name": "resolve_tickers",
-        "description": "Resolve company or sector names (e.g. 'Maybank', 'banks', "
-                       "'plantation') to Bursa .KL tickers in the KLCI universe.",
+        "description": f"Resolve asset or sector names to {MARKET_NAME} tickers in the "
+                       f"tradable universe (e.g. name or group -> {_EXAMPLE_TICKER}).",
         "input_schema": {
             "type": "object",
             "properties": {"names": {"type": "array", "items": {"type": "string"}}},
@@ -84,17 +90,22 @@ def _system_prompt() -> str:
     from agents.backtest_engineer import signal_dsl
     universe = "\n".join(
         f"  {s['symbol']} — {s['name']} ({s['sector']})" for s in KLCI_STOCKS)
-    return f"""You are the Concierge for Mark's Research Centre, a Bursa Malaysia
-(KLSE) quantitative research system. A human chats with you to test strategy ideas.
+    return f"""You are the Concierge for Mark's Research Centre — the {MARKET_NAME}
+quantitative research pipeline. A human chats with you to test strategy ideas.
 
 YOUR JOB: turn a natural-language idea into a concrete, long-only, daily-or-slower
 strategy and submit it via submit_strategy_idea. Then it runs the real pipeline
 (backtest -> red/blue debate -> paper trading) and you report progress when asked.
 
+MARKET STRUCTURE YOU OPERATE IN:
+{MARKET_BRIEF}
+
 HARD RULES — never violate:
-- Long-only ONLY. No short-selling, pairs, long/short, or market-neutral.
+- Long-only ONLY. No short-selling, pairs, long/short, market-neutral,
+  derivatives, margin, or leverage.
 - No intraday/scalping/HFT — daily bars or slower.
-- Bursa .KL instruments only (resolve names to tickers with resolve_tickers).
+- Instruments from this market's universe only, ticker format like
+  {_EXAMPLE_TICKER} (resolve names with resolve_tickers).
 - You may submit ideas and report status. You may NOT approve or trigger LIVE
   trading — moving a paper strategy to live is a human-only decision. If asked,
   explain that you can get an idea paper-trading-ready but the human makes the
@@ -104,7 +115,7 @@ HARD RULES — never violate:
 Write factor_formula in terms the backtester can parse — prefer these conditions:
 {signal_dsl.leaf_catalog_text()}
 
-KLCI universe (the tradable names):
+Tradable universe:
 {universe}
 
 Sectors: {', '.join(KLCI_SECTORS)}
