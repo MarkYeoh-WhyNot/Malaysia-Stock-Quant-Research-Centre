@@ -57,10 +57,17 @@ def compute_data_confidence(df: pd.DataFrame, interval: str = "1d") -> dict:
     else:
         stale_frac = 0.0
 
-    # Missing days: gaps vs the expected business-day calendar over the span.
+    # Missing days: gaps vs the market's expected trading calendar over the
+    # span. Bursa trades business days (bdate_range); crypto trades 24/7
+    # (date_range) — using the business calendar for crypto would flag every
+    # weekend as "missing" and Gate DQ would false-reject everything.
+    from config.settings import MARKET_CALENDAR
     missing_frac = 0.0
     if interval == "1d" and n > 1 and isinstance(df.index, pd.DatetimeIndex):
-        expected = pd.bdate_range(df.index[0], df.index[-1])
+        if MARKET_CALENDAR == "daily":
+            expected = pd.date_range(df.index[0], df.index[-1], freq="D")
+        else:
+            expected = pd.bdate_range(df.index[0], df.index[-1])
         if len(expected):
             present = df.index.normalize().intersection(expected.normalize())
             missing_frac = float(max(0.0, 1.0 - len(present) / len(expected)))

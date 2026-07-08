@@ -127,6 +127,7 @@ TICKER_EXAMPLE = "BTC/USDT (Bitcoin)"
 DATA_BACKEND   = "binance"
 EXCHANGE_ID    = os.getenv("CRYPTO_EXCHANGE_ID", "binance")
 BENCHMARK_SYMBOL = "BTC/USDT"
+INSTRUMENT_TYPE  = "spot"            # fee_schedules resolution key
 
 # Hard-blocked trading modes — long-only SPOT, daily bars. Everything
 # derivative/levered/short is out of scope by design.
@@ -188,6 +189,17 @@ RED_TEAM_ATTACKS = """You MUST specifically attack:
   that this system does not have?
 - Stablecoin/exchange risk: does the thesis survive a USDT wobble or an
   exchange halt?"""
+
+BLUE_DEFENSE_NOTES = """When defending, always address crypto-specific mechanics directly:
+- If BTC-beta is raised: show the strategy's decorrelation from simple BTC exposure.
+- If liquidity/weekends are raised: cite the pair's ADV and how fills avoid thin books.
+- If regime dependency is raised: show performance across at least two market regimes.
+- If data feasibility is raised: confirm the signal uses only daily OHLCV available here."""
+
+JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that requires "
+                     "shorting, perpetuals, margin, or leverage; relies on intraday "
+                     "execution; or depends on data this system lacks (on-chain, funding "
+                     "rates, order books).")
 
 # Concentration risk: the sector analog whose over-weight the risk monitor flags.
 CONCENTRATION_SECTOR = "Smart Contract"

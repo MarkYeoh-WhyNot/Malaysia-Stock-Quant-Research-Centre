@@ -1,10 +1,12 @@
 import json, logging
 from datetime import datetime
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST, GATE_CONFIG, KLCI_BY_SYMBOL
+from config.settings import MODEL_FAST, GATE_CONFIG, KLCI_BY_SYMBOL, CONCENTRATION_SECTOR
 from data.database import db_session
 
-_BANK_SECTOR = "Banking"
+# The sector whose over-concentration max_bank_pct guards — profile-driven
+# (Bursa: "Banking"; crypto: "Smart Contract").
+_BANK_SECTOR = CONCENTRATION_SECTOR
 
 logger = logging.getLogger(__name__)
 

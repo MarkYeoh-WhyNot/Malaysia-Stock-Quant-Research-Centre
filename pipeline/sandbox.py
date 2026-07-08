@@ -17,26 +17,20 @@ import re
 from datetime import datetime
 
 from data.database import db_session
+# Ticker format + hard-blocked trading modes come from the active market profile
+# (Bursa: .KL codes; crypto: /USDT pairs + no perps/margin). Same long-only,
+# daily-bar philosophy in every market.
+from config.settings import (
+    TICKER_REGEX, TICKER_EXAMPLE, BLOCKED_MODES, MARKET_NAME,
+)
 
 # Matches the pipeline's Gate 0 feasibility bar (North Star: feasibility >= 0.60).
 MIN_FEASIBILITY = 0.60
 
-_KL_RE = re.compile(r"[\dA-Z]{4,6}\.KL")
-
-# Hard-blocked trading modes — this system is long-only and daily-bar; the
-# feasibility score only *docks* these, so we reject them outright here (mirrors
-# StrategyResearcher._filter_infeasible so the sandbox path matches Gate 0).
-_INFEASIBLE_PHRASES = [
-    "short sell", "short-sell", "short-selling", "short selling", "sell short",
-    "pairs trade", "pairs trading", "long/short", "long-short", "market neutral",
-    "delta neutral", "spread trade", "arbitrage between", "options contract",
-    "futures spread", "intraday", "scalp", "hft", "tick data",
-]
-
 
 def _blocked_mode(text: str) -> str | None:
     low = (text or "").lower()
-    return next((p for p in _INFEASIBLE_PHRASES if p in low), None)
+    return next((p for p in BLOCKED_MODES if p in low), None)
 
 
 def _signal_signature(factor_formula: str, ticker: str) -> str:
@@ -67,14 +61,14 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
     timeframe = brief.get("timeframe") or "1d"
     raw_ticker = brief.get("ticker") or ""
 
-    kl_tickers = _KL_RE.findall(raw_ticker)
-    if not kl_tickers:
+    found_tickers = TICKER_REGEX.findall(raw_ticker)
+    if not found_tickers:
         return {"ok": False,
-                "error": f"No valid .KL ticker in '{raw_ticker[:60]}' — Bursa "
-                         f"instruments look like 1155.KL (Maybank)."}
+                "error": f"No valid ticker in '{raw_ticker[:60]}' — {MARKET_NAME} "
+                         f"instruments look like {TICKER_EXAMPLE}."}
     seen: set = set()
-    ticker = ",".join(t for t in kl_tickers if not (t in seen or seen.add(t)))
-    primary = kl_tickers[0]
+    ticker = ",".join(t for t in found_tickers if not (t in seen or seen.add(t)))
+    primary = found_tickers[0]
 
     # Hard block on structurally infeasible modes (long-only, daily-bar system).
     blocked = _blocked_mode(f"{title} {hypothesis} {factor_formula}")
@@ -88,7 +82,7 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
         {"hypothesis": hypothesis}, primary, factor_formula)
     if feasibility < MIN_FEASIBILITY:
         return {"ok": False, "feasibility": feasibility,
-                "error": f"Idea is not feasible on Bursa (feasibility "
+                "error": f"Idea is not feasible on {MARKET_NAME} (feasibility "
                          f"{feasibility:.2f} < {MIN_FEASIBILITY:.2f}) — likely "
                          f"short-selling, intraday, or unavailable-data reliance."}
 

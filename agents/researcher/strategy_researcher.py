@@ -14,6 +14,9 @@ from agents.base_agent import BaseAgent, ClaudeJSONError
 from config.settings import (
     MODEL_MAIN, MODEL_FAST, GATE_CONFIG,
     KLCI_STOCKS, KLCI_BY_SYMBOL, KLCI_SECTORS,
+    TICKER_REGEX, DEFAULT_SYMBOLS,
+    UNAVAILABLE_DATA_KEYWORDS, EXOTIC_KEYWORDS,
+    MARKET_MODE, MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE,
 )
 from data.database import db_session
 
@@ -184,6 +187,56 @@ most stocks; Yahoo Finance .KL data has quality issues (dividend adjustments, sp
 fundamentals). Score with deep scepticism and give low scores unless the edge is compelling."""
 
 
+# ── Crypto mode: swap the generation prompts, leave Bursa's byte-identical ────
+# The Bursa SYSTEM/GATE0_SYSTEM above are this pipeline's most battle-tested
+# prompts — they are never edited for dual-market support. In crypto mode the
+# process simply uses parallel prompts built from the crypto profile.
+if MARKET_MODE != "bursa":
+    SYSTEM = f"""YOU ARE A CRYPTO SPOT MARKET SPECIALIST (BINANCE).
+Every idea you generate MUST:
+1. Trade spot pairs quoted in USDT on the exchange (e.g. BTC/USDT)
+2. Use ONLY signals derivable from daily OHLCV price and volume data
+3. Be LONG-ONLY spot — no shorting, perpetuals, margin, leverage, or funding-rate plays
+4. Reference crypto market structure (BTC-beta, weekend liquidity, halving cycles, regime shifts)
+
+NEVER generate ideas involving:
+- Perpetual futures, options, margin, or any derivative
+- On-chain data, funding rates, open interest, order books, or whale-wallet tracking
+  (NOT available in this system)
+- Intraday execution, scalping, or HFT — daily bars only
+- Machine learning models requiring training infrastructure
+- News/social sentiment feeds
+
+{MARKET_BRIEF}
+
+TRADABLE UNIVERSE ({{n}} liquid USDT spot pairs):
+{{universe}}
+
+WHAT A GOOD CRYPTO SPOT STRATEGY LOOKS LIKE:
+- Trades a specific pair (e.g. BTC/USDT) or a small basket from the universe
+- Entry from measurable daily-bar conditions (MA crossover, RSI level, breakout,
+  volume surge, relative strength vs BTC)
+- Exit via price target, stop-loss %, time stop, or reverse signal
+- Holding period of days to months (24/7 market, but signals are daily)
+- Costs acknowledged: ~0.10% taker per side + slippage; ~0.25-0.30% round trip
+- States how the edge differs from simple BTC buy-and-hold exposure
+
+Every factor_formula MUST be computable from daily OHLCV alone.""".replace(
+        "{n}", str(len(KLCI_STOCKS))).replace("{universe}", _UNIVERSE_FULL)
+
+    GATE0_SYSTEM = f"""You are a skeptical quantitative researcher at a crypto fund whose job
+is to REJECT weak ideas. You are actively looking for reasons this strategy will NOT work in
+crypto spot markets. Be demanding — most ideas should fail this gate. Your default stance is
+rejection.
+
+You know crypto intimately: most alt "alpha" is disguised BTC beta; edges fit on one
+halving-cycle regime die in the next; weekend books are thin and slippage assumptions break;
+±15% overnight moves are routine; exchange and stablecoin risk are real. This system is
+long-only spot on daily OHLCV — anything needing shorts, perps, funding, on-chain, or intraday
+data is automatically infeasible. Score with deep scepticism and give low scores unless the
+edge is compelling and decorrelated from simple BTC exposure."""
+
+
 class StrategyResearcher(BaseAgent):
     name = "StrategyResearcher"
     description = "Bursa Malaysia equity alpha generation, Gate 0 screening, Stage 1 deep research"
@@ -193,11 +246,11 @@ class StrategyResearcher(BaseAgent):
 
     @staticmethod
     def _is_equity_ticker(ticker: str) -> bool:
-        """Return True only if ticker looks like a Bursa .KL symbol."""
+        """Return True only if ticker matches the active market's format
+        (Bursa: 1155.KL / 5235SS.KL; crypto: BTC/USDT)."""
         if not ticker:
             return False
-        # Accept: 1155.KL, 5347.KL, 5235SS.KL, 6947.KL etc.
-        return bool(re.match(r'^\d{4}[A-Z0-9]*\.KL$', ticker.strip()))
+        return bool(TICKER_REGEX.fullmatch(ticker.strip()))
 
     @staticmethod
     def _reject_if_fx(idea: dict) -> bool:
@@ -546,21 +599,21 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
         title  = idea.get("title", "idea")
         slug   = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
         slug   = f"{datetime.utcnow().strftime('%Y-%m-%d')}-{slug}"
-        ticker = idea.get("ticker") or "1155.KL"
+        ticker = idea.get("ticker") or DEFAULT_SYMBOLS[0]
 
-        # Extract all valid .KL tickers from the field using regex.
-        # This handles formats like "1961.KL vs 5012.KL", "Consumer Staples: 4707.KL..."
-        # and plain comma-separated lists "1155.KL,1023.KL".
-        kl_tickers = re.findall(r"[\dA-Z]{4,6}\.KL", ticker)
-        if not kl_tickers:
+        # Extract all valid tickers for the active market from the field.
+        # Handles "1961.KL vs 5012.KL", "Consumer Staples: 4707.KL...", comma
+        # lists — and in crypto mode the /USDT equivalents.
+        found_tickers = TICKER_REGEX.findall(ticker)
+        if not found_tickers:
             raise ValueError(
-                f"save_idea() refused: no valid .KL ticker found in '{ticker[:80]}'. "
+                f"save_idea() refused: no valid ticker found in '{ticker[:80]}'. "
                 f"Title: '{title}'"
             )
-        primary_ticker = kl_tickers[0]
-        # Rewrite ticker field to clean comma-separated .KL list (deduped, order preserved)
+        primary_ticker = found_tickers[0]
+        # Rewrite ticker field to a clean comma-separated list (deduped, order preserved)
         seen: set = set()
-        ticker = ",".join(t for t in kl_tickers if not (t in seen or seen.add(t)))
+        ticker = ",".join(t for t in found_tickers if not (t in seen or seen.add(t)))
 
         strategy_key = str(idea.get("strategy_key") or "other").strip()
 
@@ -642,14 +695,20 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
 
     @staticmethod
     def _compute_feasibility(idea_row, ticker: str, factor_formula: str) -> float:
-        """Score 0.0-1.0 based on whether the idea is actually executable on Bursa."""
+        """Score 0.0-1.0: is the idea actually executable in the active market?
+
+        Ticker format and data-availability keyword lists come from the market
+        profile (Bursa: .KL / yfinance limits; crypto: /USDT pairs / no
+        on-chain-funding-orderbook data). Scoring structure is identical across
+        markets — long-only, daily-bar, available-data-only.
+        """
         score = 0.0
         formula_lower = (factor_formula or "").lower()
         hypothesis_lower = (idea_row["hypothesis"] or "").lower()
         blob = formula_lower + " " + hypothesis_lower
 
-        # +0.3: valid .KL ticker
-        if re.match(r'^\d{4}[A-Z0-9]*\.KL$', ticker.strip()):
+        # +0.3: valid ticker for this market
+        if TICKER_REGEX.fullmatch(ticker.strip()):
             score += 0.3
 
         # +0.2: long-only (no short/pairs language)
@@ -657,26 +716,22 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
         if not any(kw in blob for kw in short_keywords):
             score += 0.2
 
-        # +0.2: data available via Yahoo Finance .KL
-        unavailable_keywords = ["options", "futures contract", "otc", "dark pool",
-                                 "tick data", "level 2", "order book", "forex", "fx rate"]
-        if not any(kw in blob for kw in unavailable_keywords):
+        # +0.2: data available from this market's backend
+        if not any(kw in blob for kw in UNAVAILABLE_DATA_KEYWORDS):
             score += 0.2
 
-        # +0.15: holding period realistic for Bursa T+2
+        # +0.15: holding period realistic (daily-bar system; settlement per market)
         intraday_keywords = ["intraday", "scalp", "1 minute", "5 minute", "hourly", "hft"]
         short_hold_keywords = ["1 day", "2 day", "3 day", "t+1", "t+2"]
         if any(kw in blob for kw in intraday_keywords):
             score -= 0.3
         elif any(kw in blob for kw in short_hold_keywords):
-            score += 0.0   # T+2 makes 1-2 day holds awkward but not impossible
+            score += 0.0   # very short holds are awkward but not impossible
         else:
-            score += 0.15   # >5 day holding period — safe for T+2
+            score += 0.15   # >5 day holding period — comfortably feasible
 
         # +0.15: factor uses available indicators (price/volume/fundamental)
-        exotic_keywords = ["futures price", "options greeks", "cds spread", "credit default",
-                           "bond yield curve", "repo rate"]
-        if not any(kw in blob for kw in exotic_keywords):
+        if not any(kw in blob for kw in EXOTIC_KEYWORDS):
             score += 0.15
 
         return round(min(max(score, 0.0), 1.0), 3)

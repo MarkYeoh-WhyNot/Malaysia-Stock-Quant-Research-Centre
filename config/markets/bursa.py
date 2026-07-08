@@ -139,6 +139,7 @@ TICKER_REGEX   = re.compile(r"[\dA-Z]{4,6}\.KL")
 TICKER_EXAMPLE = "1155.KL (Maybank)"
 DATA_BACKEND   = "yahoo"
 BENCHMARK_SYMBOL = "^KLSE"
+INSTRUMENT_TYPE  = "listed_equity"   # fee_schedules resolution key
 
 # Hard-blocked trading modes — long-only, daily-bar system (mirrors Gate 0's
 # _filter_infeasible so the sandbox path matches the generated-idea path).
@@ -190,6 +191,16 @@ RED_TEAM_ATTACKS = """You MUST specifically attack:
 - OPR change risk: for banking strategies, how does a 25bp BNM rate change affect the thesis?
 - Penny stock risk: is the ticker a low-liquidity or low-price stock with wide spreads?
 - Feasibility: can a real retail or institutional investor in Malaysia actually execute this?"""
+
+BLUE_DEFENSE_NOTES = """When defending, always address Bursa-specific mechanics directly:
+- If T+2 is raised: explain how the holding period accommodates settlement.
+- If liquidity is raised: cite the stock's average daily volume or lot-size adequacy.
+- If EPF flows are raised: explain whether the thesis is EPF-dependent or independent.
+- If OPR is raised: quantify the sensitivity and whether the strategy hedges rate risk."""
+
+JUDGE_REJECT_RULE = ("Apply Bursa-specific judgment: reject any strategy that requires "
+                     "short-selling unrestricted securities, relies on intraday execution, "
+                     "or ignores T+2 settlement constraints.")
 
 # Concentration risk: which sector the max_bank_pct-style limit watches.
 CONCENTRATION_SECTOR = "Banking"
