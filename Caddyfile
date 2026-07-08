@@ -10,9 +10,7 @@
 # this VPS, remove the `tls internal` line — Caddy will automatically obtain
 # and renew a Let's Encrypt certificate instead (default_sni can stay).
 {
-	servers {
-		default_sni {$DASHBOARD_DOMAIN:localhost}
-	}
+	default_sni {$DASHBOARD_DOMAIN:localhost}
 }
 
 {$DASHBOARD_DOMAIN:localhost} {
