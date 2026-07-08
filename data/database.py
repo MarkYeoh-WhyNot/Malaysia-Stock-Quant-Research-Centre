@@ -407,6 +407,13 @@ def init_db(db_path: Path = DB_PATH):
             ("KLSE", "listed_equity", "2023-07-13", "2028-07-12",
              "T+2", 100, 0.0008, 0.0003, 1000.0, 0.0010, 1000.0,
              "Remitted stamp duty 0.10%, cap RM1,000 per contract note"),
+            # Crypto spot (Binance base tier). Both markets' rows are seeded in
+            # every DB — harmless and idempotent; the fee resolver filters by
+            # the active settings.MARKET.
+            ("CRYPTO", "spot", "2020-01-01", None,
+             "T+0", 0, 0.0010, 0.0, 0.0, 0.0, 0.0,
+             "Binance spot base tier: 0.10% taker per side, no BNB discount; "
+             "no stamp/clearing/board lot on crypto spot"),
         ])
 
         # Phase 1.2: data-quality checks + Data Confidence Score (audit §6).
@@ -475,13 +482,16 @@ def init_db(db_path: Path = DB_PATH):
             )
         """)
         try:
-            from config.settings import KLCI_STOCKS as _KLCI, UNIVERSE_ASOF as _ASOF
+            from config.settings import (
+                KLCI_STOCKS as _UNIV, UNIVERSE_ASOF as _ASOF,
+                UNIVERSE_NAME as _UNAME,
+            )
             conn.executemany("""
                 INSERT OR IGNORE INTO universe_membership
                   (universe_name, ticker, company_name, effective_from,
                    effective_to, inclusion_reason, source, confidence_score)
-                VALUES ('FBMKLCI', ?, ?, ?, NULL, 'current_constituent', 'settings.KLCI_STOCKS', 1.0)
-            """, [(s["symbol"], s["name"], _ASOF) for s in _KLCI])
+                VALUES (?, ?, ?, ?, NULL, 'current_constituent', 'market_profile', 1.0)
+            """, [(_UNAME, s["symbol"], s["name"], _ASOF) for s in _UNIV])
         except Exception as _um_exc:
             logger.warning(f"universe_membership seed skipped: {_um_exc}")
 

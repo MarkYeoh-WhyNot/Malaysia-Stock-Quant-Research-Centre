@@ -12,12 +12,12 @@ whose window predates that is therefore NOT production-eligible — see
 """
 from __future__ import annotations
 
-from config.settings import UNIVERSE_ASOF, DEFAULT_SYMBOLS
+from config.settings import UNIVERSE_ASOF, DEFAULT_SYMBOLS, UNIVERSE_NAME
 from data.database import db_session
 
 
 def get_universe_asof(as_of: str | None = None,
-                      universe_name: str = "FBMKLCI") -> list[str]:
+                      universe_name: str = UNIVERSE_NAME) -> list[str]:
     """Tickers that were members of `universe_name` on `as_of` (YYYY-MM-DD).
 
     Falls back to the current DEFAULT_SYMBOLS if the table is empty. `as_of=None`
@@ -48,7 +48,7 @@ def get_universe_asof(as_of: str | None = None,
 
 
 def is_production_eligible(window_start: str | None,
-                          universe_name: str = "FBMKLCI") -> bool:
+                          universe_name: str = UNIVERSE_NAME) -> bool:
     """A backtest is production-eligible only if point-in-time membership covers
     its whole window. Today we only have membership from UNIVERSE_ASOF onward, so
     any window starting before that is research-grade only.
