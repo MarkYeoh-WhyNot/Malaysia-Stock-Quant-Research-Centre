@@ -1,23 +1,21 @@
 # OpenClaw reverse proxy — terminates TLS and forwards to the api container.
 #
-# IP-only mode (current default): catch-all on :443 with a self-signed
-# "internal" cert. This is required for bare-IP access — TLS clients don't
-# send SNI for IP literals (RFC 6066), so a domain-keyed site block never
-# matches and the handshake fails with "no certificate available".
+# TLS clients don't send SNI for IP literals (RFC 6066), so a plain
+# domain-keyed site block never matches bare-IP connections and the
+# handshake fails with "no certificate available". `default_sni` tells Caddy
+# which certificate to serve when no SNI is presented, so IP-only access
+# works with the self-signed "internal" cert below.
 #
 # Domain mode: once DASHBOARD_DOMAIN in .env is a real hostname pointing at
-# this VPS, replace the block below with:
-#   {$DASHBOARD_DOMAIN} {
-#       reverse_proxy api:8001
-#       encode gzip
-#   }
-# Caddy will then automatically obtain and renew a Let's Encrypt certificate
-# (SNI works normally for real hostnames).
-:80 {
-	redir https://{host}{uri} permanent
+# this VPS, remove the `tls internal` line — Caddy will automatically obtain
+# and renew a Let's Encrypt certificate instead (default_sni can stay).
+{
+	servers {
+		default_sni {$DASHBOARD_DOMAIN:localhost}
+	}
 }
 
-:443 {
+{$DASHBOARD_DOMAIN:localhost} {
 	reverse_proxy api:8001
 	encode gzip
 	tls internal
