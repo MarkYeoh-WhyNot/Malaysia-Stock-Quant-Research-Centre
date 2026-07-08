@@ -22,7 +22,7 @@ def _stamp_versions(conn):
         "WHERE id=last_insert_rowid()",
         (MARKET_RULES_VERSION, FEE_MODEL_VERSION),
     )
-from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
+from data.market_data import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 

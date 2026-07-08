@@ -6,7 +6,11 @@ import pandas as pd
 from agents.base_agent import BaseAgent
 from config.settings import MODEL_FAST, BASE_DIR, DEFAULT_SYMBOLS, RUNTIME_DIR
 from data.database import db_session
-from data.yahoo.client import extract_tickers, get_historical_data, get_latest_prices, get_multi_info, BARS_PER_YEAR
+# Price history + ticker parsing dispatch on the active market's data backend
+# (yahoo for Bursa, ccxt/binance for crypto); get_latest_prices / get_multi_info
+# stay yahoo-only — fundamentals used exclusively by Bursa-only code paths.
+from data.market_data import extract_tickers, get_historical_data, BARS_PER_YEAR
+from data.yahoo.client import get_latest_prices, get_multi_info
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +26,8 @@ class DataEngineer(BaseAgent):
 
     def _cache_path(self, symbol: str, interval: str) -> Path:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        safe = symbol.replace(".", "_")
+        # "." (1155.KL) and "/" (BTC/USDT) are both unsafe in filenames
+        safe = symbol.replace(".", "_").replace("/", "_")
         return CACHE_DIR / f"{safe}_{interval}.parquet"
 
     def _is_stale(self, path: Path, max_age_hours: int = 12) -> bool:

@@ -9,6 +9,7 @@ APScheduler==3.11.3
 async-timeout==5.0.1
 attrs==26.1.0
 beautifulsoup4==4.15.0
+ccxt==4.5.64
 certifi==2026.6.17
 cffi==2.1.0
 charset-normalizer==3.4.9
