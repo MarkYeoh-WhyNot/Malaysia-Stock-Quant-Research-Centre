@@ -4,13 +4,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST, BASE_DIR, DEFAULT_SYMBOLS
+from config.settings import MODEL_FAST, BASE_DIR, DEFAULT_SYMBOLS, RUNTIME_DIR
 from data.database import db_session
 from data.yahoo.client import extract_tickers, get_historical_data, get_latest_prices, get_multi_info, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 
-CACHE_DIR = BASE_DIR / "data" / "cache"
+CACHE_DIR = RUNTIME_DIR / "cache"
 
 
 class DataEngineer(BaseAgent):

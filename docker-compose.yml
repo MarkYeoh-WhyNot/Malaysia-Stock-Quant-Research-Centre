@@ -16,10 +16,11 @@ services:
     command: uvicorn dashboard.api.server:app --host 0.0.0.0 --port 8001
     environment:
       - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
     env_file:
       - .env
     volumes:
-      - openclaw-data:/app/data
+      - openclaw-data:/app/runtime
       - openclaw-logs:/app/logs
       - openclaw-backups:/app/backups
     restart: unless-stopped
@@ -37,10 +38,11 @@ services:
     command: python scripts/research_daemon.py
     environment:
       - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
     env_file:
       - .env
     volumes:
-      - openclaw-data:/app/data
+      - openclaw-data:/app/runtime
       - openclaw-logs:/app/logs
       - openclaw-backups:/app/backups
     restart: unless-stopped
@@ -60,10 +62,11 @@ services:
     command: python scripts/telegram_bot.py
     environment:
       - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
     env_file:
       - .env
     volumes:
-      - openclaw-data:/app/data
+      - openclaw-data:/app/runtime
       - openclaw-logs:/app/logs
     restart: unless-stopped
     logging: *default-logging
@@ -76,10 +79,11 @@ services:
     command: python scripts/event_watcher.py
     environment:
       - PYTHONPATH=/app
+      - OPENCLAW_RUNTIME_DIR=/app/runtime
     env_file:
       - .env
     volumes:
-      - openclaw-data:/app/data
+      - openclaw-data:/app/runtime
       - openclaw-logs:/app/logs
     restart: unless-stopped
     logging: *default-logging

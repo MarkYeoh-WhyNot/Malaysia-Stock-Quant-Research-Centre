@@ -135,8 +135,17 @@ def bursa_trade_cost(trade_value_myr: float, side: str,
     cost += value * BURSA_SLIPPAGE_TIERS.get(slippage_tier, BURSA_SLIPPAGE_TIERS["MID_CAP"])
     return cost
 
+# ── Runtime state directory ───────────────────────────────────────────────────
+# All mutable runtime artifacts (SQLite DB, parquet cache, heartbeat, progress
+# file) live here. Defaults to the repo's data/ dir for local development, but
+# Docker deployments MUST override via OPENCLAW_RUNTIME_DIR: data/ also holds
+# source code (database.py, yahoo/, klse/...), and mounting a named volume
+# over /app/data shadowed those modules with first-deploy copies — code
+# updates under data/ silently never reached the running containers.
+RUNTIME_DIR = Path(os.getenv("OPENCLAW_RUNTIME_DIR", str(BASE_DIR / "data")))
+
 # ── Database ──────────────────────────────────────────────────────────────────
-DB_PATH = BASE_DIR / "data" / "openclaw.db"
+DB_PATH = RUNTIME_DIR / "openclaw.db"
 
 # ── Pipeline gate / stage thresholds ─────────────────────────────────────────
 @dataclass
@@ -194,7 +203,7 @@ OPENCLAW_API_KEY = os.getenv("OPENCLAW_API_KEY", "")
 DASHBOARD_ORIGIN = os.getenv("DASHBOARD_ORIGIN", "http://localhost")
 
 # Cross-process progress file written by BacktestEngineer, read by the API
-PROGRESS_FILE = BASE_DIR / "data" / "openclaw_progress.json"
+PROGRESS_FILE = RUNTIME_DIR / "openclaw_progress.json"
 
 # Operational alerts (daemon crash/restart, budget exhausted) via Telegram
 ALERT_TELEGRAM_CHAT_ID = os.getenv("ALERT_TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")

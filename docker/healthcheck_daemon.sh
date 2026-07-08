@@ -5,7 +5,7 @@
 # file is missing or older than 5 minutes — long enough to tolerate a slow
 # backtest cycle, short enough to catch a genuinely stuck/dead process.
 set -e
-HEARTBEAT="/app/data/daemon_heartbeat"
+HEARTBEAT="/app/runtime/daemon_heartbeat"
 
 if [ ! -f "$HEARTBEAT" ]; then
     echo "no heartbeat file yet"
