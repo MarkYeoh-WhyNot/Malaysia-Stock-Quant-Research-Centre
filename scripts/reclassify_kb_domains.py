@@ -6,16 +6,17 @@ Processes docs in batches of 5 — classifies each using title + first 200 chars
 of summary, then updates domain in DB.  Prints before/after counts.
 
 Usage:
-    /opt/openclaw/venv/bin/python scripts/reclassify_kb_domains.py
+    python scripts/reclassify_kb_domains.py   (run from the repo root)
 """
 
 import sys
 import os
-sys.path.insert(0, "/opt/openclaw/app")
-os.environ.setdefault("PYTHONPATH", "/opt/openclaw/app")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO_ROOT)
+os.environ.setdefault("PYTHONPATH", _REPO_ROOT)
 
 from dotenv import load_dotenv
-load_dotenv("/opt/openclaw/app/.env")
+load_dotenv(os.path.join(_REPO_ROOT, ".env"))
 
 from data.database import db_session
 from knowledge.ingestion.kb_ingester import KBIngester, VALID_DOMAINS
