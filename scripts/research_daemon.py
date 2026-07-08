@@ -32,15 +32,65 @@ class ResearchDaemon:
         self.red_blue_team      = RedBlueTeam()
         self.portfolio_executor = PortfolioExecutor()
         self.diversity_engine   = DiversityEngine()
-        self._last_kb_hunt: datetime | None = None
-        self._last_briefing: datetime | None = None
-        self._last_alpha_seeds: datetime | None = None
-        self._last_klse_refresh: datetime | None = None
-        self._last_screener_ideas: datetime | None = None
+        # last-run timestamps per scheduled job, persisted in job_state so
+        # daily jobs catch up after downtime instead of being skipped
+        self._job_last_run: dict[str, datetime | None] = {}
+
+    # ── Scheduler helpers (persisted, catch-up aware) ─────────────────────────
+
+    def _load_job_state(self):
+        try:
+            with db_session() as conn:
+                rows = conn.execute("SELECT job_name, last_run_utc FROM job_state").fetchall()
+            for r in rows:
+                try:
+                    self._job_last_run[r["job_name"]] = datetime.fromisoformat(r["last_run_utc"])
+                except (ValueError, TypeError):
+                    pass
+            if self._job_last_run:
+                logger.info(f"[Scheduler] Restored last-run state for {len(self._job_last_run)} jobs")
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not load job state: {e}")
+
+    def _job_due(self, name: str, daily_at_hour: int | None = None,
+                 min_gap: timedelta | None = None) -> bool:
+        """Whether a scheduled job should run now (UTC).
+
+        Daily jobs are due from `last_run.date() + 1 day at daily_at_hour`
+        onward — if the daemon was down or busy during the target hour, the job
+        runs on the next cycle instead of being skipped for the day. A job that
+        has never run is due immediately.
+        """
+        now = datetime.utcnow()
+        last = self._job_last_run.get(name)
+        if last is None:
+            return True
+        if daily_at_hour is not None:
+            from datetime import time as dt_time
+            due = datetime.combine(last.date() + timedelta(days=1),
+                                   dt_time(hour=daily_at_hour))
+            return now >= due
+        if min_gap is not None:
+            return (now - last) >= min_gap
+        return True
+
+    def _mark_job_run(self, name: str):
+        now = datetime.utcnow()
+        self._job_last_run[name] = now
+        try:
+            with db_session() as conn:
+                conn.execute(
+                    "INSERT INTO job_state (job_name, last_run_utc) VALUES (?, ?) "
+                    "ON CONFLICT(job_name) DO UPDATE SET last_run_utc=excluded.last_run_utc",
+                    (name, now.isoformat()),
+                )
+        except Exception as e:
+            logger.warning(f"[Scheduler] Could not persist job state for {name}: {e}")
 
     def start(self):
         logger.info("OpenClaw Research Daemon starting...")
         init_db()
+        self._load_job_state()
         # Security check — log key health without exposing the actual key
         kh = key_health_check()
         if kh["issues"]:
@@ -57,11 +107,20 @@ class ResearchDaemon:
         logger.info("Daemon shutting down...")
         self.running = False
 
+    def _touch_heartbeat(self):
+        """Freshness file for the Docker healthcheck (docker/healthcheck_daemon.sh)."""
+        try:
+            from config.settings import DB_PATH
+            (DB_PATH.parent / "daemon_heartbeat").touch()
+        except Exception:
+            pass
+
     async def _main_loop(self):
         while self.running:
             self.cycle_count += 1
             start = time.time()
             logger.info(f"[Daemon] Scan cycle #{self.cycle_count}")
+            self._touch_heartbeat()
             try:
                 await self._scan_and_dispatch()
             except Exception as e:
@@ -96,6 +155,8 @@ class ResearchDaemon:
         await self._process_morning_briefing()
         await self._process_klse_refresh()
         await self._process_screener_ideas()
+        await self._process_cpo_daily()
+        await self._process_analyst_monitor()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
@@ -476,8 +537,7 @@ class ResearchDaemon:
         Guarded by a 55-minute minimum gap so it fires at most once per daemon hour.
         Processes up to 5 undigested KB documents per run.
         """
-        now = datetime.utcnow()
-        if self._last_alpha_seeds and (now - self._last_alpha_seeds) < timedelta(minutes=55):
+        if not self._job_due("alpha_seeds", min_gap=timedelta(minutes=55)):
             return
 
         with db_session() as conn:
@@ -491,7 +551,7 @@ class ResearchDaemon:
         logger.info(f"[AlphaSeeds] {undigested} undigested docs — processing up to 5...")
         try:
             result = AlphaSeedGenerator().process_undigested(limit=5)
-            self._last_alpha_seeds = now
+            self._mark_job_run("alpha_seeds")
             logger.info(
                 f"[AlphaSeeds] processed={result['processed']} "
                 f"ideas_created={result['total_ideas_created']} "
@@ -503,21 +563,16 @@ class ResearchDaemon:
     # ── Daily knowledge diversity hunt ────────────────────────────────────────
 
     async def _daily_knowledge_hunt(self):
-        """Run DiversityEngine.daily_hunt() once per day at ~22:00 UTC (06:00 KL time).
-
-        Guards against multiple runs in the same UTC-22 hour window by tracking
-        _last_kb_hunt. A 20-hour minimum gap ensures one run per calendar day.
-        """
-        now = datetime.utcnow()
-        if now.hour != 22:
-            return
-        if self._last_kb_hunt and (now - self._last_kb_hunt) < timedelta(hours=20):
+        """Run DiversityEngine.daily_hunt() once per day, due from 22:00 UTC
+        (06:00 KL). Catch-up aware: if the daemon was down at 22:00, the hunt
+        runs on the next cycle instead of skipping the day."""
+        if not self._job_due("kb_hunt", daily_at_hour=22):
             return
 
         logger.info("[DailyHunt] Starting daily knowledge diversity hunt...")
         try:
             result = self.diversity_engine.daily_hunt()
-            self._last_kb_hunt = now
+            self._mark_job_run("kb_hunt")
             logger.info(
                 f"[DailyHunt] Complete — angle='{result.get('target_angle')}' "
                 f"found={result.get('papers_found', 0)} "
@@ -530,20 +585,15 @@ class ResearchDaemon:
     # ── Morning briefing — 00:00 UTC (08:00 KL time) ─────────────────────────
 
     async def _process_morning_briefing(self):
-        """Send the daily morning briefing once per day at 00:00 UTC (08:00 KL).
-
-        Guarded by a 20-hour minimum gap to prevent duplicate sends.
-        """
-        now = datetime.utcnow()
-        if now.hour != 0:
-            return
-        if self._last_briefing and (now - self._last_briefing) < timedelta(hours=20):
+        """Send the daily morning briefing once per day, due from 00:00 UTC
+        (08:00 KL). Catch-up aware."""
+        if not self._job_due("morning_briefing", daily_at_hour=0):
             return
 
         logger.info("[MorningBriefing] Generating daily briefing...")
         try:
             result = MorningBriefing().generate_briefing()
-            self._last_briefing = now
+            self._mark_job_run("morning_briefing")
             logger.info(
                 f"[MorningBriefing] Done — sent={result.get('sent')} "
                 f"articles={result.get('articles')} dividends={result.get('dividends')}"
@@ -560,17 +610,14 @@ class ResearchDaemon:
         Scrapes klsescreener.com stock pages for all SLUG_MAP stocks and upserts
         into fundamental_data, quarterly_history, and dividend_history tables.
         """
-        now = datetime.utcnow()
-        if now.hour != 10:
-            return
-        if self._last_klse_refresh and (now - self._last_klse_refresh) < timedelta(hours=20):
+        if not self._job_due("klse_refresh", daily_at_hour=10):
             return
 
         logger.info("[KLSERefresh] Starting KLCI fundamental data refresh...")
         try:
             from data.klse_screener.fundamental_scraper import KLSEFundamentalScraper
             result = KLSEFundamentalScraper().refresh_all_klci()
-            self._last_klse_refresh = now
+            self._mark_job_run("klse_refresh")
             logger.info(
                 f"[KLSERefresh] Complete — success={result['success']} "
                 f"failed={result['failed']}"
@@ -581,20 +628,51 @@ class ResearchDaemon:
     # ── Screener-driven idea generation — 11:00 UTC (19:00 MYT) ─────────────
 
     async def _process_screener_ideas(self):
-        """Run KLSEProactiveScreener and generate ideas once per day at 11:00 UTC."""
-        now = datetime.utcnow()
-        if now.hour != 11:
-            return
-        if self._last_screener_ideas and (now - self._last_screener_ideas) < timedelta(hours=20):
+        """Run KLSEProactiveScreener and generate ideas once per day, due from
+        11:00 UTC (19:00 MYT). Catch-up aware."""
+        if not self._job_due("screener_ideas", daily_at_hour=11):
             return
 
         logger.info("[ScreenerIdeas] Running 8-screen KLSE idea generation...")
         try:
             generated = self.researcher.generate_screener_ideas()
-            self._last_screener_ideas = now
+            self._mark_job_run("screener_ideas")
             logger.info(f"[ScreenerIdeas] Complete — {generated} ideas created")
         except Exception as e:
             logger.error(f"[ScreenerIdeas] Error: {e}", exc_info=True)
+
+
+    # ── CPO daily signal — 01:00 UTC (09:00 MYT) ──────────────────────────────
+
+    async def _process_cpo_daily(self):
+        """Run the CPO/palm-oil daily signal once per day (folded in from
+        scripts/cpo_daily.py so it gets scheduler catch-up and supervision)."""
+        if not self._job_due("cpo_daily", daily_at_hour=1):
+            return
+        logger.info("[CPODaily] Running CPO daily signal...")
+        try:
+            from scripts.cpo_daily import main as cpo_main
+            await asyncio.get_event_loop().run_in_executor(None, cpo_main)
+            self._mark_job_run("cpo_daily")
+            logger.info("[CPODaily] Complete")
+        except Exception as e:
+            logger.error(f"[CPODaily] Error: {e}", exc_info=True)
+
+    # ── Analyst coverage monitor — 02:00 UTC (10:00 MYT) ─────────────────────
+
+    async def _process_analyst_monitor(self):
+        """Run the analyst coverage-initiation tracker once per day (folded in
+        from scripts/analyst_monitor.py)."""
+        if not self._job_due("analyst_monitor", daily_at_hour=2):
+            return
+        logger.info("[AnalystMonitor] Running analyst coverage monitor...")
+        try:
+            from scripts.analyst_monitor import main as analyst_main
+            await asyncio.get_event_loop().run_in_executor(None, analyst_main)
+            self._mark_job_run("analyst_monitor")
+            logger.info("[AnalystMonitor] Complete")
+        except Exception as e:
+            logger.error(f"[AnalystMonitor] Error: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

@@ -328,6 +328,15 @@ def init_db(db_path: Path = DB_PATH):
             "CREATE INDEX IF NOT EXISTS idx_bs_idea ON backtest_series(idea_id)"
         )
 
+        # Daemon scheduler: persisted last-run timestamps so daily jobs catch up
+        # after downtime instead of being silently skipped
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS job_state (
+                job_name     TEXT PRIMARY KEY,
+                last_run_utc TEXT NOT NULL
+            )
+        """)
+
         # Paper trading: daily NAV series per idea (mark-to-market)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_equity (
