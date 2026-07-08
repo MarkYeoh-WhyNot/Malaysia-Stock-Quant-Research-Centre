@@ -159,22 +159,22 @@ class ResearchDaemon:
             f"[Daemon] health={health['health']} ideas={health['total_ideas']} "
             f"spend=${health['daily_spend']:.2f}"
         )
-        await self._process_gate0()
-        await self._process_stage1()
-        await self._process_stage2()
-        await self._process_red_blue()
-        await self._process_stage3()
-        await self._process_paper_trading()
-        await self._daily_knowledge_hunt()
-        await self._process_alpha_seeds()
-        await self._process_morning_briefing()
-        await self._process_klse_refresh()
-        await self._process_screener_ideas()
-        await self._process_cpo_daily()
-        await self._process_analyst_monitor()
-        await self._process_db_maintenance()
-        await self._process_graph_maintain()
-        await self._process_vault_export()
+        # Touch the heartbeat between steps, not just once per full cycle —
+        # first-boot catch-up jobs (e.g. KLSE fundamental refresh scraping
+        # ~40 stocks sequentially) can run long enough on their own to blow
+        # past the healthcheck's 5-minute staleness window otherwise.
+        steps = (
+            self._process_gate0, self._process_stage1, self._process_stage2,
+            self._process_red_blue, self._process_stage3, self._process_paper_trading,
+            self._daily_knowledge_hunt, self._process_alpha_seeds,
+            self._process_morning_briefing, self._process_klse_refresh,
+            self._process_screener_ideas, self._process_cpo_daily,
+            self._process_analyst_monitor, self._process_db_maintenance,
+            self._process_graph_maintain, self._process_vault_export,
+        )
+        for step in steps:
+            await step()
+            self._touch_heartbeat()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
