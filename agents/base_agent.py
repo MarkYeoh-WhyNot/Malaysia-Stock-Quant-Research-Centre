@@ -10,6 +10,19 @@ from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
+
+class ClaudeJSONError(RuntimeError):
+    """call_claude_json could not parse the model's response as JSON, and the
+    caller opted into raise_on_error=True instead of the silent
+    {"error": "json_parse_failed"} fallback — used at gate-scoring call sites
+    where a silently-swallowed failure previously caused ideas to be scored
+    novelty=0.00/logic=0.00 and auto-rejected instead of retried."""
+
+    def __init__(self, message: str, raw: str = ""):
+        super().__init__(message)
+        self.raw = raw
+
+
 COST_TABLE = {
     "claude-haiku-4-5-20251001": {"input": 0.80,  "output": 4.00},
     "claude-sonnet-4-6":         {"input": 3.00,  "output": 15.00},
@@ -43,6 +56,10 @@ class BaseAgent(ABC):
         if budget_check:
             spend = get_daily_spend()
             if spend >= AI_DAILY_BUDGET_USD:
+                if not self._budget_alert_sent_today():
+                    from scripts.alerts import send_alert
+                    send_alert(f"Daily AI budget cap reached (${spend:.2f} >= ${AI_DAILY_BUDGET_USD:.2f}) "
+                              f"— pipeline calls are now blocked until UTC midnight")
                 raise RuntimeError(f"Daily AI budget cap reached (${spend:.2f})")
         start = time.time()
         response = self.client.messages.create(
@@ -56,7 +73,8 @@ class BaseAgent(ABC):
         self.logger.debug(f"[{self.name}] {model} | ${cost:.4f} | {elapsed:.1f}s")
         return response.content[0].text
 
-    def call_claude_json(self, system, messages, model=None, max_tokens=4096, task_label=""):
+    def call_claude_json(self, system, messages, model=None, max_tokens=4096, task_label="",
+                         raise_on_error: bool = False):
         system_with_json = system + "\n\nRespond ONLY with valid JSON. No markdown, no preamble."
         text = self.call_claude(system_with_json, messages, model, max_tokens, task_label)
         raw = text  # preserve original for error reporting
@@ -86,7 +104,30 @@ class BaseAgent(ABC):
             f"[{self.name}] call_claude_json FAILED for task={task_label!r} — "
             f"could not parse JSON.\nRAW RESPONSE ({len(raw)} chars):\n{raw[:2000]}"
         )
+        if raise_on_error:
+            raise ClaudeJSONError(
+                f"[{self.name}] call_claude_json could not parse a JSON response "
+                f"for task={task_label!r}", raw=raw
+            )
         return {"error": "json_parse_failed", "raw": raw}
+
+    @staticmethod
+    def _budget_alert_sent_today() -> bool:
+        """Dedupe the budget-exhausted alert to one per UTC day (job_state
+        doubles as a simple once-per-day marker, keyed by date)."""
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        job_name = f"budget_alert_{today}"
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM job_state WHERE job_name=?", (job_name,)
+            ).fetchone()
+            if row:
+                return True
+            conn.execute(
+                "INSERT INTO job_state (job_name, last_run_utc) VALUES (?, ?)",
+                (job_name, datetime.utcnow().isoformat()),
+            )
+        return False
 
     def _log_usage(self, model, input_tokens, output_tokens, cost, task):
         with db_session() as conn:

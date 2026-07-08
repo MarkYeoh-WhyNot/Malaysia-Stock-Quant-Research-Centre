@@ -16,6 +16,7 @@ from data.database import db_session, init_db
 from knowledge.ingestion.diversity_engine import DiversityEngine
 from knowledge.ingestion.alpha_seeds import AlphaSeedGenerator
 from scripts.morning_briefing import MorningBriefing
+from scripts.alerts import send_alert
 
 logger = logging.getLogger("openclaw.daemon")
 
@@ -101,7 +102,16 @@ class ResearchDaemon:
         self.running = True
         signal.signal(signal.SIGINT,  self._shutdown)
         signal.signal(signal.SIGTERM, self._shutdown)
-        asyncio.run(self._main_loop())
+        # Doubles as the "daemon restarted" notice — a fresh alert here after an
+        # unexpected exit tells the operator the container's restart policy
+        # kicked in, without needing separate crash-vs-restart bookkeeping.
+        send_alert("daemon started")
+        try:
+            asyncio.run(self._main_loop())
+        except Exception as e:
+            logger.error(f"[Daemon] Fatal error: {e}", exc_info=True)
+            send_alert(f"daemon crashed: {e}")
+            raise
 
     def _shutdown(self, *args):
         logger.info("Daemon shutting down...")
@@ -157,6 +167,7 @@ class ResearchDaemon:
         await self._process_screener_ideas()
         await self._process_cpo_daily()
         await self._process_analyst_monitor()
+        await self._process_db_maintenance()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
@@ -169,6 +180,9 @@ class ResearchDaemon:
         for row in pending:
             try:
                 result = self.researcher.score_gate0(row["id"])
+                if result.get("retry"):
+                    logger.warning(f"[Gate0] RETRY (parse failure): {row['title'][:50]}")
+                    continue
                 logger.info(
                     f"[Gate0] {'PASS' if result.get('pass') else 'FAIL'}: {row['title'][:50]}"
                 )
@@ -673,6 +687,40 @@ class ResearchDaemon:
             logger.info("[AnalystMonitor] Complete")
         except Exception as e:
             logger.error(f"[AnalystMonitor] Error: {e}", exc_info=True)
+
+
+    # ── Nightly DB maintenance — 03:00 UTC (11:00 MYT) ───────────────────────
+
+    async def _process_db_maintenance(self):
+        """Prune unbounded log/usage tables and take a compressed DB backup,
+        once per day. Both are cheap, local, no-LLM-cost operations."""
+        if not self._job_due("db_maintenance", daily_at_hour=3):
+            return
+        logger.info("[DBMaintenance] Pruning old logs and backing up database...")
+        try:
+            with db_session() as conn:
+                logs_deleted = conn.execute(
+                    "DELETE FROM daemon_logs WHERE created_at < datetime('now', '-30 days')"
+                ).rowcount
+                usage_deleted = conn.execute(
+                    "DELETE FROM ai_usage WHERE created_at < datetime('now', '-90 days')"
+                ).rowcount
+            # Separate connection/transaction: TRUNCATE checkpoint needs exclusive
+            # WAL access and can't run inside the delete transaction above.
+            try:
+                with db_session() as conn:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception as _wal_exc:
+                logger.warning(f"[DBMaintenance] wal_checkpoint skipped: {_wal_exc}")
+            logger.info(f"[DBMaintenance] Pruned daemon_logs={logs_deleted} ai_usage={usage_deleted}")
+
+            from scripts.backup_db import run_backup
+            backup_result = await asyncio.get_event_loop().run_in_executor(None, run_backup)
+            logger.info(f"[DBMaintenance] Backup: {backup_result['file']}")
+
+            self._mark_job_run("db_maintenance")
+        except Exception as e:
+            logger.error(f"[DBMaintenance] Error: {e}", exc_info=True)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ import json
 import re
 import logging
 from datetime import datetime
-from agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent, ClaudeJSONError
 from config.settings import (
     MODEL_MAIN, MODEL_FAST, GATE_CONFIG,
     KLCI_STOCKS, KLCI_BY_SYMBOL, KLCI_SECTORS,
@@ -710,22 +710,23 @@ Return JSON only:
                 [{"role": "user", "content": prompt}],
                 model=MODEL_FAST,
                 task_label="gate0_score",
+                raise_on_error=True,
             )
+        except ClaudeJSONError as exc:
+            # A malformed response must NOT be scored as novelty=0/logic=0 and
+            # rejected — that was the historical "Gate 0 scored 0.00" bug.
+            # Leave the idea pending so the next daemon cycle retries it.
+            self.logger.error(
+                f"[score_gate0] JSON parse failed for idea {idea_id} ({ticker}) — "
+                f"leaving pending for retry.\nRAW RESPONSE:\n{exc.raw[:2000]}"
+            )
+            return {"error": str(exc), "pass": False, "retry": True}
         except Exception as exc:
             self.logger.error(
                 f"[score_gate0] Claude API call raised exception for idea {idea_id}: {exc}",
                 exc_info=True,
             )
-            return {"error": str(exc), "novelty_score": 0.0, "logic_score": 0.0,
-                    "feasibility_score": feasibility, "passed": False}
-
-        # Detect silent parse failure — log raw response so we can see what Claude returned
-        if "error" in result:
-            self.logger.error(
-                f"[score_gate0] JSON parse failed for idea {idea_id} ({ticker}). "
-                f"error={result['error']!r}\n"
-                f"RAW RESPONSE:\n{result.get('raw', '(no raw captured)')[:2000]}"
-            )
+            return {"error": str(exc), "pass": False, "retry": True}
 
         novelty      = float(result.get("novelty_score",     result.get("novelty", 0)))
         logic        = float(result.get("logic_score",       result.get("logic",   0)))
