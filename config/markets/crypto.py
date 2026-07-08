@@ -208,12 +208,20 @@ CONCENTRATION_SECTOR = "Smart Contract"
 # Allowlist enforced inside ResearchDaemon._job_due(). Bursa-specific scrapers/
 # monitors (klse_refresh, screener_ideas via the KLSE fundamental scanner,
 # cpo_daily, analyst_monitor) have no crypto counterpart in v1 and never fire
-# in this container. Market-agnostic jobs (KB hunt, alpha seeds, graph/vault/DB
-# maintenance, briefing, funnel report) run normally against crypto's own DB.
+# in this container.
+#
+# kb_hunt / alpha_seeds are DISABLED here even though they're nominally
+# "market-agnostic" jobs: DiversityEngine's 9 research angles and
+# ResearchHunter's relevance-rating prompt are hardcoded to hunt and score
+# Bursa Malaysia content (verified live — the crypto daemon was ingesting
+# "Web Document Analysis for Companies Listed in Bursa Malaysia" into its own
+# KB and burning crypto AI budget on it). Rewriting that content-generation
+# layer for crypto is its own scoped follow-up, not covered by this profile
+# extraction. Graph/vault/DB maintenance, briefing, and funnel report ARE
+# genuinely market-agnostic (they operate on whatever is already in the DB)
+# and stay enabled.
 ENABLED_JOBS = {
     "morning_briefing",
-    "kb_hunt",
-    "alpha_seeds",
     "graph_maintain",
     "vault_export",
     "funnel_report",
