@@ -1,16 +1,24 @@
 # OpenClaw reverse proxy — terminates TLS and forwards to the api container.
 #
-# Domain mode (recommended): set DASHBOARD_DOMAIN in .env to a hostname that
-# points at this VPS, then run:
-#   docker compose exec caddy sh -c 'echo done'   # (compose substitutes $DASHBOARD_DOMAIN)
-# Caddy automatically obtains and renews a Let's Encrypt certificate.
-{$DASHBOARD_DOMAIN:localhost} {
+# IP-only mode (current default): catch-all on :443 with a self-signed
+# "internal" cert. This is required for bare-IP access — TLS clients don't
+# send SNI for IP literals (RFC 6066), so a domain-keyed site block never
+# matches and the handshake fails with "no certificate available".
+#
+# Domain mode: once DASHBOARD_DOMAIN in .env is a real hostname pointing at
+# this VPS, replace the block below with:
+#   {$DASHBOARD_DOMAIN} {
+#       reverse_proxy api:8001
+#       encode gzip
+#   }
+# Caddy will then automatically obtain and renew a Let's Encrypt certificate
+# (SNI works normally for real hostnames).
+:80 {
+	redir https://{host}{uri} permanent
+}
+
+:443 {
 	reverse_proxy api:8001
 	encode gzip
-
-	# IP-only / no-DNS fallback: when DASHBOARD_DOMAIN is unset (or "localhost"),
-	# Caddy issues a self-signed "internal" cert instead of attempting ACME,
-	# so HTTPS still works without a real domain. Remove this block once
-	# DASHBOARD_DOMAIN is a real hostname — Caddy will then use Let's Encrypt.
 	tls internal
 }
