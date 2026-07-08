@@ -349,6 +349,16 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # Phase 2.3: production-eligibility — current-constituent-only backtests
+        # are research-grade, not production-eligible, until point-in-time
+        # constituent history is materially complete (survivorship bias).
+        for _col in ("production_eligible INTEGER", "universe_asof TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
         # Phase 0.6: market-rule / fee-model version stamp — traceability of every
         # run back to the cost assumptions in force when it ran.
         for _col in ("market_rules_version TEXT", "fee_model_version TEXT"):
@@ -443,6 +453,37 @@ def init_db(db_path: Path = DB_PATH):
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_ca_ticker ON corporate_actions(ticker)")
+
+        # Phase 2.1: point-in-time index membership (audit §7.1) — the fix for
+        # survivorship bias. Seeded with the current KLCI as of UNIVERSE_ASOF;
+        # historical entries/exits are backfilled incrementally (data-acquisition
+        # bound). effective_to NULL = still a member.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS universe_membership (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                universe_name    TEXT NOT NULL,
+                ticker           TEXT NOT NULL,
+                company_name     TEXT,
+                effective_from   TEXT NOT NULL,
+                effective_to     TEXT,
+                inclusion_reason TEXT,
+                exclusion_reason TEXT,
+                source           TEXT,
+                confidence_score REAL,
+                created_at       TEXT DEFAULT (datetime('now')),
+                UNIQUE(universe_name, ticker, effective_from)
+            )
+        """)
+        try:
+            from config.settings import KLCI_STOCKS as _KLCI, UNIVERSE_ASOF as _ASOF
+            conn.executemany("""
+                INSERT OR IGNORE INTO universe_membership
+                  (universe_name, ticker, company_name, effective_from,
+                   effective_to, inclusion_reason, source, confidence_score)
+                VALUES ('FBMKLCI', ?, ?, ?, NULL, 'current_constituent', 'settings.KLCI_STOCKS', 1.0)
+            """, [(s["symbol"], s["name"], _ASOF) for s in _KLCI])
+        except Exception as _um_exc:
+            logger.warning(f"universe_membership seed skipped: {_um_exc}")
 
         # Phase 4.1: liquidity features (audit §14.3) — historical tradability.
         conn.execute("""

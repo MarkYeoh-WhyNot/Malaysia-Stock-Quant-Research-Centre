@@ -1780,6 +1780,17 @@ Return JSON only:
                              f"{GATE_CONFIG.capacity_max_participation:.0%} ADV "
                              f"(> {GATE_CONFIG.capacity_max_days:.0f})")
 
+        # ── Survivorship: production-eligibility (Phase 2.3) ──────────────────
+        # A single-current-constituent backtest over a multi-year window predates
+        # our point-in-time membership coverage → research-grade, not production.
+        from data.universe import is_production_eligible
+        _window_start = None
+        try:
+            _window_start = df.index[0].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        production_eligible = is_production_eligible(_window_start)
+
         # ── Gate DQ: data-quality gate (Phase 1.2/1.3) ────────────────────────
         # Reject before expensive backtesting if the price data can't be trusted.
         dq = self._data_quality_gate(idea_id, symbol, df, interval)
@@ -2193,7 +2204,8 @@ Return JSON only:
                     SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?,
                         excess_ann_return=?, robustness_score=?,
                         equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?,
-                        capacity_pct_adv=?, days_to_enter=?, capacity_pass=?
+                        capacity_pct_adv=?, days_to_enter=?, capacity_pass=?,
+                        production_eligible=?, universe_asof=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
@@ -2203,6 +2215,7 @@ Return JSON only:
                       round(capacity_pct_adv, 4) if capacity_pct_adv != float("inf") else None,
                       round(days_to_enter, 3) if days_to_enter != float("inf") else None,
                       1 if capacity_pass else 0,
+                      1 if production_eligible else 0, _window_start,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -2345,6 +2358,7 @@ Return JSON only:
             "capacity_pass":       capacity_pass,
             "capacity_pct_adv":    None if capacity_pct_adv == float("inf") else round(capacity_pct_adv, 4),
             "days_to_enter":       None if days_to_enter == float("inf") else round(days_to_enter, 3),
+            "production_eligible":  production_eligible,
             "n_trials":            n_trials,
             "deflated_hurdle":     round(deflated_hurdle, 3),
             "benchmark_sharpe":    round(benchmark_sharpe, 3),
