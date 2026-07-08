@@ -338,6 +338,15 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # Phase 0.6: market-rule / fee-model version stamp — traceability of every
+        # run back to the cost assumptions in force when it ran.
+        for _col in ("market_rules_version TEXT", "fee_model_version TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
         # Backtest Lab: equity curve / drawdown series cache
         conn.execute("""
             CREATE TABLE IF NOT EXISTS backtest_series (

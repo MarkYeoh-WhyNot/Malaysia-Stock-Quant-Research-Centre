@@ -85,11 +85,28 @@ MARKET_OPEN_HOUR  = 9
 MARKET_CLOSE_HOUR = 17
 TRADING_DAYS_PER_YEAR = 252
 
-# ── Bursa Malaysia transaction cost model ─────────────────────────────────────
+# ── Bursa Malaysia market rules & transaction cost model ──────────────────────
 # Single source of truth — the backtester and paper trading must both use these.
+#
+# MARKET_RULES_VERSION / FEE_MODEL_VERSION are stamped onto every backtest_runs
+# row so results are always traceable to the assumptions in force when they ran.
+# Bump these whenever a rule or fee below changes.
+MARKET_RULES_VERSION      = "2026-07-09"   # T+2 settlement, 100-share board lot, long-only
+FEE_MODEL_VERSION         = "2026-07-09"   # 0.10% remitted stamp (cap RM1000), 0.03% clearing
+
+# Settlement: Bursa normal delivery & settlement is T+2 (effective 2019-04-29,
+# Bursa Malaysia Securities Clearing). Used in feasibility scoring + red-team
+# reasoning; it does not feed the cost math below.
+BURSA_SETTLEMENT_CYCLE    = "T+2"
+
 BURSA_COMMISSION_RATE     = 0.0008     # 0.08% per side
-BURSA_STAMP_DUTY_RATE     = 0.0015     # 0.15%, buy-side only
-BURSA_STAMP_DUTY_CAP_MYR  = 200.0      # capped at RM200 per contract
+# Stamp duty: statutory RM1.50/RM1,000 (0.15%), but REMITTED to an effective
+# 0.10% for contract notes executed 2023-07-13 → 2028-07-12, capped at RM1,000
+# per contract note (raised from the old RM200 cap). At RM100k paper scale the
+# cap rarely binds; the 0.15→0.10 rate cut is the material change (lowers cost).
+BURSA_STAMP_DUTY_RATE     = 0.0010     # 0.10% remitted, buy-side only
+BURSA_STAMP_DUTY_CAP_MYR  = 1000.0     # capped at RM1,000 per contract note
+BURSA_STAMP_REMISSION_END = "2028-07-12"   # revert to 0.15% if not extended
 BURSA_CLEARING_RATE       = 0.0003     # 0.03% per side
 BURSA_CLEARING_CAP_MYR    = 1000.0     # capped at RM1,000 per side
 BURSA_BOARD_LOT           = 100        # minimum lot size (shares)
@@ -125,7 +142,7 @@ def bursa_trade_cost(trade_value_myr: float, side: str,
     """Total cost in MYR for one side of a Bursa trade.
 
     side: 'buy' or 'sell'. Stamp duty applies to the buy side only and is
-    capped at RM200; clearing is capped at RM1,000 per side.
+    capped at RM1,000; clearing is capped at RM1,000 per side.
     """
     value = abs(trade_value_myr)
     cost = value * BURSA_COMMISSION_RATE

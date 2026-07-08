@@ -8,8 +8,20 @@ from config.settings import (
     MODEL_FAST, MODEL_MAIN, GATE_CONFIG, KLCI_BY_SYMBOL, DEFAULT_SYMBOLS,
     PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT, BURSA_MIN_DAILY_VALUE_MYR,
     bursa_trade_cost, bursa_slippage_tier,
+    MARKET_RULES_VERSION, FEE_MODEL_VERSION,
 )
 from data.database import db_session
+
+
+def _stamp_versions(conn):
+    """Stamp the active market-rule / fee-model versions onto the row just
+    inserted on this connection (uses last_insert_rowid()). Traceability so any
+    backtest_runs row can be tied back to the cost assumptions in force."""
+    conn.execute(
+        "UPDATE backtest_runs SET market_rules_version=?, fee_model_version=? "
+        "WHERE id=last_insert_rowid()",
+        (MARKET_RULES_VERSION, FEE_MODEL_VERSION),
+    )
 from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -320,7 +332,7 @@ Rules:
         """Per-side Bursa cost rates for this stock (QC3).
 
         Uses the shared cost model in config.settings — commission, buy-side
-        stamp duty (RM200 cap), clearing (RM1,000 cap), and slippage tiered by
+        stamp duty (RM1,000 cap), clearing (RM1,000 cap), and slippage tiered by
         the stock's average daily traded value over the last 60 bars. Rates are
         expressed as a fraction of trade value at the paper-capital notional,
         so the caps are reflected realistically for our trade size.
@@ -1263,7 +1275,7 @@ Rules:
         intraday_kw  = ["intraday", "scalp", "tick", "1 minute", "5 minute", "15 minute",
                         "60 minute", "1min", "5min", "15min", "hourly", "hft"]
         short_kw     = ["1 day", "2 day", "3 day", "4 day", "5 day", "1-5 day", "1-3 day",
-                        "1 week", "t+1", "t+2", "t+3", "overnight", "few days"]
+                        "1 week", "t+1", "t+2", "overnight", "few days"]
         long_kw      = ["3 month", "6 month", "12 month", "annual", "quarterly",
                         "long-term", "long term", "buy and hold", "60 day", "90 day"]
 
@@ -1445,6 +1457,7 @@ Return JSON only:
             """, (idea_id, run_type,
                   row["ticker"] or "", row["timeframe"] or "1d",
                   row["factor_formula"] or "", reason, reason))
+            _stamp_versions(conn)
             conn.execute("""
                 UPDATE alpha_ideas
                 SET status='rejected', rejection_reason=?, updated_at=datetime('now')
@@ -1504,6 +1517,7 @@ Return JSON only:
                     row["factor_formula"] or "",
                     reason, reason,
                 ))
+                _stamp_versions(conn)
                 conn.execute("""
                     UPDATE alpha_ideas
                     SET status='rejected', rejection_reason=?, updated_at=datetime('now')
@@ -2016,6 +2030,7 @@ Return JSON only:
                     test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
+                _stamp_versions(conn)
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",
                     (idea_id,),
@@ -2589,6 +2604,7 @@ Return JSON only:
                     regimes_positive, None, test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
+                _stamp_versions(conn)
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? "
                     "ORDER BY created_at DESC LIMIT 1",

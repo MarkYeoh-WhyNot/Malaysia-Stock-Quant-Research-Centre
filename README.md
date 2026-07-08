@@ -22,8 +22,8 @@ That's the point of the gating system: most ideas should die here, cheaply, befo
 
 ## Bursa Malaysia constraints (enforced, not just documented)
 
-- **Long-only** — short-selling is heavily restricted on Bursa; any strategy hypothesis mentioning short-selling is rejected before it reaches Gate 0 scoring
-- **T+3 settlement**, minimum 100-share lot size, stamp duty (0.15% buy-side, capped RM200), ~0.08% brokerage per side
+- **Long-only by design** — Bursa operates regulated short-selling (RSS/IDSS) on an approved-securities list, but this system uses no borrowed-stock execution, so any strategy hypothesis mentioning short-selling is rejected before it reaches Gate 0 scoring
+- **T+2 settlement** (effective 2019-04-29), minimum 100-share lot size, stamp duty (0.10% remitted buy-side to 2028-07-12, capped RM1,000), ~0.08% brokerage per side
 - Red/Blue adversarial review is explicitly grounded in Bursa market structure — attacking every strategy on liquidity, EPF flow reversal, and OPR sensitivity, not generic critique
 
 ## Stack
@@ -60,7 +60,7 @@ yks_quant/
 │   │   ├── strategy_researcher.py  # Idea generation, feasibility filter, Gate 0 scoring
 │   │   └── red_blue_team.py        # Adversarial review, grounded in Bursa market structure
 │   ├── data_engineer/           # Data fetch, 50+ feature engineering, cache management
-│   ├── backtest_engineer/       # Vectorised NumPy backtesting, K-fold, formula verification
+│   ├── backtest_engineer/       # Vectorised NumPy backtesting, walk-forward IS/OOS + deflated Sharpe, formula verification
 │   ├── portfolio_executor/      # Paper trading, position sizing, exit management
 │   └── risk_monitor/            # Health checks, drawdown monitoring
 │

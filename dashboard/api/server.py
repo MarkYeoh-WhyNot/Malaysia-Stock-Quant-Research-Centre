@@ -1291,8 +1291,8 @@ def system_direction():
 
     transaction_costs = {
         "commission_pct": 0.08,
-        "stamp_duty_pct": 0.15,
-        "stamp_duty_cap_myr": 200,
+        "stamp_duty_pct": 0.10,
+        "stamp_duty_cap_myr": 1000,
         "clearing_pct": 0.03,
         "clearing_cap_myr": 1000,
         "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.25, "SMALL_CAP": 0.75},
@@ -1319,9 +1319,9 @@ def system_direction():
 
     bursa_constraints = [
         "Long-only strategies only (short-selling heavily restricted)",
-        "T+3 settlement — affects short-term strategy feasibility",
+        "T+2 settlement (effective 2019-04-29) — affects short-term strategy feasibility",
         "Minimum lot size: 100 shares (affects small-cap liquidity)",
-        "Stamp duty: 0.15% buy-side, capped RM200 (real cost)",
+        "Stamp duty: 0.10% remitted buy-side, capped RM1,000 (real cost)",
         "Brokerage: ~0.08% per side minimum",
         "Trading hours: 9:00–12:30 and 14:30–17:00 MYT only",
         "Circuit breakers: halt if stock moves >30% in a day",

@@ -444,7 +444,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Gaps > 8% — extreme gaps are rarely fully filled in the near term",
             "During broad market stress — gap fills fail when market direction is down",
         ],
-        "bursa_applicability":    "Medium — Bursa overnight gaps are common after US/Asia sessions; T+3 settlement creates short-term supply/demand imbalances that drive fill",
+        "bursa_applicability":    "Medium — Bursa overnight gaps are common after US/Asia sessions; T+2 settlement creates short-term supply/demand imbalances that drive fill",
         "ic_improvement_vs_sma":  "Gap fill win rate 58–65% on KLCI stocks when announcement filter applied; average return 1.5–2.5% over 2 days",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["mean_reversion", "event_driven"],

@@ -122,7 +122,7 @@ class GraphExtractor(BaseAgent):
         prompt = f"""{RELATION_GUIDE}
 
 For each note below, identify its typed relations to candidate targets, plus
-any genuinely NEW concepts (entities like "EPF rebalancing", "T+3 settlement")
+any genuinely NEW concepts (entities like "EPF rebalancing", "T+2 settlement")
 not already in the candidates.
 
 {chr(10).join(note_blocks)}

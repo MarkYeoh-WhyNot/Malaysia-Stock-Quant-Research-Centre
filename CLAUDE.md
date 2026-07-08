@@ -41,7 +41,7 @@ Mark's Research Centre is a Claude-powered quantitative equity research and back
 │   ├── data_engineer/
 │   │   └── data_engineer.py        # Data fetch, 50+ feature engineering, cache management
 │   ├── backtest_engineer/
-│   │   └── backtest_engineer.py    # Gates 2-3: vectorized NumPy backtesting, K-fold
+│   │   └── backtest_engineer.py    # Gates 2-3: vectorized NumPy backtesting, walk-forward IS/OOS + deflated Sharpe + parameter perturbation
 │   ├── portfolio_executor/
 │   │   └── portfolio_executor.py   # Paper trading, position sizing, exit management
 │   └── risk_monitor/
@@ -219,7 +219,7 @@ Cost is tracked per model/agent/task in the `ai_usage` table and enforced before
 - **Currency:** MYR
 - **Trading hours:** 09:00–12:30, 14:30–17:00 MYT (Mon–Fri, ~6h/day)
 - **Trading days/year:** 252
-- **Transaction cost:** 0.13% round-trip (0.10% brokerage + 0.03% stamp duty)
+- **Transaction cost:** commission 0.08%/side + stamp 0.10% (buy-side, remitted) + clearing 0.03%/side + tiered slippage — see `config/settings.py bursa_trade_cost` (single source of truth)
 - **Annualization:** √252 for Sharpe ratio
 
 ---
@@ -271,7 +271,7 @@ CORS is open (allow all origins).
 - Morning briefing (`scripts/morning_briefing.py`) — daily 8am KL digest, auto-KB-ingest
 - **[Fix 2]** RejectionMemory (`knowledge/ingestion/rejection_memory.py`) — accumulates failure patterns, injects avoidance rules into idea generation
 - **[Fix 3]** Feasibility scoring in Gate 0 — 3-dimensional pass: novelty≥0.60, logic≥0.70, feasibility≥0.60
-- **[Fix 4]** Red-Blue team grounded in Bursa market structure (T+3, short restrictions, EPF flows, OPR)
+- **[Fix 4]** Red-Blue team grounded in Bursa market structure (T+2, short restrictions, EPF flows, OPR)
 - **[Fix 5]** Formula verification in BacktestEngineer — Claude checks signal output against formula description before full backtest
 - **[Warn 1]** ResearchHunter pre-ingest relevance filter (< 0.40 = skip)
 - **[Warn 2]** KB domain unified to 8 angle names; `check_balance()` uses GROUP BY domain
@@ -345,13 +345,13 @@ an avoidance block injected into `generate_ideas()` for patterns with count ≥ 
 
 ### Fix 3 — Three-dimensional Gate 0 (2026-04-07)
 `alpha_ideas.feasibility_score REAL` — computed deterministically (no Claude call) from:
-ticker format, long-only flag, Yahoo Finance data availability, holding period vs T+3,
+ticker format, long-only flag, Yahoo Finance data availability, holding period vs T+2,
 and factor indicators. Gate 0 now requires ALL THREE: novelty ≥ 0.60 AND logic ≥ 0.70
 AND feasibility ≥ 0.60. Rejection message lists which dimension(s) failed.
 
 ### Fix 4 — Red-Blue Bursa grounding (2026-04-07)
 `BURSA_MARKET_BRIEF` constant injected into RED_SYSTEM, BLUE_SYSTEM, and JUDGE_SYSTEM.
-Red team is explicitly instructed to attack T+3 settlement, liquidity, EPF flow reversal,
+Red team is explicitly instructed to attack T+2 settlement, liquidity, EPF flow reversal,
 OPR sensitivity, and feasibility for every strategy.
 
 ### Fix 5 — Formula verification (2026-04-07)
@@ -542,10 +542,10 @@ Every KB document and every alpha idea must map to one:
 | 9 | `statistical_modelling` | GARCH, HMM, factor models, ML |
 
 ### BURSA MALAYSIA CONSTRAINTS (never violate these)
-- Long-only strategies only (short-selling heavily restricted)
-- T+3 settlement — affects short-term strategy feasibility
+- Long-only by design (Bursa has regulated RSS/IDSS short-selling on an approved list; this system uses no borrowed-stock execution)
+- T+2 settlement (effective 2019-04-29) — affects short-term strategy feasibility
 - Minimum lot size: 100 shares (affects small-cap liquidity)
-- Stamp duty: 0.15% buy-side, capped RM200 (real cost)
+- Stamp duty: 0.10% remitted buy-side (to 2028-07-12), capped RM1,000 (real cost)
 - Brokerage: ~0.08% per side minimum
 - Trading hours: 9:00–12:30 and 14:30–17:00 MYT only
 - Circuit breakers: halt if stock moves >30% in a day
@@ -571,7 +571,7 @@ Every KB document and every alpha idea must map to one:
 | Component | Rate |
 |-----------|------|
 | Commission | 0.08% per side |
-| Stamp duty | 0.15% buy-side, capped RM200 per contract |
+| Stamp duty | 0.10% remitted buy-side (to 2028-07-12), capped RM1,000 per contract note |
 | Clearing | 0.03% per side, capped RM1,000 |
 | Slippage | BLUE_CHIP=0.05%, MID_CAP=0.25%, SMALL_CAP=0.75% |
 | Liquidity floor | Reject if avg daily volume × price < RM500,000 |
