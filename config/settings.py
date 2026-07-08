@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -85,11 +85,28 @@ MARKET_OPEN_HOUR  = 9
 MARKET_CLOSE_HOUR = 17
 TRADING_DAYS_PER_YEAR = 252
 
-# ── Bursa Malaysia transaction cost model ─────────────────────────────────────
+# ── Bursa Malaysia market rules & transaction cost model ──────────────────────
 # Single source of truth — the backtester and paper trading must both use these.
+#
+# MARKET_RULES_VERSION / FEE_MODEL_VERSION are stamped onto every backtest_runs
+# row so results are always traceable to the assumptions in force when they ran.
+# Bump these whenever a rule or fee below changes.
+MARKET_RULES_VERSION      = "2026-07-09"   # T+2 settlement, 100-share board lot, long-only
+FEE_MODEL_VERSION         = "2026-07-09"   # 0.10% remitted stamp (cap RM1000), 0.03% clearing
+
+# Settlement: Bursa normal delivery & settlement is T+2 (effective 2019-04-29,
+# Bursa Malaysia Securities Clearing). Used in feasibility scoring + red-team
+# reasoning; it does not feed the cost math below.
+BURSA_SETTLEMENT_CYCLE    = "T+2"
+
 BURSA_COMMISSION_RATE     = 0.0008     # 0.08% per side
-BURSA_STAMP_DUTY_RATE     = 0.0015     # 0.15%, buy-side only
-BURSA_STAMP_DUTY_CAP_MYR  = 200.0      # capped at RM200 per contract
+# Stamp duty: statutory RM1.50/RM1,000 (0.15%), but REMITTED to an effective
+# 0.10% for contract notes executed 2023-07-13 → 2028-07-12, capped at RM1,000
+# per contract note (raised from the old RM200 cap). At RM100k paper scale the
+# cap rarely binds; the 0.15→0.10 rate cut is the material change (lowers cost).
+BURSA_STAMP_DUTY_RATE     = 0.0010     # 0.10% remitted, buy-side only
+BURSA_STAMP_DUTY_CAP_MYR  = 1000.0     # capped at RM1,000 per contract note
+BURSA_STAMP_REMISSION_END = "2028-07-12"   # revert to 0.15% if not extended
 BURSA_CLEARING_RATE       = 0.0003     # 0.03% per side
 BURSA_CLEARING_CAP_MYR    = 1000.0     # capped at RM1,000 per side
 BURSA_BOARD_LOT           = 100        # minimum lot size (shares)
@@ -125,7 +142,7 @@ def bursa_trade_cost(trade_value_myr: float, side: str,
     """Total cost in MYR for one side of a Bursa trade.
 
     side: 'buy' or 'sell'. Stamp duty applies to the buy side only and is
-    capped at RM200; clearing is capped at RM1,000 per side.
+    capped at RM1,000; clearing is capped at RM1,000 per side.
     """
     value = abs(trade_value_myr)
     cost = value * BURSA_COMMISSION_RATE
@@ -167,6 +184,52 @@ class GateConfig:
     stage4a_min_days: int               = 30
     stage4a_min_sharpe: float           = 0.8
     stage4a_max_drawdown: float         = 0.20
+    # Paper-trade promotion by holding cycle (audit §8.6): 30 calendar days is
+    # too short for low-turnover strategies. A strategy may leave paper trading
+    # once it satisfies EITHER the day floor OR enough completed trades OR enough
+    # rebalance cycles — whichever fits its holding-period class. Keyed off the
+    # backtest's holding_period_class.
+    stage4a_min_trades: int             = 20     # completed round-trips (alt to days)
+    stage4a_min_rebalance_cycles: int   = 3      # full rebalance cycles (alt to days)
+    stage4a_min_days_by_class: dict     = field(default_factory=lambda: {
+        "INTRADAY":    30,
+        "SHORT_TERM":  30,
+        "MEDIUM_TERM": 60,    # ~1 quarter of daily bars
+        "LONG_TERM":   120,   # low-turnover needs a longer live look
+    })
+    # Phase 5.4 — strategy-family quotas (audit §9.3), keyed to the same
+    # factor_type taxonomy RejectionMemory uses for rejection patterns. Report-only
+    # (surfaced in prompts/dashboard) rather than a hard gate — avoids blocking
+    # generation on a heuristic keyword classification.
+    family_quota_targets: dict          = field(default_factory=lambda: {
+        "momentum": 0.20, "value": 0.20, "quality": 0.15, "mean_reversion": 0.15,
+        "event": 0.15, "macro": 0.15,
+    })
+    # Gate DQ — data-quality gate (audit §6.4). A strategy is not backtested
+    # unless its price data clears a minimum Data Confidence Score (0–100). Clean
+    # daily blue-chip data scores ~95–100; thin/gappy/stale series score low.
+    dq_gate_enabled: bool               = True
+    dq_min_confidence: float            = 80.0
+    # Suspected-corporate-action gap threshold (unhandled bonus/rights issues):
+    # an overnight move beyond this magnitude is flagged and dents confidence.
+    dq_corp_action_gap: float           = 0.25
+    # Benchmark-relative gate (audit §8.4): a strategy must beat a simple KLCI
+    # baseline after costs, else its complexity is not justified. Gates on excess
+    # annual return vs the equal-weight KLCI (the harder of the two baselines);
+    # KLCI buy-and-hold excess is also stored for reference.
+    benchmark_gate_enabled: bool        = True
+    benchmark_min_excess_ann: float     = 0.0    # strategy ann_return must exceed EW-KLCI by this
+    # Phase 3.4 — capacity test (audit §8.5). Don't trade more than
+    # capacity_max_participation of 20-day ADV per day; a strategy whose position
+    # takes longer than capacity_max_days to enter/exit is capacity-constrained.
+    # Rarely binds at RM100k paper scale but required for the capital-scaling story.
+    capacity_gate_enabled: bool         = True
+    capacity_max_participation: float   = 0.05
+    capacity_max_days: float            = 5.0
+    # Phase 4.2 — portfolio concentration limits (audit §10.2), Malaysia-specific.
+    max_single_name_pct: float          = 0.15
+    max_sector_pct: float               = 0.35
+    max_bank_pct: float                 = 0.40   # KLCI is bank-heavy
     # QC7 — parameter robustness (DSL signals): fraction of ±20% parameter
     # perturbations that must retain > robustness_sharpe_ratio × base Sharpe
     robustness_min_fraction: float      = 0.6

@@ -55,8 +55,8 @@ currency pairs, forex instruments, or spot FX.
 
 BURSA MALAYSIA MARKET MICROSTRUCTURE:
 • Trading hours:   09:00–12:30, 14:30–17:00 MYT (UTC+8), Mon–Fri
-• Settlement:      T+3 (Bursa CDS), no short-selling for most stocks
-• Transaction costs: ~0.30% round trip (brokerage 0.08–0.42% + stamp duty 0.15%)
+• Settlement:      T+2 (Bursa CDS), no short-selling for most stocks
+• Transaction costs: ~0.25% round trip (brokerage 0.08–0.42% + stamp duty 0.10% remitted)
 • Key indices:     FBM KLCI (30 large-caps), FBM70, FBM Small Cap
 • Institutional:   EPF (~15% AUM), KWAP, PNB, Permodalan Nasional, foreign funds
 • Key sectors:     Banking, Plantation, Telco, Healthcare, Technology, Utilities
@@ -89,9 +89,9 @@ MARKET MICROSTRUCTURE — BURSA MALAYSIA:
 • Index:           FBM KLCI (market-cap weighted, 30 constituents)
 • Currency:        Malaysian Ringgit (MYR) — prices quoted in MYR, NOT traded as FX
 • Trading hours:   09:00–12:30, 14:30–17:00 MYT (Mon–Fri)
-• Settlement:      T+3 (Bursa Depository)
+• Settlement:      T+2 (Bursa Depository)
 • Lot size:        100 shares minimum (1 board lot)
-• Stamp duty:      0.15% per contract (max RM200) on purchase
+• Stamp duty:      0.10% remitted per contract (max RM1,000) on purchase
 • Brokerage:       typically 0.10%–0.42% per side
 • Short-selling:   RESTRICTED — only Approved Securities list, uptick rule applies
 • Circuit breaker: ±30% from reference price intraday halt
@@ -178,7 +178,7 @@ is to REJECT weak ideas. You are actively looking for reasons this strategy will
 Bursa Malaysia. Be demanding — most ideas should fail this gate. Your default stance is rejection.
 
 You know Bursa Malaysia intimately: EPF dominance creates predictable flows that front-runners
-exploit; GLC concentration means events move whole sectors; T+3 settlement makes very short-term
+exploit; GLC concentration means events move whole sectors; T+2 settlement makes very short-term
 strategies expensive; approved-list restrictions mean long-only is the only viable approach for
 most stocks; Yahoo Finance .KL data has quality issues (dividend adjustments, split gaps, stale
 fundamentals). Score with deep scepticism and give low scores unless the edge is compelling."""
@@ -592,12 +592,16 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 return dup["id"]
 
             kb_context = idea.get("kb_context")
+            from knowledge.ingestion.family_quotas import classify_family
+            family = classify_family(
+                f"{title} {idea.get('hypothesis', '')} {idea.get('factor_formula', '')}")
+
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
                    data_sources, stage, status, novelty_score, logic_score,
-                   strategy_key, signal_signature, parent_idea_id, kb_context)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?, ?)
+                   strategy_key, signal_signature, parent_idea_id, kb_context, family)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?, ?, ?)
             """, (
                 slug,
                 title,
@@ -612,10 +616,26 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 text_signature,
                 idea.get("parent_idea_id"),
                 json.dumps(kb_context) if kb_context else None,
+                family,
             ))
             row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
 
         self.log_daemon("INFO", f"Saved idea [{row['id']}] {ticker} — {slug}")
+
+        # Phase 5.5: non-blocking cemetery similarity check — informational only.
+        try:
+            from knowledge.ingestion.rejection_memory import RejectionMemory
+            similar = RejectionMemory().find_similar_rejected(title, idea.get("hypothesis", ""))
+            if similar:
+                self.log_daemon(
+                    "INFO",
+                    f"Idea [{row['id']}] resembles {len(similar)} past rejection(s), "
+                    f"e.g. '{similar[0]['strategy_name'][:50]}' ({similar[0]['similarity']:.0%} "
+                    f"overlap): {similar[0]['revival_conditions']}"
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"Cemetery similarity check failed (non-blocking): {e}")
+
         return row["id"]
 
     # ── Gate 0 — initial screening ─────────────────────────────────────────────
@@ -643,15 +663,15 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
         if not any(kw in blob for kw in unavailable_keywords):
             score += 0.2
 
-        # +0.15: holding period realistic for Bursa T+3
+        # +0.15: holding period realistic for Bursa T+2
         intraday_keywords = ["intraday", "scalp", "1 minute", "5 minute", "hourly", "hft"]
         short_hold_keywords = ["1 day", "2 day", "3 day", "t+1", "t+2"]
         if any(kw in blob for kw in intraday_keywords):
             score -= 0.3
         elif any(kw in blob for kw in short_hold_keywords):
-            score += 0.0   # T+3 makes 1-3 day holds awkward but not impossible
+            score += 0.0   # T+2 makes 1-2 day holds awkward but not impossible
         else:
-            score += 0.15   # >5 day holding period — safe for T+3
+            score += 0.15   # >5 day holding period — safe for T+2
 
         # +0.15: factor uses available indicators (price/volume/fundamental)
         exotic_keywords = ["futures price", "options greeks", "cds spread", "credit default",
@@ -704,7 +724,7 @@ Score each dimension 0.0–1.0:
    moment's scrutiny (e.g. wrong sector for the claimed driver).
 
 3. FEASIBILITY (0–1): Can a real fund execute this on Bursa today?
-   Consider: 100-share lot minimum, stamp duty 0.15%, T+3 settlement impact on
+   Consider: 100-share lot minimum, stamp duty 0.10% (remitted), T+2 settlement impact on
    short holding periods, short-selling restrictions (approved list only),
    thin liquidity in mid/small caps (daily value < RM500k = not viable).
    Score LOW if execution barriers are severe.
@@ -1215,8 +1235,8 @@ novelty_score, logic_score, concerns."""
                     "Bursa Malaysia operates two daily sessions on business days (Monday–Friday, "
                     "excluding Malaysian public holidays). Morning session: 09:00–12:30 MYT. "
                     "Afternoon session: 14:30–17:00 MYT. Pre-opening: 08:30–09:00 MYT (order matching). "
-                    "Total trading time: approximately 6 hours per day. Settlement is on a T+3 basis "
-                    "via Bursa Depository (formerly MECTS). All prices are quoted in Malaysian Ringgit "
+                    "Total trading time: approximately 6 hours per day. Settlement is on a T+2 basis "
+                    "(effective 2019-04-29) via Bursa Depository. All prices are quoted in Malaysian Ringgit "
                     "(MYR). Board lot is 100 shares. Odd lots (< 100 shares) can be traded on the "
                     "Odd Lot Market at a wider spread."
                 ),
@@ -1242,7 +1262,7 @@ novelty_score, logic_score, concerns."""
                 "content": (
                     "Round-trip transaction costs on Bursa Malaysia: "
                     "(1) Brokerage: 0.10%–0.42% per side; online platforms charge ~0.10%–0.20%. "
-                    "(2) Stamp duty on purchase: 0.15% of contract value, capped at RM200 per contract. "
+                    "(2) Stamp duty on purchase: 0.10% remitted rate (to 2028-07-12) of contract value, capped at RM1,000 per contract. "
                     "Stamp duty does NOT apply on sales. "
                     "(3) Clearing fee: 0.03% per side (paid to Bursa Clearing), capped at RM1,000. "
                     "(4) No capital gains tax in Malaysia on equities. "

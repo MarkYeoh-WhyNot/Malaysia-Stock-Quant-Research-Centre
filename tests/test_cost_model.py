@@ -10,24 +10,24 @@ from config.settings import (
 from agents.portfolio_executor.portfolio_executor import PortfolioExecutor
 
 
-def test_stamp_duty_caps_at_rm200():
-    # RM1M buy: 0.15% would be RM1,500 — must cap at RM200
-    cost = bursa_trade_cost(1_000_000, "buy", "BLUE_CHIP")
-    # commission 800 + clearing 300 + stamp 200 (capped) + slippage 500
-    assert cost == pytest.approx(1800.0)
+def test_stamp_duty_caps_at_rm1000():
+    # RM2M buy: 0.10% would be RM2,000 — must cap at RM1,000
+    cost = bursa_trade_cost(2_000_000, "buy", "BLUE_CHIP")
+    # commission 1600 + clearing 600 + stamp 1000 (capped) + slippage 1000
+    assert cost == pytest.approx(4200.0)
 
 
 def test_sell_side_has_no_stamp_duty():
     buy = bursa_trade_cost(100_000, "buy", "BLUE_CHIP")
     sell = bursa_trade_cost(100_000, "sell", "BLUE_CHIP")
-    assert buy - sell == pytest.approx(min(100_000 * 0.0015, BURSA_STAMP_DUTY_CAP_MYR))
+    assert buy - sell == pytest.approx(min(100_000 * 0.0010, BURSA_STAMP_DUTY_CAP_MYR))
 
 
 def test_stamp_duty_uncapped_below_threshold():
-    # RM100k buy: 0.15% = RM150 < RM200 cap → uncapped
+    # RM100k buy: 0.10% remitted = RM100 < RM1,000 cap → uncapped
     buy = bursa_trade_cost(100_000, "buy", "BLUE_CHIP")
-    # 80 comm + 30 clearing + 150 stamp + 50 slippage
-    assert buy == pytest.approx(310.0)
+    # 80 comm + 30 clearing + 100 stamp + 50 slippage
+    assert buy == pytest.approx(260.0)
 
 
 def test_clearing_caps_at_rm1000():

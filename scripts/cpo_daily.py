@@ -72,7 +72,7 @@ SIGNAL CONSTRUCTION:
 5. Stop-loss: -6% from entry
 
 TRANSACTION COST CONSIDERATION:
-Bursa stamp duty 0.15% + brokerage ~0.10% = ~0.25% per side = ~0.50% round trip.
+Bursa stamp duty 0.10% (buy-side) + brokerage ~0.10% = ~0.20% per side = ~0.40% round trip.
 Strategy only viable when |CPO_1d_return| > 1.5% to overcome frictional costs.
 
 CAVEATS:

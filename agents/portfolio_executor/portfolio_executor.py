@@ -96,14 +96,31 @@ class PortfolioExecutor(BaseAgent):
             return {"error": f"Idea {idea_id} already has an open paper trade"}
 
         bar = self._latest_bar(ticker)
-        if not bar:
-            return {"error": f"No price data for {ticker}"}
-
         nav = self._idea_cash(idea_id)
-        units = self.size_shares(nav, bar["close"])
-        if units < BURSA_BOARD_LOT:
+
+        # Phase 6.2: pre-trade risk checks (audit §11.2) — liquidity, data
+        # confidence, unresolved corporate actions, board-lot affordability.
+        from agents.portfolio_executor.execution_simulator import (
+            pre_trade_check, simulate_fill)
+        with db_session() as conn:
+            dq_row = conn.execute(
+                "SELECT confidence_score FROM data_quality_checks WHERE idea_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (idea_id,)
+            ).fetchone()
+            unresolved = conn.execute(
+                "SELECT COUNT(*) n FROM corporate_actions WHERE ticker=? "
+                "AND validation_status='suspected'", (ticker,)
+            ).fetchone()["n"]
+        dq_confidence = dq_row["confidence_score"] if dq_row else None
+        check = pre_trade_check(ticker, nav, bar, dq_confidence, unresolved)
+        if not check["passed"]:
+            return {"error": "Pre-trade check failed: " + "; ".join(check["reasons"])}
+
+        fill = simulate_fill(nav, bar["close"], bar["adv_value"], PAPER_ALLOC_PCT)
+        if fill["status"] == "FAILED":
             return {"error": f"NAV RM{nav:,.0f} too small for one board lot of "
-                             f"{ticker} @ RM{bar['close']:.2f}"}
+                             f"{ticker} @ RM{bar['close']:.2f} ({fill['reason']})"}
+        units = fill["units"]
 
         tier = bursa_slippage_tier(bar["adv_value"])
         value = units * bar["close"]
@@ -117,13 +134,26 @@ class PortfolioExecutor(BaseAgent):
                 VALUES (?, ?, 'long', ?, ?, ?, ?, datetime('now'), 'open')
             """, (idea_id, ticker, bar["close"], units, signal, round(entry_cost, 2)))
             trade_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
+            # Phase 6.3: reconciliation trail. Paper mode has no independent fill
+            # source yet, so expected == actual by construction — the row exists
+            # so the schema/trail is ready once real execution can diverge.
+            conn.execute("""
+                INSERT INTO paper_trade_reconciliation
+                  (trade_id, side, expected_price, actual_price,
+                   expected_cost, actual_cost, price_diff, cost_diff, clean)
+                VALUES (?, 'buy', ?, ?, ?, ?, 0, 0, 1)
+            """, (trade_id, bar["close"], bar["close"],
+                  round(entry_cost, 2), round(entry_cost, 2)))
 
+        fill_note = f" [{fill['status']}: {units}/{fill['requested_units']} sh]" \
+            if fill["status"] == "PARTIAL_FILL" else ""
         self.log_daemon("INFO",
                         f"Paper entry [{trade_id}] long {ticker} {units} sh @ RM{bar['close']:.3f} "
-                        f"(cost RM{entry_cost:.2f}, tier {tier})")
+                        f"(cost RM{entry_cost:.2f}, tier {tier}){fill_note}")
         return {"trade_id": trade_id, "ticker": ticker, "direction": "long",
                 "entry_price": bar["close"], "units": units,
-                "entry_cost": round(entry_cost, 2), "fill_date": bar["date"]}
+                "entry_cost": round(entry_cost, 2), "fill_date": bar["date"],
+                "fill_status": fill["status"]}
 
     async def paper_exit(self, trade_id: int) -> dict:
         """Close a paper position at the latest cached KLSE close."""
@@ -149,6 +179,13 @@ class PortfolioExecutor(BaseAgent):
                 SET exit_price=?, pnl=?, exit_cost=?, closed_at=datetime('now'), status='closed'
                 WHERE id=?
             """, (bar["close"], round(pnl, 2), round(exit_cost, 2), trade_id))
+            conn.execute("""
+                INSERT INTO paper_trade_reconciliation
+                  (trade_id, side, expected_price, actual_price,
+                   expected_cost, actual_cost, price_diff, cost_diff, clean)
+                VALUES (?, 'sell', ?, ?, ?, ?, 0, 0, 1)
+            """, (trade_id, bar["close"], bar["close"],
+                  round(exit_cost, 2), round(exit_cost, 2)))
 
         self.log_daemon("INFO",
                         f"Paper exit [{trade_id}] {ticker} @ RM{bar['close']:.3f} "
@@ -251,9 +288,28 @@ class PortfolioExecutor(BaseAgent):
             ).fetchall()
         pnls = [t["pnl"] for t in trades if t["pnl"] is not None]
         win_rate = (len([p for p in pnls if p > 0]) / len(pnls)) if pnls else 0.0
+        completed_trades = len(pnls)
+
+        # Phase 3.5: holding-cycle-aware duration. A flat 30-day floor is too
+        # short for low-turnover (MEDIUM/LONG_TERM) strategies. The strategy has
+        # "run long enough" once it clears its class-specific day floor OR has
+        # accumulated enough completed round-trips — whichever comes first.
+        with db_session() as conn:
+            _bt = conn.execute(
+                "SELECT holding_period_class FROM backtest_runs WHERE idea_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (idea_id,)
+            ).fetchone()
+        hp_class = (_bt["holding_period_class"] if _bt and _bt["holding_period_class"]
+                    else "MEDIUM_TERM")
+        min_days = GATE_CONFIG.stage4a_min_days_by_class.get(
+            hp_class, GATE_CONFIG.stage4a_min_days)
+        duration_pass = (
+            total_days >= min_days
+            or completed_trades >= GATE_CONFIG.stage4a_min_trades
+        )
 
         gate4a_pass = (
-            total_days >= GATE_CONFIG.stage4a_min_days
+            duration_pass
             and sharpe >= GATE_CONFIG.stage4a_min_sharpe
             and dd <= GATE_CONFIG.stage4a_max_drawdown
         )
@@ -263,14 +319,16 @@ class PortfolioExecutor(BaseAgent):
                 INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
                 VALUES (?, 'stage4a', ?, 'PortfolioExecutor', ?)
             """, (idea_id, "advanced" if gate4a_pass else "monitoring",
-                  f"days={total_days} sharpe={sharpe:.2f} dd={dd:.1%} win_rate={win_rate:.1%}"))
+                  f"class={hp_class} days={total_days}/{min_days} trades={completed_trades} "
+                  f"sharpe={sharpe:.2f} dd={dd:.1%} win_rate={win_rate:.1%}"))
 
             if gate4a_pass:
                 conn.execute("""
                     INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
                     VALUES (?, 'gate4a', 'approve', 'PortfolioExecutor', ?)
                 """, (idea_id,
-                      f"Paper trading: {total_days} days, Sharpe={sharpe:.2f}, DD={dd:.1%}"))
+                      f"Paper trading ({hp_class}): {total_days} days / {completed_trades} trades, "
+                      f"Sharpe={sharpe:.2f}, DD={dd:.1%}"))
                 conn.execute("""
                     UPDATE alpha_ideas SET stage='stage4b', status='active', updated_at=datetime('now')
                     WHERE id=?
@@ -291,6 +349,9 @@ class PortfolioExecutor(BaseAgent):
             "win_rate": round(win_rate, 4),
             "nav": round(float(navs[-1]), 2),
             "total_pnl": round(float(navs[-1] - PAPER_CAPITAL_MYR), 2),
+            "holding_period_class": hp_class,
+            "min_days_required": min_days,
+            "duration_pass": duration_pass,
             "gate4a_pass": gate4a_pass,
         }
 

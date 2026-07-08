@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 
 BURSA_MARKET_BRIEF = """
 BURSA MALAYSIA MARKET STRUCTURE — MUST KNOW:
-- Settlement: T+3 (3 business days). Affects short-term strategies.
-- Short-selling: Restricted to ~150 approved securities only.
-  Retail traders cannot short most stocks. LONG-ONLY strategies only.
+- Settlement: T+2 (2 business days, effective 2019-04-29). Affects short-term strategies.
+- Short-selling: Bursa operates regulated short-selling (RSS/IDSS) on an
+  approved-securities list (~150 names), but this system uses no borrowed-stock
+  execution. LONG-ONLY strategies only.
 - Trading hours: 9:00-12:30 and 14:30-17:00 MYT. No after-hours.
 - Lot size: 100 shares minimum. Affects small-cap liquidity.
 - Foreign ownership: EPF owns ~15% of market. KWAP, PNB also large.
@@ -22,7 +23,7 @@ BURSA MALAYSIA MARKET STRUCTURE — MUST KNOW:
 - Penny stocks: High retail speculation, pump-and-dump risk,
   very wide spreads. Strategies on stocks below RM0.50 are high risk.
 - Circuit breakers: Stocks halt if they move >30% in a day.
-- Stamp duty: 0.15% on buy side, capped at RM200. Real cost.
+- Stamp duty: 0.10% on buy side (remitted rate to 2028-07-12), capped at RM1,000. Real cost.
 - GLC dynamics: Government-linked companies (Maybank, Tenaga,
   Petronas subsidiaries) have different dynamics — policy-driven.
 """
@@ -36,7 +37,7 @@ implementation gaps.
 {BURSA_MARKET_BRIEF}
 
 You MUST specifically attack:
-- T+3 settlement risk: does the strategy's holding period interact badly with T+3?
+- T+2 settlement risk: does the strategy's holding period interact badly with T+2?
 - Liquidity risk: can this be executed in 100-share lots without moving the price?
 - EPF flow reversal risk: if EPF rebalances away, does the thesis collapse?
 - OPR change risk: for banking strategies, how does a 25bp BNM rate change affect the thesis?
@@ -51,7 +52,7 @@ acknowledge valid concerns, but fight for viable strategies with specific eviden
 {BURSA_MARKET_BRIEF}
 
 When defending, always address Bursa-specific mechanics directly:
-- If T+3 is raised: explain how the holding period accommodates settlement.
+- If T+2 is raised: explain how the holding period accommodates settlement.
 - If liquidity is raised: cite the stock's average daily volume or lot-size adequacy.
 - If EPF flows are raised: explain whether the thesis is EPF-dependent or independent.
 - If OPR is raised: quantify the sensitivity and whether the strategy hedges rate risk."""
@@ -64,7 +65,7 @@ Return structured JSON.
 {BURSA_MARKET_BRIEF}
 
 Apply Bursa-specific judgment: reject any strategy that requires short-selling unrestricted
-securities, relies on intraday execution, or ignores T+3 settlement constraints."""
+securities, relies on intraday execution, or ignores T+2 settlement constraints."""
 
 
 FUNDAMENTAL_SCREEN_RED_TEMPLATES = """

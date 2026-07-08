@@ -55,6 +55,26 @@ def _classify(text: str, keyword_map: dict, default: str = "other") -> str:
     return default
 
 
+# Phase 5.5 — revival conditions template per rejection reason (audit §5.4).
+# Tells a future generation pass what NEW evidence would justify revisiting a
+# rejected strategy family/sector combination, rather than a bare "avoid".
+_REVIVAL_CONDITIONS = {
+    "overfitting":  "Only revive with a lower-parameter formulation tested across a broader universe (15+ stocks).",
+    "no_edge":      "Only revive with a materially different data source or a longer/shorter holding period showing IC > 0.05.",
+    "infeasible":   "Only revive if the infeasible mechanic (short/pairs/intraday) is removed entirely.",
+    "low_sharpe":   "Only revive with a walk-forward Sharpe improvement (net) of at least 0.3 over this attempt.",
+    "irrelevant":   "Only revive if re-scoped to a genuine Bursa Malaysia .KL instrument.",
+    "liquidity":    "Only revive on a higher-liquidity name (ADV value above the RM500k floor with margin).",
+    "data_quality": "Only revive once the ticker's Data Confidence Score clears the Gate DQ threshold.",
+    "other":        "Only revive with new evidence not present in the original hypothesis.",
+}
+
+
+def _tokens(text: str) -> set:
+    import re
+    return set(re.findall(r"[a-z0-9]+", (text or "").lower()))
+
+
 class RejectionMemory:
     """Record why ideas fail; inject avoidance rules into generation prompts."""
 
@@ -95,6 +115,18 @@ class RejectionMemory:
                     factor_type, sector, reason_category,
                     datetime.utcnow().strftime("%Y-%m-%d"),
                     (row["title"] or "")[:80],
+                ))
+                # Phase 5.5: one row per rejected idea with revival conditions
+                # (strategy_cemetery) — complements the aggregated pattern above.
+                conn.execute("""
+                    INSERT INTO strategy_cemetery
+                      (idea_id, strategy_name, factor_type, sector,
+                       rejected_at_stage, rejection_reason, revival_conditions)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    idea_id, row["title"] or f"idea {idea_id}",
+                    factor_type, sector, stage, (reason or "")[:500],
+                    _REVIVAL_CONDITIONS.get(reason_category, _REVIVAL_CONDITIONS["other"]),
                 ))
 
             logger.info(
@@ -147,6 +179,36 @@ class RejectionMemory:
         except Exception as e:
             logger.warning(f"RejectionMemory.get_avoid_patterns failed: {e}")
             return []
+
+    def find_similar_rejected(self, title: str, hypothesis: str = "",
+                              min_overlap: float = 0.5, limit: int = 3) -> list[dict]:
+        """Phase 5.5: cemetery similarity check. Jaccard word-overlap against
+        past cemetery entries — cheap, no Claude call, run before saving a new
+        idea. Non-blocking: callers log/inform, they don't reject on this alone
+        (word overlap alone is too noisy to gate on)."""
+        query_tokens = _tokens(f"{title} {hypothesis}")
+        if not query_tokens:
+            return []
+        try:
+            with db_session() as conn:
+                rows = conn.execute(
+                    "SELECT strategy_name, factor_type, sector, rejection_reason, "
+                    "revival_conditions FROM strategy_cemetery "
+                    "ORDER BY created_at DESC LIMIT 200"
+                ).fetchall()
+        except Exception as e:
+            logger.warning(f"RejectionMemory.find_similar_rejected failed: {e}")
+            return []
+        hits = []
+        for r in rows:
+            cand_tokens = _tokens(r["strategy_name"])
+            if not cand_tokens:
+                continue
+            overlap = len(query_tokens & cand_tokens) / len(query_tokens | cand_tokens)
+            if overlap >= min_overlap:
+                hits.append({**dict(r), "similarity": round(overlap, 2)})
+        hits.sort(key=lambda h: h["similarity"], reverse=True)
+        return hits[:limit]
 
     def inject_into_prompt(self) -> str:
         """Return avoidance rules formatted for Claude prompt injection."""

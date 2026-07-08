@@ -8,8 +8,20 @@ from config.settings import (
     MODEL_FAST, MODEL_MAIN, GATE_CONFIG, KLCI_BY_SYMBOL, DEFAULT_SYMBOLS,
     PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT, BURSA_MIN_DAILY_VALUE_MYR,
     bursa_trade_cost, bursa_slippage_tier,
+    MARKET_RULES_VERSION, FEE_MODEL_VERSION,
 )
 from data.database import db_session
+
+
+def _stamp_versions(conn):
+    """Stamp the active market-rule / fee-model versions onto the row just
+    inserted on this connection (uses last_insert_rowid()). Traceability so any
+    backtest_runs row can be tied back to the cost assumptions in force."""
+    conn.execute(
+        "UPDATE backtest_runs SET market_rules_version=?, fee_model_version=? "
+        "WHERE id=last_insert_rowid()",
+        (MARKET_RULES_VERSION, FEE_MODEL_VERSION),
+    )
 from data.yahoo.client import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
@@ -65,6 +77,32 @@ class BacktestEngineer(BaseAgent):
             return de.fetch_prices(symbol, interval, days, use_cache=True)
         except Exception:
             return get_historical_data(symbol, interval=interval, days=days)
+
+    def _equal_weight_klci_returns(self, interval: str = "1d", days: int = 1825) -> pd.Series:
+        """Daily equal-weight KLCI buy-and-hold return series (Phase 3.2 benchmark).
+
+        The audit (§8.4) requires every strategy to beat a *simple* baseline;
+        equal-weight KLCI is the harder of the two it lists. Fetching 30
+        constituents is expensive, so the series is memoised on the instance per
+        interval — the daemon reuses one BacktestEngineer across ideas, so the
+        universe is fetched at most once per process run (all cached).
+        """
+        cache = getattr(self, "_ew_ret_cache", None)
+        if cache is None:
+            cache = self._ew_ret_cache = {}
+        if interval not in cache:
+            rets = []
+            for sym in DEFAULT_SYMBOLS:
+                try:
+                    d = self._fetch_prices(sym, interval, days=days)
+                    if not d.empty and "close" in d:
+                        rets.append(d["close"].pct_change())
+                except Exception:
+                    continue
+            cache[interval] = (
+                pd.concat(rets, axis=1).mean(axis=1) if rets else pd.Series(dtype=float)
+            )
+        return cache[interval]
 
     # ── Factor parsing ────────────────────────────────────────────────────────
 
@@ -320,7 +358,7 @@ Rules:
         """Per-side Bursa cost rates for this stock (QC3).
 
         Uses the shared cost model in config.settings — commission, buy-side
-        stamp duty (RM200 cap), clearing (RM1,000 cap), and slippage tiered by
+        stamp duty (RM1,000 cap), clearing (RM1,000 cap), and slippage tiered by
         the stock's average daily traded value over the last 60 bars. Rates are
         expressed as a fraction of trade value at the paper-capital notional,
         so the caps are reflected realistically for our trade size.
@@ -331,11 +369,23 @@ Rules:
             adv_value = float((tail["close"] * tail["volume"]).mean())
         tier = bursa_slippage_tier(adv_value)
         notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
+        # Phase 1.1: use the fee schedule in force at the backtest's midpoint so a
+        # run spanning the 2023-07-13 stamp-duty remission applies the rate that
+        # actually applied (single-schedule approximation per run). Falls back to
+        # the current constants when no dated schedule is available.
+        as_of = None
+        if len(df):
+            try:
+                as_of = df.index[len(df) // 2].strftime("%Y-%m-%d")
+            except Exception:
+                as_of = None
+        from data.fee_schedule import bursa_trade_cost_asof
         return {
-            "buy":  bursa_trade_cost(notional, "buy", tier) / notional,
-            "sell": bursa_trade_cost(notional, "sell", tier) / notional,
+            "buy":  bursa_trade_cost_asof(notional, "buy", tier, as_of) / notional,
+            "sell": bursa_trade_cost_asof(notional, "sell", tier, as_of) / notional,
             "tier": tier,
             "adv_value_myr": adv_value,
+            "fee_as_of": as_of,
         }
 
     def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str) -> dict:
@@ -1263,7 +1313,7 @@ Rules:
         intraday_kw  = ["intraday", "scalp", "tick", "1 minute", "5 minute", "15 minute",
                         "60 minute", "1min", "5min", "15min", "hourly", "hft"]
         short_kw     = ["1 day", "2 day", "3 day", "4 day", "5 day", "1-5 day", "1-3 day",
-                        "1 week", "t+1", "t+2", "t+3", "overnight", "few days"]
+                        "1 week", "t+1", "t+2", "overnight", "few days"]
         long_kw      = ["3 month", "6 month", "12 month", "annual", "quarterly",
                         "long-term", "long term", "buy and hold", "60 day", "90 day"]
 
@@ -1422,6 +1472,65 @@ Return JSON only:
 
     # ── Main backtest pipeline ────────────────────────────────────────────────
 
+    def _data_quality_gate(self, idea_id: int, symbol: str,
+                           df: pd.DataFrame, interval: str) -> dict:
+        """Gate DQ (Phase 1.2/1.3): score the price data, flag suspected
+        corporate-action gaps, persist to data_quality_checks, and decide pass.
+
+        Returns {"passed": bool, "confidence_score": float, "notes": str}.
+        Fails open (passes) if the gate is disabled or scoring errors.
+        """
+        from data.data_quality import (
+            compute_data_confidence, detect_corporate_action_anomalies)
+        try:
+            dq = compute_data_confidence(df, interval)
+            anomalies = detect_corporate_action_anomalies(
+                df, GATE_CONFIG.dq_corp_action_gap)
+        except Exception as _dq_exc:
+            self.log_daemon("WARN", f"[{idea_id}] Gate DQ scoring failed: {_dq_exc}")
+            return {"passed": True, "confidence_score": 0.0, "notes": "dq error (fail-open)"}
+
+        score = dq["confidence_score"]
+        # Each suspected unhandled corporate action dents confidence.
+        if anomalies:
+            score = max(0.0, score - 10.0 * len(anomalies))
+            dq["notes"] += f"; {len(anomalies)} suspected corp-action gap(s)"
+
+        passed = (not GATE_CONFIG.dq_gate_enabled) or (score >= GATE_CONFIG.dq_min_confidence)
+
+        try:
+            with db_session() as conn:
+                conn.execute("""
+                    INSERT INTO data_quality_checks
+                      (idea_id, ticker, source, bars, price_completeness,
+                       volume_completeness, stale_price_frac, missing_day_frac,
+                       corporate_action_flag, confidence_score, passed, notes)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """, (idea_id, symbol, "yfinance", dq["bars"],
+                      dq["price_completeness"], dq["volume_completeness"],
+                      dq["stale_price_frac"], dq["missing_day_frac"],
+                      1 if anomalies else 0, round(score, 1),
+                      1 if passed else 0, dq["notes"]))
+                for a in anomalies:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO corporate_actions
+                          (ticker, event_date, event_type, adjustment_factor,
+                           source, validation_status, notes)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (symbol, a["date"], "suspected_gap",
+                          1.0 + a["pct_change"], "gap_detector", "suspected",
+                          f"{a['pct_change']:+.1%} overnight move "
+                          f"({a['prev_close']}→{a['close']})"))
+        except Exception as _w_exc:
+            self.log_daemon("WARN", f"[{idea_id}] Gate DQ persist failed: {_w_exc}")
+
+        if not passed:
+            self.log_daemon(
+                "WARN", f"[{idea_id}] Gate DQ FAIL: {symbol} confidence "
+                        f"{score}/100 ({dq['notes']})")
+        return {"passed": passed, "confidence_score": round(score, 1),
+                "notes": dq["notes"]}
+
     def _reject_idea(self, idea_id: int, row, run_type: str, reason: str,
                      reason_category: str = "stage2") -> dict:
         """Uniform rejection: backtest_runs stub row, alpha_ideas status,
@@ -1445,6 +1554,7 @@ Return JSON only:
             """, (idea_id, run_type,
                   row["ticker"] or "", row["timeframe"] or "1d",
                   row["factor_formula"] or "", reason, reason))
+            _stamp_versions(conn)
             conn.execute("""
                 UPDATE alpha_ideas
                 SET status='rejected', rejection_reason=?, updated_at=datetime('now')
@@ -1504,6 +1614,7 @@ Return JSON only:
                     row["factor_formula"] or "",
                     reason, reason,
                 ))
+                _stamp_versions(conn)
                 conn.execute("""
                     UPDATE alpha_ideas
                     SET status='rejected', rejection_reason=?, updated_at=datetime('now')
@@ -1651,6 +1762,43 @@ Return JSON only:
                 )
             return {"error": msg, "idea_id": idea_id, "symbol": symbol,
                     "gate3_pass": False}
+
+        # ── Capacity test (Phase 3.4, audit §8.5) ─────────────────────────────
+        # How many days to enter/exit the position without exceeding
+        # capacity_max_participation of ADV? Rarely binds at paper scale but
+        # required before scaling capital.
+        _notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
+        _adv = _liq["adv_value_myr"]
+        capacity_pct_adv = (_notional / _adv) if _adv > 0 else float("inf")
+        _daily_cap = _adv * GATE_CONFIG.capacity_max_participation
+        days_to_enter = (_notional / _daily_cap) if _daily_cap > 0 else float("inf")
+        capacity_pass = ((not GATE_CONFIG.capacity_gate_enabled)
+                         or days_to_enter <= GATE_CONFIG.capacity_max_days)
+        capacity_note = ""
+        if not capacity_pass:
+            capacity_note = (f"Capacity: {days_to_enter:.1f} days to enter at "
+                             f"{GATE_CONFIG.capacity_max_participation:.0%} ADV "
+                             f"(> {GATE_CONFIG.capacity_max_days:.0f})")
+
+        # ── Survivorship: production-eligibility (Phase 2.3) ──────────────────
+        # A single-current-constituent backtest over a multi-year window predates
+        # our point-in-time membership coverage → research-grade, not production.
+        from data.universe import is_production_eligible
+        _window_start = None
+        try:
+            _window_start = df.index[0].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        production_eligible = is_production_eligible(_window_start)
+
+        # ── Gate DQ: data-quality gate (Phase 1.2/1.3) ────────────────────────
+        # Reject before expensive backtesting if the price data can't be trusted.
+        dq = self._data_quality_gate(idea_id, symbol, df, interval)
+        if not dq["passed"]:
+            msg = (f"Gate DQ: data confidence {dq['confidence_score']}/100 "
+                   f"< {GATE_CONFIG.dq_min_confidence} ({dq['notes']})")
+            return self._reject_idea(idea_id, row, "data_quality", msg,
+                                     reason_category="data_quality")
 
         self._log_progress(idea_id, 30, f"Computing factor signals ({symbol})")
         # Classify holding period for appropriate thresholds and warnings
@@ -1923,6 +2071,7 @@ Return JSON only:
                     "WARN", f"Backtest [{idea_id}] robustness gate FAILED: {robustness_note}")
 
         # ── Benchmark: excess performance vs FBM KLCI (^KLSE) ─────────────────
+        strat_ann = float(test_r.get("ann_return", 0.0))
         benchmark_sharpe, excess_ann_return = 0.0, 0.0
         try:
             bench_df = self._fetch_prices("^KLSE", interval, days=1825)
@@ -1932,11 +2081,38 @@ Return JSON only:
                     benchmark_sharpe = float(
                         np.mean(bench_ret) / np.std(bench_ret) * np.sqrt(_ann_qc6)
                     )
-                    excess_ann_return = float(
-                        test_r.get("ann_return", 0.0) - np.mean(bench_ret) * _ann_qc6
-                    )
+                    excess_ann_return = float(strat_ann - np.mean(bench_ret) * _ann_qc6)
         except Exception as _bench_exc:
             self.log_daemon("WARN", f"Backtest [{idea_id}] benchmark fetch failed: {_bench_exc}")
+
+        # ── Benchmark gate (Phase 3.2): must beat equal-weight KLCI after costs ─
+        # Equal-weight KLCI is the harder of the audit's two baselines. A strategy
+        # whose net annual return can't beat simply holding the index equal-weight
+        # is not earning its complexity, so it is rejected.
+        equal_weight_sharpe, excess_vs_ew_ann_return = 0.0, 0.0
+        benchmark_pass = True
+        benchmark_note = ""
+        try:
+            ew_ret = self._equal_weight_klci_returns(interval).reindex(df.index).dropna()
+            if len(ew_ret) > 60 and float(np.std(ew_ret)) > 1e-10:
+                equal_weight_sharpe = float(
+                    np.mean(ew_ret) / np.std(ew_ret) * np.sqrt(_ann_qc6)
+                )
+                ew_ann = float(np.mean(ew_ret) * _ann_qc6)
+                excess_vs_ew_ann_return = float(strat_ann - ew_ann)
+                if GATE_CONFIG.benchmark_gate_enabled:
+                    benchmark_pass = (
+                        excess_vs_ew_ann_return > GATE_CONFIG.benchmark_min_excess_ann
+                    )
+                    if not benchmark_pass:
+                        benchmark_note = (
+                            f"Benchmark gate: strategy ann {strat_ann:.1%} does not beat "
+                            f"equal-weight KLCI {ew_ann:.1%} "
+                            f"(excess {excess_vs_ew_ann_return:+.1%})"
+                        )
+        except Exception as _ew_exc:
+            # Benchmark data unavailable → do not block on it (fail-open, warn).
+            self.log_daemon("WARN", f"Backtest [{idea_id}] equal-weight benchmark failed: {_ew_exc}")
 
         # ── Sanity flags (warn but do not auto-reject) ────────────────────────
         sanity_flags = self._detect_sanity_flags(
@@ -1947,7 +2123,7 @@ Return JSON only:
 
         overall_pass = (gate3_pass and trade_count_pass and cost_pass
                         and oos_pass and regime_pass and deflation_pass
-                        and robustness_pass)
+                        and robustness_pass and benchmark_pass and capacity_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
         if _is_fund_screen and overall_pass:
@@ -1974,6 +2150,8 @@ Return JSON only:
                 "" if trade_count_pass else trade_count_note,
                 "" if deflation_pass else deflation_note,
                 "" if robustness_pass else robustness_note,
+                "" if benchmark_pass else benchmark_note,
+                "" if capacity_pass else capacity_note,
             ]))
 
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
@@ -2016,6 +2194,7 @@ Return JSON only:
                     test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
+                _stamp_versions(conn)
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",
                     (idea_id,),
@@ -2023,11 +2202,20 @@ Return JSON only:
                 conn.execute("""
                     UPDATE backtest_runs
                     SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?,
-                        excess_ann_return=?, robustness_score=?
+                        excess_ann_return=?, robustness_score=?,
+                        equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?,
+                        capacity_pct_adv=?, days_to_enter=?, capacity_pass=?,
+                        production_eligible=?, universe_asof=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
                       round(robustness_score, 3) if robustness_score is not None else None,
+                      round(equal_weight_sharpe, 3), round(excess_vs_ew_ann_return, 4),
+                      1 if benchmark_pass else 0,
+                      round(capacity_pct_adv, 4) if capacity_pct_adv != float("inf") else None,
+                      round(days_to_enter, 3) if days_to_enter != float("inf") else None,
+                      1 if capacity_pass else 0,
+                      1 if production_eligible else 0, _window_start,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -2166,10 +2354,17 @@ Return JSON only:
             "oos_pass":            oos_pass,
             "regime_pass":         regime_pass,
             "deflation_pass":      deflation_pass,
+            "benchmark_pass":      benchmark_pass,
+            "capacity_pass":       capacity_pass,
+            "capacity_pct_adv":    None if capacity_pct_adv == float("inf") else round(capacity_pct_adv, 4),
+            "days_to_enter":       None if days_to_enter == float("inf") else round(days_to_enter, 3),
+            "production_eligible":  production_eligible,
             "n_trials":            n_trials,
             "deflated_hurdle":     round(deflated_hurdle, 3),
             "benchmark_sharpe":    round(benchmark_sharpe, 3),
             "excess_ann_return":   round(excess_ann_return, 4),
+            "equal_weight_sharpe": round(equal_weight_sharpe, 3),
+            "excess_vs_ew_ann_return": round(excess_vs_ew_ann_return, 4),
             "train":               train_r,
             "val":                 val_r,
             "test":                test_r,
@@ -2589,6 +2784,7 @@ Return JSON only:
                     regimes_positive, None, test_r["max_dd"],
                     verdict, verdict_reason,
                 ))
+                _stamp_versions(conn)
                 run_id = conn.execute(
                     "SELECT id FROM backtest_runs WHERE idea_id=? "
                     "ORDER BY created_at DESC LIMIT 1",

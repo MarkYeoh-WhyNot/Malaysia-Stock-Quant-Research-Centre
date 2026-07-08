@@ -952,6 +952,39 @@ def paper_trades(idea_id: Optional[int] = None, status: Optional[str] = None, li
     }
 
 
+@app.get("/api/pipeline/family-quotas")
+def family_quotas():
+    """Phase 5.4/§12.2: strategy-family distribution vs quota targets."""
+    from knowledge.ingestion.family_quotas import get_family_distribution, next_underquota_family
+    return {"distribution": get_family_distribution(),
+            "next_underquota_family": next_underquota_family()}
+
+
+@app.get("/api/paper-trades/{trade_id}/reconciliation")
+def paper_trade_reconciliation(trade_id: int):
+    """Phase 6.3/§11.3: expected-vs-actual trail for one paper trade."""
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM paper_trade_reconciliation WHERE trade_id=? ORDER BY id",
+            (trade_id,)
+        ).fetchall()
+    return {"trade_id": trade_id, "reconciliation": [dict(r) for r in rows]}
+
+
+@app.get("/api/risk/snapshot")
+def risk_snapshot():
+    """Phase 4.4: live portfolio concentration + kill-switch status (audit §10.4)."""
+    from agents.risk_monitor.risk_monitor import RiskMonitor
+    snap = RiskMonitor().portfolio_risk_snapshot()
+    with db_session() as conn:
+        history = conn.execute(
+            "SELECT snapshot_at, gross_exposure_myr, max_single_pct, max_sector_pct, "
+            "bank_pct, concentration_ok, kill_switch_active "
+            "FROM risk_snapshots ORDER BY id DESC LIMIT 20"
+        ).fetchall()
+    return {"current": snap, "history": [dict(r) for r in history]}
+
+
 class PaperEntryBody(BaseModel):
     idea_id: int
     pair: str
@@ -1291,8 +1324,8 @@ def system_direction():
 
     transaction_costs = {
         "commission_pct": 0.08,
-        "stamp_duty_pct": 0.15,
-        "stamp_duty_cap_myr": 200,
+        "stamp_duty_pct": 0.10,
+        "stamp_duty_cap_myr": 1000,
         "clearing_pct": 0.03,
         "clearing_cap_myr": 1000,
         "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.25, "SMALL_CAP": 0.75},
@@ -1319,9 +1352,9 @@ def system_direction():
 
     bursa_constraints = [
         "Long-only strategies only (short-selling heavily restricted)",
-        "T+3 settlement — affects short-term strategy feasibility",
+        "T+2 settlement (effective 2019-04-29) — affects short-term strategy feasibility",
         "Minimum lot size: 100 shares (affects small-cap liquidity)",
-        "Stamp duty: 0.15% buy-side, capped RM200 (real cost)",
+        "Stamp duty: 0.10% remitted buy-side, capped RM1,000 (real cost)",
         "Brokerage: ~0.08% per side minimum",
         "Trading hours: 9:00–12:30 and 14:30–17:00 MYT only",
         "Circuit breakers: halt if stock moves >30% in a day",
