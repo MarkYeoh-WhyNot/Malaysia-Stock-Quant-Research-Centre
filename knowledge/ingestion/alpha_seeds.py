@@ -251,6 +251,21 @@ Return JSON:
                 idea_id = saved_row["id"]
                 ideas_saved += 1
                 self.log_daemon("INFO", f"AlphaSeed: created idea [{idea_id}] {h_title}")
+                # Knowledge graph: idea node + derived_from edge to source doc
+                try:
+                    from knowledge.graph import store as graph_store
+                    idea_node = graph_store.upsert_node(
+                        "idea", slug=f"idea-{slug}"[:120], title=h_title,
+                        summary=(hypothesis or "")[:2000],
+                        tags=[ticker] if ticker else [],
+                        ref=("alpha_ideas", idea_id),
+                    )
+                    doc_node = graph_store.ensure_node_for_document(doc_id)
+                    if doc_node:
+                        graph_store.add_edge(idea_node, doc_node, "derived_from",
+                                             weight=0.9, origin="heuristic")
+                except Exception as _ge:
+                    self.log_daemon("WARN", f"AlphaSeed: graph edge failed: {_ge}")
 
         # ── Mark document as seeded; update summary ────────────────────
         new_summary = f"[DIGESTED] {core_insight}" if core_insight else summary

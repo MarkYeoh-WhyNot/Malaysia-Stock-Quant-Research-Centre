@@ -440,6 +440,46 @@ Stat cards drop to 2-column grid; `.row` panels stack; tables scroll horizontall
 
 ---
 
+## Knowledge Graph — Obsidian-style GraphRAG (2026-07-08)
+
+The KB is an atomic-note graph with typed links, custom-built (no frameworks):
+
+**Schema** (`data/database.py`): `kb_nodes` (registry over kb_documents/
+kb_concepts/technique_library/alpha_ideas/rejection_patterns via ref_table/
+ref_id; content_hash + extracted_at drive incremental processing), `kb_edges`
+(typed weighted, UNIQUE(source,target,relation)), `kb_embeddings` (optional
+Voyage float32 blobs), `kb_fts` (FTS5). Legacy kb_documents/kb_concepts stay
+authoritative for their rows; kb_links is frozen (migrated at weight 0.3).
+
+**Modules**: `knowledge/graph/store.py` (ONLY write path — syncs FTS),
+`knowledge/graph/extractor.py` (Haiku typed-edge extraction, candidates-only
+targets, budget-capped), `knowledge/graph/migrate.py` (idempotent, auto-runs
+at daemon startup), `knowledge/search/fts.py` + `embeddings.py` +
+`retriever.py` (public entry: `retrieve(query, k, hops)` — hybrid BM25+cosine
+seeds, 1-2 hop BFS with 0.5^hop decay, contradicts flagged not hidden;
+`assemble_context()` for prompts).
+
+**Relations**: supports, contradicts, refines, derived_from, about_ticker,
+uses_technique, rejected_because, shared_concept, shared_tag, mentions.
+
+**Consumers**: `KBIngester.search()` delegates to the retriever (Telegram
+/search unchanged); `/api/kb/search` + `/api/kb/graph`; StrategyResearcher
+grounds ideas in graph context (topicless generation targets the
+least-covered angle). AlphaSeedGenerator adds live `derived_from` edges.
+
+**Daemon jobs**: graph_maintain (2h — extract + embed), fts_reconcile (inside
+nightly db_maintenance), vault_export (06:00 UTC daily).
+
+**Obsidian**: `python scripts/export_obsidian.py` (or Telegram `/vault`)
+writes a one-way wipe-and-rewrite vault/ (gitignored) with YAML frontmatter
+and typed [[wikilinks]] — open it in Obsidian for graph view/backlinks. Never
+hand-edit the vault; the DB is the source of truth.
+
+**Embeddings**: optional — set `VOYAGE_API_KEY` in .env to enable semantic
+search; without it everything runs FTS5-only.
+
+---
+
 ## SYSTEM DIRECTION — OPENCLAW NORTH STAR
 
 ```

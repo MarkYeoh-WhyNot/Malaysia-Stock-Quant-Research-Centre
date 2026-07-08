@@ -99,6 +99,21 @@ def retrieve(query: str, k: int = 8, hops: int = 2,
     # ── 3. Materialize, filter, top-k ──────────────────────────────────────
     ids = list(best.keys())
     marks = ",".join("?" * len(ids))
+
+    # Contradiction post-pass: a node that reached the result set on its own
+    # merit (e.g. it also matched the query) still gets flagged when a
+    # contradicts edge ties it to another retrieved node.
+    with db_session() as conn:
+        contra = conn.execute(f"""
+            SELECT source_id, target_id FROM kb_edges
+            WHERE relation='contradicts'
+              AND source_id IN ({marks}) AND target_id IN ({marks})
+        """, ids + ids).fetchall()
+    for e in contra:
+        for nid in (e["source_id"], e["target_id"]):
+            if nid in best:
+                best[nid]["contradicts"] = True
+
     with db_session() as conn:
         rows = conn.execute(f"""
             SELECT id, slug, title, node_type, domain, summary, ref_table, ref_id

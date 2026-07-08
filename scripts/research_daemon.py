@@ -91,6 +91,11 @@ class ResearchDaemon:
     def start(self):
         logger.info("OpenClaw Research Daemon starting...")
         init_db()
+        try:
+            from knowledge.graph.migrate import migrate_kb_graph
+            migrate_kb_graph()   # idempotent — keeps graph in sync with legacy tables
+        except Exception as e:
+            logger.warning(f"[Startup] KB graph migration skipped: {e}")
         self._load_job_state()
         # Security check — log key health without exposing the actual key
         kh = key_health_check()
@@ -168,6 +173,8 @@ class ResearchDaemon:
         await self._process_cpo_daily()
         await self._process_analyst_monitor()
         await self._process_db_maintenance()
+        await self._process_graph_maintain()
+        await self._process_vault_export()
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
@@ -689,6 +696,45 @@ class ResearchDaemon:
             logger.error(f"[AnalystMonitor] Error: {e}", exc_info=True)
 
 
+    # ── Knowledge graph maintenance — every 2h ────────────────────────────────
+
+    async def _process_graph_maintain(self):
+        """Extract typed edges for new/changed notes (Haiku, budget-capped)
+        and embed pending nodes when Voyage is configured. FTS reconcile rides
+        along nightly via _process_db_maintenance."""
+        if not self._job_due("graph_maintain", min_gap=timedelta(hours=2)):
+            return
+        try:
+            from knowledge.graph.extractor import GraphExtractor
+            from knowledge.search import embeddings
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: GraphExtractor().extract_pending(batch=8, max_notes=40))
+            embedded = await loop.run_in_executor(None, embeddings.embed_pending)
+            self._mark_job_run("graph_maintain")
+            if result.get("processed") or embedded:
+                logger.info(
+                    f"[GraphMaintain] notes={result.get('processed', 0)} "
+                    f"edges=+{result.get('edges_added', 0)} embedded={embedded}"
+                )
+        except Exception as e:
+            logger.error(f"[GraphMaintain] Error: {e}", exc_info=True)
+
+    # ── Obsidian vault export — 06:00 UTC (14:00 MYT) ─────────────────────────
+
+    async def _process_vault_export(self):
+        """Daily one-way Markdown vault export for browsing in Obsidian."""
+        if not self._job_due("vault_export", daily_at_hour=6):
+            return
+        try:
+            from scripts.export_obsidian import export_vault
+            result = await asyncio.get_event_loop().run_in_executor(None, export_vault)
+            self._mark_job_run("vault_export")
+            logger.info(f"[VaultExport] {result.get('notes', 0)} notes → {result.get('path')}")
+        except Exception as e:
+            logger.error(f"[VaultExport] Error: {e}", exc_info=True)
+
     # ── Nightly DB maintenance — 03:00 UTC (11:00 MYT) ───────────────────────
 
     async def _process_db_maintenance(self):
@@ -717,6 +763,13 @@ class ResearchDaemon:
             from scripts.backup_db import run_backup
             backup_result = await asyncio.get_event_loop().run_in_executor(None, run_backup)
             logger.info(f"[DBMaintenance] Backup: {backup_result['file']}")
+
+            try:
+                from knowledge.graph.store import fts_reconcile
+                fts_result = fts_reconcile()
+                logger.info(f"[DBMaintenance] FTS reconcile: {fts_result}")
+            except Exception as _fts_exc:
+                logger.warning(f"[DBMaintenance] FTS reconcile skipped: {_fts_exc}")
 
             self._mark_job_run("db_maintenance")
         except Exception as e:

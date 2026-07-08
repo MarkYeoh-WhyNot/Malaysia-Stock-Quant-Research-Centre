@@ -651,6 +651,21 @@ async def cmd_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_vault(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Export the knowledge graph to the Obsidian vault on demand."""
+    if not is_allowed(update): return
+    await update.message.reply_text("📚 Exporting knowledge graph to Obsidian vault...")
+    try:
+        from scripts.export_obsidian import export_vault
+        import asyncio as _aio
+        result = await _aio.get_event_loop().run_in_executor(None, export_vault)
+        await update.message.reply_text(
+            f"✅ Vault exported: {result['notes']} notes, {result['edges']} links\n"
+            f"`{result['path']}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Vault export failed: {e}")
+
+
 async def cmd_research(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update): return
     if not ctx.args:
@@ -1340,6 +1355,7 @@ def main():
     app.add_handler(CommandHandler("dividends",          cmd_dividends))
     app.add_handler(CommandHandler("kb",        cmd_kb))
     app.add_handler(CommandHandler("search",    cmd_search))
+    app.add_handler(CommandHandler("vault",     cmd_vault))
     app.add_handler(CommandHandler("research",  cmd_research))
     app.add_handler(CommandHandler("arsenal",   cmd_arsenal))
     app.add_handler(CommandHandler("diversity", cmd_diversity))
