@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -184,6 +184,25 @@ class GateConfig:
     stage4a_min_days: int               = 30
     stage4a_min_sharpe: float           = 0.8
     stage4a_max_drawdown: float         = 0.20
+    # Paper-trade promotion by holding cycle (audit §8.6): 30 calendar days is
+    # too short for low-turnover strategies. A strategy may leave paper trading
+    # once it satisfies EITHER the day floor OR enough completed trades OR enough
+    # rebalance cycles — whichever fits its holding-period class. Keyed off the
+    # backtest's holding_period_class.
+    stage4a_min_trades: int             = 20     # completed round-trips (alt to days)
+    stage4a_min_rebalance_cycles: int   = 3      # full rebalance cycles (alt to days)
+    stage4a_min_days_by_class: dict     = field(default_factory=lambda: {
+        "INTRADAY":    30,
+        "SHORT_TERM":  30,
+        "MEDIUM_TERM": 60,    # ~1 quarter of daily bars
+        "LONG_TERM":   120,   # low-turnover needs a longer live look
+    })
+    # Benchmark-relative gate (audit §8.4): a strategy must beat a simple KLCI
+    # baseline after costs, else its complexity is not justified. Gates on excess
+    # annual return vs the equal-weight KLCI (the harder of the two baselines);
+    # KLCI buy-and-hold excess is also stored for reference.
+    benchmark_gate_enabled: bool        = True
+    benchmark_min_excess_ann: float     = 0.0    # strategy ann_return must exceed EW-KLCI by this
     # QC7 — parameter robustness (DSL signals): fraction of ±20% parameter
     # perturbations that must retain > robustness_sharpe_ratio × base Sharpe
     robustness_min_fraction: float      = 0.6

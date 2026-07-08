@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from config.settings import PAPER_CAPITAL_MYR, BURSA_BOARD_LOT
+from config.settings import PAPER_CAPITAL_MYR, BURSA_BOARD_LOT, GATE_CONFIG
 from data.database import db_session, init_db
 from agents.portfolio_executor.portfolio_executor import PortfolioExecutor
 
@@ -105,3 +105,54 @@ def test_evaluation_uses_nav_series(executor):
     assert result["total_days"] >= 30
     assert result["sharpe"] != 0.0
     assert 0 <= result["max_drawdown"] < 1
+
+
+def _seed_nav(days=40):
+    navs = PAPER_CAPITAL_MYR * np.cumprod(
+        1 + np.random.RandomState(2).randn(days) * 0.002 + 0.001)
+    dates = pd.date_range("2026-05-20", periods=days, freq="D")
+    with db_session() as conn:
+        for d, nav in zip(dates, navs):
+            conn.execute(
+                "INSERT OR REPLACE INTO paper_equity (idea_id, date, nav) VALUES (?,?,?)",
+                (TEST_IDEA_ID, d.strftime("%Y-%m-%d"), float(nav)))
+
+
+def _set_hp_class(hp_class):
+    with db_session() as conn:
+        conn.execute("DELETE FROM backtest_runs WHERE idea_id=?", (TEST_IDEA_ID,))
+        conn.execute(
+            "INSERT INTO backtest_runs (idea_id, run_type, holding_period_class) "
+            "VALUES (?, 'klse_daily', ?)", (TEST_IDEA_ID, hp_class))
+
+
+def test_paper_duration_is_holding_class_aware(executor):
+    """Phase 3.5: a flat 30-day floor is replaced by a class-aware disjunction —
+    class-specific day floor OR enough completed trades."""
+    ex, _ = executor
+    _seed_nav(40)
+
+    # SHORT_TERM floor is 30 days → 40 days of NAV clears it
+    _set_hp_class("SHORT_TERM")
+    r = asyncio.run(ex.evaluate_paper_performance(TEST_IDEA_ID))
+    assert r["holding_period_class"] == "SHORT_TERM"
+    assert r["min_days_required"] == 30
+    assert r["duration_pass"] is True
+
+    # LONG_TERM floor is 120 days → 40 days is NOT enough, and no closed trades
+    _set_hp_class("LONG_TERM")
+    r = asyncio.run(ex.evaluate_paper_performance(TEST_IDEA_ID))
+    assert r["min_days_required"] == 120
+    assert r["duration_pass"] is False
+
+    # …but enough completed round-trips satisfies duration even for LONG_TERM
+    with db_session() as conn:
+        for i in range(GATE_CONFIG.stage4a_min_trades):
+            conn.execute(
+                "INSERT INTO paper_trades (idea_id, pair, status, pnl) "
+                "VALUES (?, '1155.KL', 'closed', ?)", (TEST_IDEA_ID, 10.0 * (i + 1)))
+    r = asyncio.run(ex.evaluate_paper_performance(TEST_IDEA_ID))
+    assert r["duration_pass"] is True
+
+    with db_session() as conn:
+        conn.execute("DELETE FROM backtest_runs WHERE idea_id=?", (TEST_IDEA_ID,))

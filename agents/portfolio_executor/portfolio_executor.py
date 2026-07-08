@@ -251,9 +251,28 @@ class PortfolioExecutor(BaseAgent):
             ).fetchall()
         pnls = [t["pnl"] for t in trades if t["pnl"] is not None]
         win_rate = (len([p for p in pnls if p > 0]) / len(pnls)) if pnls else 0.0
+        completed_trades = len(pnls)
+
+        # Phase 3.5: holding-cycle-aware duration. A flat 30-day floor is too
+        # short for low-turnover (MEDIUM/LONG_TERM) strategies. The strategy has
+        # "run long enough" once it clears its class-specific day floor OR has
+        # accumulated enough completed round-trips — whichever comes first.
+        with db_session() as conn:
+            _bt = conn.execute(
+                "SELECT holding_period_class FROM backtest_runs WHERE idea_id=? "
+                "ORDER BY created_at DESC LIMIT 1", (idea_id,)
+            ).fetchone()
+        hp_class = (_bt["holding_period_class"] if _bt and _bt["holding_period_class"]
+                    else "MEDIUM_TERM")
+        min_days = GATE_CONFIG.stage4a_min_days_by_class.get(
+            hp_class, GATE_CONFIG.stage4a_min_days)
+        duration_pass = (
+            total_days >= min_days
+            or completed_trades >= GATE_CONFIG.stage4a_min_trades
+        )
 
         gate4a_pass = (
-            total_days >= GATE_CONFIG.stage4a_min_days
+            duration_pass
             and sharpe >= GATE_CONFIG.stage4a_min_sharpe
             and dd <= GATE_CONFIG.stage4a_max_drawdown
         )
@@ -263,14 +282,16 @@ class PortfolioExecutor(BaseAgent):
                 INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
                 VALUES (?, 'stage4a', ?, 'PortfolioExecutor', ?)
             """, (idea_id, "advanced" if gate4a_pass else "monitoring",
-                  f"days={total_days} sharpe={sharpe:.2f} dd={dd:.1%} win_rate={win_rate:.1%}"))
+                  f"class={hp_class} days={total_days}/{min_days} trades={completed_trades} "
+                  f"sharpe={sharpe:.2f} dd={dd:.1%} win_rate={win_rate:.1%}"))
 
             if gate4a_pass:
                 conn.execute("""
                     INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
                     VALUES (?, 'gate4a', 'approve', 'PortfolioExecutor', ?)
                 """, (idea_id,
-                      f"Paper trading: {total_days} days, Sharpe={sharpe:.2f}, DD={dd:.1%}"))
+                      f"Paper trading ({hp_class}): {total_days} days / {completed_trades} trades, "
+                      f"Sharpe={sharpe:.2f}, DD={dd:.1%}"))
                 conn.execute("""
                     UPDATE alpha_ideas SET stage='stage4b', status='active', updated_at=datetime('now')
                     WHERE id=?
@@ -291,6 +312,9 @@ class PortfolioExecutor(BaseAgent):
             "win_rate": round(win_rate, 4),
             "nav": round(float(navs[-1]), 2),
             "total_pnl": round(float(navs[-1] - PAPER_CAPITAL_MYR), 2),
+            "holding_period_class": hp_class,
+            "min_days_required": min_days,
+            "duration_pass": duration_pass,
             "gate4a_pass": gate4a_pass,
         }
 

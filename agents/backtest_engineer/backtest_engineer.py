@@ -78,6 +78,32 @@ class BacktestEngineer(BaseAgent):
         except Exception:
             return get_historical_data(symbol, interval=interval, days=days)
 
+    def _equal_weight_klci_returns(self, interval: str = "1d", days: int = 1825) -> pd.Series:
+        """Daily equal-weight KLCI buy-and-hold return series (Phase 3.2 benchmark).
+
+        The audit (§8.4) requires every strategy to beat a *simple* baseline;
+        equal-weight KLCI is the harder of the two it lists. Fetching 30
+        constituents is expensive, so the series is memoised on the instance per
+        interval — the daemon reuses one BacktestEngineer across ideas, so the
+        universe is fetched at most once per process run (all cached).
+        """
+        cache = getattr(self, "_ew_ret_cache", None)
+        if cache is None:
+            cache = self._ew_ret_cache = {}
+        if interval not in cache:
+            rets = []
+            for sym in DEFAULT_SYMBOLS:
+                try:
+                    d = self._fetch_prices(sym, interval, days=days)
+                    if not d.empty and "close" in d:
+                        rets.append(d["close"].pct_change())
+                except Exception:
+                    continue
+            cache[interval] = (
+                pd.concat(rets, axis=1).mean(axis=1) if rets else pd.Series(dtype=float)
+            )
+        return cache[interval]
+
     # ── Factor parsing ────────────────────────────────────────────────────────
 
     def _parse_factor(self, factor_formula: str, title: str, hypothesis: str) -> dict:
@@ -1937,6 +1963,7 @@ Return JSON only:
                     "WARN", f"Backtest [{idea_id}] robustness gate FAILED: {robustness_note}")
 
         # ── Benchmark: excess performance vs FBM KLCI (^KLSE) ─────────────────
+        strat_ann = float(test_r.get("ann_return", 0.0))
         benchmark_sharpe, excess_ann_return = 0.0, 0.0
         try:
             bench_df = self._fetch_prices("^KLSE", interval, days=1825)
@@ -1946,11 +1973,38 @@ Return JSON only:
                     benchmark_sharpe = float(
                         np.mean(bench_ret) / np.std(bench_ret) * np.sqrt(_ann_qc6)
                     )
-                    excess_ann_return = float(
-                        test_r.get("ann_return", 0.0) - np.mean(bench_ret) * _ann_qc6
-                    )
+                    excess_ann_return = float(strat_ann - np.mean(bench_ret) * _ann_qc6)
         except Exception as _bench_exc:
             self.log_daemon("WARN", f"Backtest [{idea_id}] benchmark fetch failed: {_bench_exc}")
+
+        # ── Benchmark gate (Phase 3.2): must beat equal-weight KLCI after costs ─
+        # Equal-weight KLCI is the harder of the audit's two baselines. A strategy
+        # whose net annual return can't beat simply holding the index equal-weight
+        # is not earning its complexity, so it is rejected.
+        equal_weight_sharpe, excess_vs_ew_ann_return = 0.0, 0.0
+        benchmark_pass = True
+        benchmark_note = ""
+        try:
+            ew_ret = self._equal_weight_klci_returns(interval).reindex(df.index).dropna()
+            if len(ew_ret) > 60 and float(np.std(ew_ret)) > 1e-10:
+                equal_weight_sharpe = float(
+                    np.mean(ew_ret) / np.std(ew_ret) * np.sqrt(_ann_qc6)
+                )
+                ew_ann = float(np.mean(ew_ret) * _ann_qc6)
+                excess_vs_ew_ann_return = float(strat_ann - ew_ann)
+                if GATE_CONFIG.benchmark_gate_enabled:
+                    benchmark_pass = (
+                        excess_vs_ew_ann_return > GATE_CONFIG.benchmark_min_excess_ann
+                    )
+                    if not benchmark_pass:
+                        benchmark_note = (
+                            f"Benchmark gate: strategy ann {strat_ann:.1%} does not beat "
+                            f"equal-weight KLCI {ew_ann:.1%} "
+                            f"(excess {excess_vs_ew_ann_return:+.1%})"
+                        )
+        except Exception as _ew_exc:
+            # Benchmark data unavailable → do not block on it (fail-open, warn).
+            self.log_daemon("WARN", f"Backtest [{idea_id}] equal-weight benchmark failed: {_ew_exc}")
 
         # ── Sanity flags (warn but do not auto-reject) ────────────────────────
         sanity_flags = self._detect_sanity_flags(
@@ -1961,7 +2015,7 @@ Return JSON only:
 
         overall_pass = (gate3_pass and trade_count_pass and cost_pass
                         and oos_pass and regime_pass and deflation_pass
-                        and robustness_pass)
+                        and robustness_pass and benchmark_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
         if _is_fund_screen and overall_pass:
@@ -1988,6 +2042,7 @@ Return JSON only:
                 "" if trade_count_pass else trade_count_note,
                 "" if deflation_pass else deflation_note,
                 "" if robustness_pass else robustness_note,
+                "" if benchmark_pass else benchmark_note,
             ]))
 
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
@@ -2038,11 +2093,14 @@ Return JSON only:
                 conn.execute("""
                     UPDATE backtest_runs
                     SET n_trials=?, deflated_hurdle=?, benchmark_sharpe=?,
-                        excess_ann_return=?, robustness_score=?
+                        excess_ann_return=?, robustness_score=?,
+                        equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
                       round(robustness_score, 3) if robustness_score is not None else None,
+                      round(equal_weight_sharpe, 3), round(excess_vs_ew_ann_return, 4),
+                      1 if benchmark_pass else 0,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -2181,10 +2239,13 @@ Return JSON only:
             "oos_pass":            oos_pass,
             "regime_pass":         regime_pass,
             "deflation_pass":      deflation_pass,
+            "benchmark_pass":      benchmark_pass,
             "n_trials":            n_trials,
             "deflated_hurdle":     round(deflated_hurdle, 3),
             "benchmark_sharpe":    round(benchmark_sharpe, 3),
             "excess_ann_return":   round(excess_ann_return, 4),
+            "equal_weight_sharpe": round(equal_weight_sharpe, 3),
+            "excess_vs_ew_ann_return": round(excess_vs_ew_ann_return, 4),
             "train":               train_r,
             "val":                 val_r,
             "test":                test_r,
