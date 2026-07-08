@@ -234,7 +234,11 @@ def init_db(db_path: Path = DB_PATH):
         # upgraded to "dsl:<hash>" at parse time (canonical condition tree).
         # parent_idea_id: which idea spawned this one (price proxies) — enforces
         # the one-proxy-per-parent cap.
-        for _col in ("signal_signature TEXT", "parent_idea_id INTEGER"):
+        # kb_context: JSON list of kb_node slugs injected into the generation
+        # prompt (NULL = KB-ungrounded idea) — lets the funnel compare pass
+        # rates of grounded vs ungrounded ideas, i.e. MEASURE KB utility.
+        for _col in ("signal_signature TEXT", "parent_idea_id INTEGER",
+                     "kb_context TEXT"):
             try:
                 conn.execute(f"ALTER TABLE alpha_ideas ADD COLUMN {_col}")
                 logger.info(f"Migration applied: alpha_ideas.{_col.split()[0]} added")

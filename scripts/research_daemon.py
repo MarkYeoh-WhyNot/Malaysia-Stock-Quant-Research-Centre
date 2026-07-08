@@ -739,7 +739,9 @@ class ResearchDaemon:
     # ── Pipeline funnel report — 23:00 UTC (07:00 MYT, before briefing) ──────
 
     def _funnel_counts(self, hours: int) -> dict:
-        """Ideas generated vs. stage progress within the window."""
+        """Ideas generated vs. stage progress within the window, split by KB
+        grounding — the direct measurement of whether the knowledge base
+        helps the pipeline or is just decoration."""
         since = f"-{hours} hours"
         with db_session() as conn:
             generated = conn.execute(
@@ -757,8 +759,22 @@ class ResearchDaemon:
                 "SELECT COUNT(DISTINCT idea_id) AS n FROM gate_decisions "
                 "WHERE gate='gate3_rb' AND decision='approve' "
                 "AND created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+            # KB-utility split: grounded = generated with KB context in prompt
+            kb_gen = conn.execute(
+                "SELECT COUNT(*) AS n FROM alpha_ideas "
+                "WHERE kb_context IS NOT NULL AND created_at >= datetime('now', ?)",
+                (since,)).fetchone()["n"]
+            kb_gate0 = conn.execute(
+                "SELECT COUNT(DISTINCT g.idea_id) AS n FROM gate_decisions g "
+                "JOIN alpha_ideas a ON a.id = g.idea_id "
+                "WHERE g.gate='gate0' AND g.decision='approve' "
+                "AND a.kb_context IS NOT NULL "
+                "AND g.created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
         return {"generated": generated, "gate0_pass": gate0_pass,
-                "stage2_pass": stage2_pass, "stage3_pass": stage3_pass}
+                "stage2_pass": stage2_pass, "stage3_pass": stage3_pass,
+                "kb_gen": kb_gen, "kb_gate0": kb_gate0,
+                "plain_gen": generated - kb_gen,
+                "plain_gate0": gate0_pass - kb_gate0}
 
     async def _process_funnel_report(self):
         """Daily pipeline throughput report + silent-zero-throughput alert.
@@ -771,11 +787,15 @@ class ResearchDaemon:
         try:
             day = self._funnel_counts(24)
             week = self._funnel_counts(168)
+            def _rate(passed, gen):
+                return f"{passed}/{gen} ({passed / gen:.0%})" if gen else "0/0"
             msg = (
                 f"Funnel 24h: generated={day['generated']} → gate0={day['gate0_pass']} "
                 f"→ backtest-pass={day['stage2_pass']} → red-blue={day['stage3_pass']} | "
                 f"7d: {week['generated']} → {week['gate0_pass']} "
-                f"→ {week['stage2_pass']} → {week['stage3_pass']}"
+                f"→ {week['stage2_pass']} → {week['stage3_pass']}\n"
+                f"KB utility 7d — grounded gate0: {_rate(week['kb_gate0'], week['kb_gen'])} "
+                f"vs ungrounded: {_rate(week['plain_gate0'], week['plain_gen'])}"
             )
             logger.info(f"[Funnel] {msg}")
             with db_session() as conn:

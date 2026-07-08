@@ -716,6 +716,57 @@ Rules:
 
     # ── Newey-West t-stat (autocorrelation-robust) ────────────────────────────
 
+    # DSL leaf → technique-library node slug (only leaves with a real
+    # counterpart node; unmapped leaves are simply skipped)
+    _LEAF_TO_TECH = {
+        "sma_cross": "tech-sma-crossover",
+        "ema_cross": "tech-sma-crossover",
+        "rsi": "tech-rsi-mean-reversion",
+        "bollinger": "tech-bollinger-squeeze",
+        "gap": "tech-gap-fill",
+        "reversal": "tech-short-term-reversal",
+        "rolling_rank": "tech-cross-sectional-momentum",
+        "cpo_change": "tech-cpo-correlation",
+        "div_days_to_ex": "tech-event-study",
+    }
+
+    def _link_idea_to_techniques(self, idea_id: int, title: str, dsl_tree: dict):
+        """On a passing backtest, connect the idea node to the technique nodes
+        its DSL leaves employ — the KB Explorer then shows which knowledge
+        actually produces surviving strategies."""
+        try:
+            from knowledge.graph import store
+            leaves: set = set()
+
+            def _walk(node):
+                if not isinstance(node, dict):
+                    return
+                if "leaf" in node:
+                    leaves.add(node["leaf"])
+                for c in node.get("children", []):
+                    _walk(c)
+                if "child" in node:
+                    _walk(node["child"])
+
+            for part in ("entry", "exit"):
+                if dsl_tree.get(part):
+                    _walk(dsl_tree[part])
+
+            idea_node = store.upsert_node(
+                "idea", slug=f"idea-{idea_id}-passed"[:120], title=title or f"idea {idea_id}",
+                ref=("alpha_ideas", idea_id),
+            )
+            for leaf in leaves:
+                tech_slug = self._LEAF_TO_TECH.get(leaf)
+                if not tech_slug:
+                    continue
+                tech = store.get_node(slug=tech_slug)
+                if tech:
+                    store.add_edge(idea_node, tech["id"], "uses_technique",
+                                   weight=0.9, origin="heuristic")
+        except Exception as e:
+            logger.warning(f"Technique linking failed for [{idea_id}]: {e}")
+
     def _robustness_check(self, test_df: pd.DataFrame, dsl_tree: dict,
                           base_sharpe: float, interval: str) -> float:
         """QC7: fraction of ±20% parameter perturbations whose test-split net
@@ -1996,7 +2047,8 @@ Return JSON only:
                             updated_at=datetime('now')
                         WHERE id=?
                     """, (test_sharpe_net, test_r["max_dd"], new_stage, new_status, idea_id))
-                else:
+
+                if cur_stage != "stage2":
                     # Refresh metrics only; preserve stage and status
                     conn.execute("""
                         UPDATE alpha_ideas
@@ -2030,6 +2082,12 @@ Return JSON only:
         except Exception as e:
             self.log_daemon("ERROR", f"Backtest save FAILED for idea {idea_id}: {e}")
             raise
+
+        # Knowledge graph: surviving ideas link to the techniques they used,
+        # so the graph accumulates evidence about which knowledge works.
+        # (Outside the save transaction — the store opens its own connection.)
+        if overall_pass and params.get("signal_type") == "dsl":
+            self._link_idea_to_techniques(idea_id, row["title"], params["dsl"])
 
         # ── Save equity curve to backtest_series ─────────────────────────────
         try:

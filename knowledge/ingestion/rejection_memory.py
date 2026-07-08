@@ -101,6 +101,37 @@ class RejectionMemory:
                 f"RejectionMemory: recorded [{idea_id}] "
                 f"factor={factor_type} sector={sector} reason={reason_category} stage={stage}"
             )
+
+            # Knowledge graph: idea --rejected_because--> rejection_pattern.
+            # Makes failure knowledge traversable (red team ammunition, KB
+            # Explorer shows which patterns kill ideas).
+            try:
+                from knowledge.graph import store
+                with db_session() as conn:
+                    pat = conn.execute(
+                        "SELECT id, count, last_seen FROM rejection_patterns "
+                        "WHERE factor_type=? AND sector=? AND reason_category=?",
+                        (factor_type, sector, reason_category),
+                    ).fetchone()
+                if pat:
+                    pattern_node = store.upsert_node(
+                        "rejection_pattern",
+                        slug=f"reject-{factor_type}-{sector}-{reason_category}".lower(),
+                        title=f"{factor_type} / {reason_category}",
+                        summary=(f"Rejected {pat['count']}x (last {pat['last_seen']}). "
+                                 f"Sector: {sector}. Example: {(row['title'] or '')[:80]}"),
+                        ref=("rejection_patterns", pat["id"]),
+                    )
+                    idea_node = store.upsert_node(
+                        "idea", slug=f"idea-{idea_id}-rejected"[:120],
+                        title=row["title"] or f"idea {idea_id}",
+                        summary=(reason or "")[:500],
+                        ref=("alpha_ideas", idea_id),
+                    )
+                    store.add_edge(idea_node, pattern_node, "rejected_because",
+                                   weight=0.8, origin="heuristic")
+            except Exception as ge:
+                logger.warning(f"RejectionMemory graph edge failed (non-blocking): {ge}")
         except Exception as e:
             logger.warning(f"RejectionMemory.record_rejection failed (non-blocking): {e}")
 

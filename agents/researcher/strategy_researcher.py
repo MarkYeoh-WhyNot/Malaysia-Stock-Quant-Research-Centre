@@ -291,6 +291,7 @@ class StrategyResearcher(BaseAgent):
     def generate_ideas(self, topic: str = None, count: int = 5) -> list:
         # ── 1. KB context — GraphRAG retrieval over the knowledge graph ──────
         kb_context = ""
+        kb_slugs: list = []   # provenance: which nodes grounded these ideas
         try:
             from knowledge.search.retriever import retrieve, assemble_context
 
@@ -312,6 +313,7 @@ class StrategyResearcher(BaseAgent):
 
             kb_results = retrieve(query, k=6, hops=2)
             if kb_results:
+                kb_slugs = [r["slug"] for r in kb_results]
                 kb_context = "\n" + assemble_context(kb_results, max_chars=2500)
                 kb_context += (
                     "\n\nGenerate ideas that reference specific techniques and factors "
@@ -530,6 +532,11 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
 
         # Apply pre-save infeasibility filter
         clean = self._filter_infeasible(clean)
+        # Provenance: tag every idea with the KB nodes that grounded the prompt
+        # (NULL kb_context = ungrounded) so the funnel can measure KB utility.
+        if kb_slugs:
+            for idea in clean:
+                idea.setdefault("kb_context", kb_slugs)
         self.log_daemon("INFO", f"Generated {len(clean)}/{len(raw_ideas)} clean KLSE equity ideas (post-filter)")
         return clean
 
@@ -584,12 +591,13 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 )
                 return dup["id"]
 
+            kb_context = idea.get("kb_context")
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
                    data_sources, stage, status, novelty_score, logic_score,
-                   strategy_key, signal_signature, parent_idea_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?)
+                   strategy_key, signal_signature, parent_idea_id, kb_context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?, ?)
             """, (
                 slug,
                 title,
@@ -603,6 +611,7 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 strategy_key,
                 text_signature,
                 idea.get("parent_idea_id"),
+                json.dumps(kb_context) if kb_context else None,
             ))
             row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
 
@@ -985,6 +994,35 @@ Return JSON only:
         except Exception as e:
             self.log_daemon("WARN", f"TechniqueLibrary inject failed for [{idea_id}] (non-blocking): {e}")
 
+        # Existing knowledge graph — deep research must build on what the
+        # system already knows, and explicitly confront counter-evidence,
+        # instead of only hunting fresh papers.
+        graph_section, graph_slugs = "", []
+        try:
+            from knowledge.search.retriever import retrieve
+            kb_results = retrieve(
+                f"{row['title']} {row['hypothesis'] or ''}"[:300], k=5, hops=2)
+            if kb_results:
+                graph_slugs = [r["slug"] for r in kb_results]
+                supporting = [r for r in kb_results if not r["contradicts"]]
+                contra = [r for r in kb_results if r["contradicts"]]
+                lines = ["\nEXISTING KNOWLEDGE GRAPH (what the system already knows):"]
+                for r in supporting[:4]:
+                    lines.append(f"• [{r['node_type']}/{r['domain']}] {r['title']}: "
+                                 f"{(r['summary'] or '')[:250]}")
+                if contra:
+                    lines.append("\nKNOWN COUNTER-EVIDENCE — your research MUST address these:")
+                    for r in contra[:3]:
+                        lines.append(f"⚠ {r['title']}: {(r['summary'] or '')[:250]}")
+                graph_section = "\n".join(lines) + "\n"
+                self.log_daemon(
+                    "INFO",
+                    f"KB graph context: {len(kb_results)} nodes for Stage 1 [{idea_id}] "
+                    f"({len(contra)} counter-evidence)",
+                )
+        except Exception as _g_exc:
+            self.log_daemon("WARN", f"KB graph fetch failed for [{idea_id}] (non-blocking): {_g_exc}")
+
         prompt = f"""Conduct deep research on this Bursa Malaysia equity strategy.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1006,7 +1044,7 @@ Research tasks:
 
 Note: "MYR" appears here only as the earnings/valuation currency, NOT as a traded
 instrument. All positions are in Bursa Malaysia stocks.
-{papers_section}
+{graph_section}{papers_section}
 Return JSON only (use exactly this schema):
 {{
   "research_score":          7.5,
@@ -1070,6 +1108,19 @@ Return JSON only (use exactly this schema):
                 "active" if passed else "rejected",
                 idea_id,
             ))
+            # Merge Stage-1 graph provenance into kb_context
+            if graph_slugs:
+                existing_ctx = conn.execute(
+                    "SELECT kb_context FROM alpha_ideas WHERE id=?", (idea_id,)
+                ).fetchone()["kb_context"]
+                try:
+                    merged = list(dict.fromkeys(
+                        (json.loads(existing_ctx) if existing_ctx else []) + graph_slugs))
+                except Exception:
+                    merged = graph_slugs
+                conn.execute(
+                    "UPDATE alpha_ideas SET kb_context=? WHERE id=?",
+                    (json.dumps(merged), idea_id))
             conn.execute("""
                 INSERT INTO pipeline_events
                   (idea_id, stage, event_type, agent, notes)
@@ -1378,6 +1429,27 @@ novelty_score, logic_score, concerns."""
                 try:
                     sticker = stock["ticker"]
                     sname = stock.get("name", sticker)
+
+                    # KB graph grounding — the screener path was the dominant
+                    # idea producer yet injected zero accumulated knowledge.
+                    kb_block, kb_slugs = "", []
+                    try:
+                        from knowledge.search.retriever import retrieve, assemble_context
+                        kb_results = retrieve(
+                            f"{screen_name} {sname} Bursa Malaysia strategy",
+                            k=4, hops=2,
+                        )
+                        if kb_results:
+                            kb_slugs = [r["slug"] for r in kb_results]
+                            kb_block = "\n" + assemble_context(kb_results, max_chars=1500) + "\n"
+                            self.log_daemon(
+                                "INFO",
+                                f"KB graph context: {len(kb_results)} nodes for "
+                                f"screener idea {sticker} ({screen_name})",
+                            )
+                    except Exception as _kb_exc:
+                        self.log_daemon("WARN", f"KB context fetch failed (non-blocking): {_kb_exc}")
+
                     json_template = (
                         '{"title": str, "hypothesis": str, '
                         f'"ticker": "{sticker}", '
@@ -1395,10 +1467,13 @@ novelty_score, logic_score, concerns."""
                         f"  DY: {stock.get('dy')}%\n"
                         f"  PE: {stock.get('pe')}\n"
                         f"  P/B: {stock.get('pb')}\n"
-                        f"  ROE: {stock.get('roe')}%\n\n"
+                        f"  ROE: {stock.get('roe')}%\n"
+                        f"{kb_block}\n"
                         f"RULES:\n"
                         f"- Fundamentals above = WHY this stock is interesting "
                         f"(stock selection context only)\n"
+                        f"- Ground the mechanism in the knowledge-graph context above "
+                        f"where relevant; address any CONTRADICTS flags\n"
                         f"- factor_formula MUST use ONLY price/volume signals "
                         f"computable from Yahoo Finance OHLCV\n"
                         f"- Entry/exit via RSI, MA, momentum, volume, price patterns ONLY\n"
@@ -1417,6 +1492,8 @@ novelty_score, logic_score, concerns."""
                     # Enforce the ticker from the screener (don't let Claude hallucinate)
                     idea["ticker"] = stock["ticker"]
                     idea["screen_source"] = screen_name
+                    if kb_slugs:
+                        idea["kb_context"] = kb_slugs
 
                     # Apply infeasibility filter
                     filtered = self._filter_infeasible([idea])

@@ -130,6 +130,43 @@ class RedBlueTeam(BaseAgent):
     # Red team attack
     # ------------------------------------------------------------------
 
+    def _failure_knowledge(self, idea: dict) -> str:
+        """Accumulated failure knowledge for the red team: rejection-pattern
+        and note nodes matching the hypothesis, plus contradicts-edge
+        neighbors of the idea's own graph node. Real ammunition instead of
+        generic skepticism."""
+        lines = []
+        try:
+            from knowledge.search.retriever import retrieve
+            hits = retrieve((idea.get("hypothesis") or idea.get("title") or "")[:300],
+                            k=4, hops=2, node_types=["rejection_pattern", "note"])
+            for r in hits:
+                flag = "⚠ CONTRADICTS: " if r["contradicts"] else ""
+                lines.append(f"• {flag}[{r['node_type']}] {r['title']}: "
+                             f"{(r['summary'] or '')[:200]}")
+        except Exception:
+            pass
+        try:
+            from knowledge.graph import store
+            idea_node = None
+            if idea.get("id"):
+                from data.database import db_session
+                with db_session() as conn:
+                    n = conn.execute(
+                        "SELECT id FROM kb_nodes WHERE ref_table='alpha_ideas' AND ref_id=?",
+                        (idea["id"],)).fetchone()
+                idea_node = n["id"] if n else None
+            if idea_node:
+                for nb in store.neighbors(idea_node):
+                    if nb["relation"] == "contradicts":
+                        lines.append(f"• ⚠ CONTRADICTS this idea directly: {nb['title']}")
+        except Exception:
+            pass
+        if not lines:
+            return ""
+        block = "\nACCUMULATED FAILURE KNOWLEDGE (use as attack ammunition):\n" + "\n".join(lines[:8])
+        return block[:1200] + "\n"
+
     def red_team_attack(self, idea: dict, backtest_results: dict) -> dict:
         signal_type_context = ""
         if _is_fundamental_screen(idea):
@@ -138,6 +175,8 @@ class RedBlueTeam(BaseAgent):
             signal_type_context = FUNDAMENTAL_SCREEN_RED_TEMPLATES.replace(
                 "{n}", str(n)
             ).replace("{k}", str(k)).replace("{k*4*0.4:.1f}", f"{k * 4 * 0.4:.1f}")
+
+        failure_knowledge = self._failure_knowledge(idea)
 
         prompt = f"""Stress-test this Bursa Malaysia equity strategy as a hostile adversary.
 
@@ -149,7 +188,7 @@ Research score: {idea.get('research_score')}
 
 Backtest results:
 {json.dumps(backtest_results, indent=2)}
-{signal_type_context}
+{signal_type_context}{failure_knowledge}
 Return JSON:
 {{
   "critical_flaws": [

@@ -93,7 +93,7 @@ class AlphaSeedGenerator(BaseAgent):
         """
         with db_session() as conn:
             row = conn.execute(
-                "SELECT id, title, summary, content, seeded "
+                "SELECT id, slug, title, summary, content, seeded "
                 "FROM kb_documents WHERE id=?",
                 (doc_id,),
             ).fetchone()
@@ -238,10 +238,12 @@ Return JSON:
                 conn.execute("""
                     INSERT OR IGNORE INTO alpha_ideas
                         (slug, title, hypothesis, ticker, timeframe, factor_formula,
-                         data_sources, stage, status, novelty_score, logic_score)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?)
+                         data_sources, stage, status, novelty_score, logic_score,
+                         kb_context)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?)
                 """, (slug, h_title, hypothesis, ticker, timeframe, formula,
-                      sources, novelty, logic))
+                      sources, novelty, logic,
+                      json.dumps([row["slug"]])))  # provenance: KB doc that seeded this
 
                 saved_row = conn.execute(
                     "SELECT id FROM alpha_ideas WHERE slug=?", (slug,)
