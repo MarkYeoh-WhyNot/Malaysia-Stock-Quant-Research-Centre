@@ -205,6 +205,186 @@ JUDGE_REJECT_RULE = ("Apply Bursa-specific judgment: reject any strategy that re
 # Concentration risk: which sector the max_bank_pct-style limit watches.
 CONCENTRATION_SECTOR = "Banking"
 
+# ── Research content (KB hunt / alpha seeds) ─────────────────────────────────
+# Moved verbatim from knowledge/ingestion/diversity_engine.py's ANGLES /
+# ANGLE_KEYWORDS (2026-07-09) — same 9 taxonomy keys as kb_ingester.VALID_DOMAINS
+# and family_quotas, only the per-market content differs.
+RESEARCH_ANGLES = {
+    "price_action": {
+        "description": "Technical analysis, price momentum, chart patterns on Bursa Malaysia",
+        "queries": [
+            "price momentum Bursa Malaysia equities",
+            "technical analysis KLSE stock returns anomalies",
+            "moving average crossover ASEAN equity markets",
+        ],
+    },
+    "fundamental": {
+        "description": "Value investing, earnings quality, fundamental factors KLSE",
+        "queries": [
+            "value investing Bursa Malaysia fundamental factors",
+            "earnings quality factor Malaysian equity returns",
+            "price-to-book return on equity ASEAN stocks",
+        ],
+    },
+    "event_driven": {
+        "description": "Post-earnings drift, dividend capture, corporate events Bursa",
+        "queries": [
+            "post-earnings announcement drift Malaysia stocks",
+            "dividend capture strategy emerging market equities",
+            "corporate events stock returns ASEAN",
+        ],
+    },
+    "institutional": {
+        "description": "EPF flows, GLC ownership, institutional trading patterns Bursa",
+        "queries": [
+            "institutional ownership government-linked companies Malaysia stock returns",
+            "pension fund investment impact equity prices ASEAN",
+            "sovereign wealth fund trading equity market impact",
+        ],
+    },
+    "macro": {
+        "description": "OPR cycle, MYR macro impacts on sector returns Bursa Malaysia",
+        "queries": [
+            "interest rate cycle bank sector returns Malaysia",
+            "monetary policy equity sector rotation emerging markets",
+            "macroeconomic factors Malaysian stock market performance",
+        ],
+    },
+    "commodity": {
+        "description": "CPO price impact on plantation stocks, commodity equity linkages",
+        "queries": [
+            "palm oil price plantation stock returns Malaysia",
+            "commodity equity linkage factor investing",
+            "crude oil price energy sector stocks emerging markets",
+        ],
+    },
+    "sector_rotation": {
+        "description": "KLSE sector rotation, defensive vs cyclical, sector momentum",
+        "queries": [
+            "sector rotation strategy emerging market equities",
+            "industry momentum returns ASEAN equities",
+            "cyclical defensive sector switching Bursa Malaysia",
+        ],
+    },
+    "behavioural": {
+        "description": "Investor behaviour biases, market anomalies, sentiment KLSE",
+        "queries": [
+            "investor sentiment stock market anomalies Malaysia",
+            "behavioural biases equity returns emerging markets",
+            "market microstructure anomalies ASEAN equities",
+        ],
+    },
+    "statistical_modelling": {
+        "description": "Quantitative models: GARCH, HMM, factor models, ML, cointegration for KLSE",
+        "queries": [
+            "GARCH volatility model Bursa Malaysia equity",
+            "hidden markov regime detection ASEAN stock market",
+            "random matrix theory portfolio optimization emerging markets",
+            "machine learning return prediction Malaysian stocks",
+            "factor model Fama French KLSE",
+        ],
+    },
+}
+
+ANGLE_KEYWORDS = {
+    "price_action": [
+        "momentum", "mean reversion", "mean-reversion", "technical", "moving average",
+        "rsi", "breakout", "trend", "macd", "bollinger", "price action", "chart pattern",
+        "support", "resistance", "crossover", "oscillator",
+    ],
+    "fundamental": [
+        "value", "earnings", "book value", "p/e", "p/b", "roe", "fundamental",
+        "dividend yield", "revenue", "balance sheet", "cash flow", "quality", "valuation",
+        "earnings quality", "price-to-book", "return on equity",
+    ],
+    "event_driven": [
+        "pead", "earnings drift", "post-earnings", "dividend capture", "corporate event",
+        "announcement", "earnings surprise", "ex-dividend", "rights issue", "bonus issue",
+        "earnings announcement", "event study",
+    ],
+    "institutional": [
+        "epf", "kwap", "institutional", "glc", "government-linked", "pension fund",
+        "sovereign wealth", "foreign ownership", "msci", "passive fund", "index rebalancing",
+        "institutional flows", "ownership structure",
+    ],
+    "macro": [
+        "opr", "bank negara", "bnm", "interest rate", "monetary policy", "macroeconomic",
+        "gdp", "inflation", "central bank", "rate cycle", "rate sensitivity", "nim",
+        "macroeconomics", "economic cycle",
+    ],
+    "commodity": [
+        "cpo", "palm oil", "crude oil", "commodity", "plantation", "energy sector",
+        "tin", "rubber", "commodity equity", "commodity correlation", "resource",
+        "crude palm oil", "plantation stock",
+    ],
+    "sector_rotation": [
+        "sector rotation", "sector momentum", "industry momentum", "cyclical", "defensive",
+        "banking sector", "telco", "utilities", "reit", "sector switching",
+        "sector performance", "industry rotation",
+    ],
+    "behavioural": [
+        "sentiment", "behavioural", "behavioral", "anomaly", "anomalies",
+        "investor behaviour", "investor behavior", "bias", "microstructure",
+        "calendar effect", "january effect", "overreaction", "herding",
+        "market anomaly", "investor sentiment",
+    ],
+    "statistical_modelling": [
+        "garch", "egarch", "arima", "volatility model", "time series",
+        "hidden markov", "regime detection", "regime switching",
+        "random matrix", "eigenvalue", "minimum spanning tree", "correlation clustering",
+        "factor model", "fama french", "pca", "principal component", "ica",
+        "machine learning", "regression", "bayesian", "kalman filter",
+        "monte carlo", "cointegration", "stationarity", "unit root",
+        "statistical arbitrage", "clustering algorithm",
+    ],
+}
+
+# Research-hunter query-generation persona (moved verbatim from
+# knowledge/ingestion/research_hunter.py's QUERY_SYSTEM).
+RESEARCH_QUERY_PERSONA = (
+    "You are a research librarian generating academic database search queries for "
+    "quantitative equity research focused on Bursa Malaysia and ASEAN emerging markets."
+)
+
+# Alpha-seed digestion persona (moved verbatim from
+# knowledge/ingestion/alpha_seeds.py's SYSTEM).
+ALPHA_SEED_SYSTEM = (
+    "You are a senior quant researcher specialising in Bursa Malaysia equity markets. "
+    "You are comfortable with both discretionary and quantitative approaches including "
+    "GARCH/ARIMA time series models, factor models (Fama-French, PCA), Hidden Markov "
+    "regime detection, cointegration, Kalman filters, Monte Carlo simulation, Bayesian "
+    "inference, machine learning applied to financial data, and statistical arbitrage. "
+    "When extracting alpha from statistical modelling papers, translate the quantitative "
+    "techniques into concrete, implementable KLSE strategies."
+)
+
+# Example data sources for the alpha-seed hypothesis JSON template.
+DATA_SOURCES_EXAMPLE = ["Yahoo Finance", "Bursa announcements"]
+
+# Relevance-check target phrase + 5-tier scale, shared verbatim by
+# research_hunter._is_relevant and kb_ingester.relevance_check (previously
+# two near-duplicate hardcoded copies of the same text).
+RELEVANCE_TARGET = "Bursa Malaysia equity trading"
+RELEVANCE_SCALE = """  0.00–0.20  irrelevant — completely wrong market or asset class
+    Examples: Australian CFD trading, cryptocurrency, forex pairs,
+    US options pricing, bond market mechanics, ML for cybersecurity
+
+  0.20–0.40  generic — general finance, transferable concepts only
+    Examples: General momentum theory, generic valuation frameworks,
+    factor investing with no regional context, portfolio theory
+
+  0.40–0.60  partial — emerging market or Asian market context
+    Examples: ASEAN equity research, Southeast Asia fund flows,
+    EM factor models, Asian market microstructure, China/India/HK equity
+
+  0.60–0.80  relevant — Bursa Malaysia or Malaysian equity specific
+    Examples: KLSE stock returns, Malaysian market anomalies,
+    Bursa market microstructure, BNM policy effects, FBM KLCI factors
+
+  0.80–1.00  direct — actionable KLSE intelligence
+    Examples: Specific KLSE stock analysis, EPF flow studies,
+    CPO-plantation correlation, GLC ownership effects, Bursa volatility"""
+
 # ── Daemon scheduled jobs enabled for this market ─────────────────────────────
 # None = all registered jobs run (Bursa is the full original set).
 ENABLED_JOBS = None
