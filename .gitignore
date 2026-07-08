@@ -1,5 +1,7 @@
 .env
 *.db
+*.db-wal
+*.db-shm
 __pycache__/
 *.pyc
 logs/
@@ -9,3 +11,6 @@ venv/
 .env.save
 *.env.save
 .DS_Store
+.key_rotation_date
+data/daemon_heartbeat
+data/openclaw_progress.json
