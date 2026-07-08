@@ -271,17 +271,11 @@ class StrategyResearcher(BaseAgent):
                 )
                 continue
 
-            # Check 4: scores
-            novelty = float(idea.get("novelty_score", 0) or 0)
-            logic   = float(idea.get("logic_score", 0) or 0)
-            if novelty < 0.5 or logic < 0.6:
-                self.log_daemon(
-                    "INFO",
-                    f"generate_ideas: filtered '{title[:50]}' "
-                    f"(low scores: novelty={novelty:.2f} logic={logic:.2f})",
-                )
-                continue
-
+            # NOTE: the old "Check 4" filtered on novelty/logic scores that
+            # were produced BY THE SAME LLM CALL that generated the idea —
+            # trivially self-serving and never a real filter. Structural
+            # checks (1-3) stay; scoring is Gate 0's job (an independent,
+            # adversarial call).
             valid.append(idea)
 
         filtered_count = len(ideas) - len(valid)
@@ -496,10 +490,10 @@ Return a valid JSON array of exactly {count} objects. Each object:
   "strategy_key":   "one of the strategy_key values listed above",
   "exit_quality":   0.7,
   "holding_period": "e.g. 2-6 weeks",
-  "novelty_score":  0.75,
-  "logic_score":    0.80,
   "concerns":       "Key implementation risks on Bursa (liquidity, lot size, corporate actions)"
-}}"""
+}}
+
+Do NOT score your own ideas — Gate 0 evaluates them independently."""
 
         result = self.call_claude_json(
             SYSTEM,
@@ -563,13 +557,39 @@ Return a valid JSON array of exactly {count} objects. Each object:
 
         strategy_key = str(idea.get("strategy_key") or "other").strip()
 
+        # Semantic dedup, layer 1 (text): normalized token signature of the
+        # formula + ticker. Catches reworded duplicates ("Maybank golden
+        # cross" vs "Maybank 20/50 MA crossover" with the same formula) that
+        # the date+title slug never could. Layer 2 (the canonical DSL-tree
+        # signature) upgrades this at parse time in the backtest engineer.
+        import hashlib as _hashlib
+        _formula_tokens = sorted(set(
+            re.findall(r"[a-z0-9.]+", (idea.get("factor_formula", "") or "").lower())
+        ))
+        text_signature = "txt:" + _hashlib.sha256(
+            (" ".join(_formula_tokens) + "|" + ticker).encode()
+        ).hexdigest()
+
         with db_session() as conn:
+            dup = conn.execute(
+                "SELECT id, title FROM alpha_ideas "
+                "WHERE signal_signature=? AND status != 'rejected' LIMIT 1",
+                (text_signature,),
+            ).fetchone()
+            if dup:
+                self.log_daemon(
+                    "INFO",
+                    f"save_idea DEDUP: '{title[:50]}' duplicates live idea "
+                    f"[{dup['id']}] '{dup['title'][:50]}' — not saved",
+                )
+                return dup["id"]
+
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
                    data_sources, stage, status, novelty_score, logic_score,
-                   strategy_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?)
+                   strategy_key, signal_signature, parent_idea_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?)
             """, (
                 slug,
                 title,
@@ -581,6 +601,8 @@ Return a valid JSON array of exactly {count} objects. Each object:
                 float(idea.get("novelty_score", 0.0)),
                 float(idea.get("logic_score", 0.0)),
                 strategy_key,
+                text_signature,
+                idea.get("parent_idea_id"),
             ))
             row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
 
@@ -646,8 +668,11 @@ Return a valid JSON array of exactly {count} objects. Each object:
         # Compute feasibility before calling Claude
         feasibility = self._compute_feasibility(row, primary_ticker, row["factor_formula"] or "")
 
-        prompt = f"""Evaluate this Bursa Malaysia equity strategy at Gate 0. Your job is to REJECT it
-if there are any serious flaws. Be demanding — most ideas should fail.
+        prompt = f"""Evaluate this Bursa Malaysia equity strategy at Gate 0. Reject flawed ideas —
+broken logic, unavailable data, severe execution barriers, obvious data-mining.
+Simple-but-sound ideas with honest mechanisms SHOULD pass: simplicity is not a
+flaw, and the statistical gates downstream (deflated Sharpe hurdle, parameter
+robustness, cross-sectional IC) are the arbiters of whether an edge is real.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Stock:      {company} ({ticker}) — {sector}
@@ -657,14 +682,17 @@ Signal:     {row['factor_formula']}
 Timeframe:  {row['timeframe']}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Score each dimension 0.0–1.0 (use low scores liberally):
+Score each dimension 0.0–1.0:
 
-1. NOVELTY (0–1): Is this genuinely differentiated beyond textbook strategies?
-   Score LOW if it is standard momentum/value with no KLSE-specific insight.
+1. NOVELTY (0–1): Is this differentiated beyond textbook strategies?
+   Score honestly — but note this dimension is ADVISORY (used for research
+   prioritization), not pass/fail. A simple momentum idea can score 0.2 here
+   and still pass Gate 0 if its logic and feasibility are sound.
 
-2. LOGIC (0–1): Is the economic mechanism sound and SPECIFIC to Bursa Malaysia?
-   Must account for GLC dominance, EPF flows, OPR cycle, T+3 settlement friction.
-   Score LOW if the rationale is generic (could apply to any market).
+2. LOGIC (0–1): Is the economic mechanism sound? A clear, honest mechanism
+   ("banks lag OPR moves because...") scores well even if simple. Score LOW
+   for hand-waving, contradictions, or mechanisms that don't survive a
+   moment's scrutiny (e.g. wrong sector for the claimed driver).
 
 3. FEASIBILITY (0–1): Can a real fund execute this on Bursa today?
    Consider: 100-share lot minimum, stamp duty 0.15%, T+3 settlement impact on
@@ -693,8 +721,8 @@ Score each dimension 0.0–1.0 (use low scores liberally):
 
 Deterministic pre-score: feasibility={feasibility:.2f}/1.00 (must be >= 0.60 to pass)
 
-Pass requires ALL of:
-  novelty >= 0.60, logic >= 0.65, feasibility >= 0.70,
+Pass requires ALL of (novelty is advisory, NOT a pass condition):
+  logic >= 0.65, feasibility >= 0.70,
   data_quality >= 0.70, overfitting_risk <= 0.40, det_feasibility >= 0.60
 
 If you reject this idea due to data unavailability (data_quality_score < 0.70),
@@ -759,9 +787,13 @@ Return JSON only:
 
         # Gate 0: ALL FIVE dimensions + deterministic feasibility must pass
         # exit_quality is informational only — does NOT affect pass/fail
+        # Novelty is ADVISORY — recorded for prioritization, not pass/fail.
+        # A simple genuine alpha always scores low novelty; killing it here
+        # contradicted the pipeline's purpose. Redundant/data-mined ideas are
+        # punished statistically downstream (deflated Sharpe hurdle,
+        # parameter robustness, cross-sectional IC) where the evidence is.
         passed = (
-            novelty     >= 0.60
-            and logic       >= 0.65
+            logic       >= 0.65
             and claude_feas >= 0.70
             and data_qual   >= 0.70
             and overfit     <= 0.40
@@ -779,7 +811,6 @@ Return JSON only:
         # Build a clear failure message so rejection_memory gets useful context
         if not passed:
             failed_dims = []
-            if novelty     < 0.60: failed_dims.append(f"novelty={novelty:.2f}<0.60")
             if logic       < 0.65: failed_dims.append(f"logic={logic:.2f}<0.65")
             if claude_feas < 0.70: failed_dims.append(f"feasibility={claude_feas:.2f}<0.70")
             if data_qual   < 0.70: failed_dims.append(f"data_quality={data_qual:.2f}<0.70")
@@ -829,35 +860,42 @@ Return JSON only:
         )
 
         # ── Price-based proxy redirect + auto-resubmit ────────────────────────
+        # Live evidence showed unlimited proxy spawning dominating generation
+        # (13 of 15 recent ideas were "Price proxy:" spawns, all rejected).
+        # Hard limits: never proxy a proxy, max ONE proxy per original idea
+        # ever, and multi-ticker fundamental ideas go to the fundamental
+        # screen instead of being degraded into a price proxy.
         if not passed:
             proxy = (result.get("price_based_proxy") or "").strip()
-            if proxy and data_qual < 0.70:
-                # Store proxy in alpha_ideas
+            _is_already_proxy = row["title"].startswith("Price proxy: ")
+            _n_tickers = len([t for t in (row["ticker"] or "").split(",")
+                              if ".KL" in t])
+            if proxy and data_qual < 0.70 and not _is_already_proxy and _n_tickers < 5:
                 with db_session() as conn:
                     conn.execute(
                         "UPDATE alpha_ideas SET price_based_proxy=? WHERE id=?",
                         (proxy, idea_id),
                     )
-                self.log_daemon(
-                    "INFO",
-                    f"Gate 0 REDIRECT: Try '{proxy}' instead",
-                )
-                # Auto-resubmit as a new pending Gate 0 idea
+                    already_spawned = conn.execute(
+                        "SELECT id FROM alpha_ideas WHERE parent_idea_id=? LIMIT 1",
+                        (idea_id,),
+                    ).fetchone()
+                if already_spawned:
+                    self.log_daemon(
+                        "INFO",
+                        f"Gate 0 REDIRECT: proxy already spawned for [{idea_id}] — skipping",
+                    )
+                    return result
+                self.log_daemon("INFO", f"Gate 0 REDIRECT: Try '{proxy}' instead")
                 try:
-                    # Strip any existing "Price proxy: " prefix before prepending
-                    # to avoid "Price proxy: Price proxy: ..." doubling on retry.
-                    _proxy_base = row["title"]
-                    if _proxy_base.startswith("Price proxy: "):
-                        _proxy_base = _proxy_base[len("Price proxy: "):]
                     proxy_idea = {
-                        "title":          f"Price proxy: {_proxy_base[:40]}",
+                        "title":          f"Price proxy: {row['title'][:40]}",
                         "hypothesis":     proxy,
                         "ticker":         ticker,
                         "timeframe":      row.get("timeframe") or "1d",
                         "factor_formula": proxy,
                         "data_sources":   ["Yahoo Finance daily OHLCV"],
-                        "novelty_score":  0.6,
-                        "logic_score":    0.65,
+                        "parent_idea_id": idea_id,
                     }
                     new_id = self.save_idea(proxy_idea)
                     self.log_daemon(

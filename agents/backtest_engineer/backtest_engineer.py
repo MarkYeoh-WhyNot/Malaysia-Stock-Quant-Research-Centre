@@ -1523,6 +1523,30 @@ Return JSON only:
                 )
             params = {"signal_type": "fundamental_screen", "long_only": True}
 
+        # Semantic dedup, layer 2: canonical DSL signature. Two ideas that
+        # parse to the same condition tree on the same ticker are the same
+        # strategy no matter how the titles are worded.
+        if params.get("signal_type") == "dsl":
+            from agents.backtest_engineer import signal_dsl
+            dsl_sig = "dsl:" + signal_dsl.canonical_signature(params["dsl"], row["ticker"] or "")
+            with db_session() as conn:
+                dup = conn.execute(
+                    "SELECT id, title FROM alpha_ideas "
+                    "WHERE signal_signature=? AND id != ? AND status != 'rejected' LIMIT 1",
+                    (dsl_sig, idea_id),
+                ).fetchone()
+                if dup:
+                    return self._reject_idea(
+                        idea_id, row, "duplicate_signal",
+                        f"parses to the same signal as live idea [{dup['id']}] "
+                        f"'{dup['title'][:60]}' — reworded duplicate",
+                        reason_category="duplicate",
+                    )
+                conn.execute(
+                    "UPDATE alpha_ideas SET signal_signature=? WHERE id=?",
+                    (dsl_sig, idea_id),
+                )
+
         # If fundamental context is available (from KLSE Screener DB), override to a
         # constant fundamental-screen signal.  The screen is quarterly-rebalanced so
         # a constant long/flat position is the correct model for daily price bars.

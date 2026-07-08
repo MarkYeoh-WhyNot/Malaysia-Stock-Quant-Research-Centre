@@ -229,6 +229,21 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass
 
+        # Semantic dedup + proxy-spawn cap
+        # signal_signature: "txt:<hash>" at save time (normalized formula+ticker),
+        # upgraded to "dsl:<hash>" at parse time (canonical condition tree).
+        # parent_idea_id: which idea spawned this one (price proxies) — enforces
+        # the one-proxy-per-parent cap.
+        for _col in ("signal_signature TEXT", "parent_idea_id INTEGER"):
+            try:
+                conn.execute(f"ALTER TABLE alpha_ideas ADD COLUMN {_col}")
+                logger.info(f"Migration applied: alpha_ideas.{_col.split()[0]} added")
+            except Exception:
+                pass
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_signature ON alpha_ideas(signal_signature)"
+        )
+
         # Fix 5: needs_review + verification_note on backtest_runs
         try:
             conn.execute("ALTER TABLE backtest_runs ADD COLUMN needs_review INTEGER DEFAULT 0")

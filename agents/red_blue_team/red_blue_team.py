@@ -328,24 +328,27 @@ Return JSON:
         blue = self.blue_team_defend(idea, red)
         verdict = self._judge(idea, red, blue, backtest_results)
 
-        # Detect parse failures across any step — a JSON glitch must never kill a good idea
+        # Detect parse failures across any step.
         any_parse_failed = (
             red.get("_parse_failed") or
             blue.get("_parse_failed") or
             verdict.get("_parse_failed")
         )
 
-        # If any step failed to parse, override to "conditional" so the idea advances
-        # to paper trading with a manual-review safeguard rather than being archived.
+        # A JSON glitch must neither kill a good idea NOR advance an
+        # un-reviewed one (the old behaviour overrode reject→conditional and
+        # advanced it — a noise-passage hole). Defer instead: write nothing,
+        # leave the idea at its current stage, and the next daemon cycle
+        # retries the debate from scratch.
         raw_verdict = verdict.get("verdict")
-        if raw_verdict is None or (any_parse_failed and raw_verdict == "reject"):
-            verdict_str = "conditional"
+        if any_parse_failed or raw_verdict is None:
             self.log_daemon("WARN",
-                f"Red-Blue [{idea_id}]: parse failure detected — overriding to 'conditional' "
+                f"Red-Blue [{idea_id}]: parse failure — DEFERRING to next cycle "
                 f"(red_failed={red.get('_parse_failed')}, blue_failed={blue.get('_parse_failed')}, "
                 f"judge_failed={verdict.get('_parse_failed')})")
-        else:
-            verdict_str = raw_verdict
+            return {"idea_id": idea_id, "verdict": "deferred",
+                    "deferred": True, "reason": "json_parse_failure"}
+        verdict_str = raw_verdict
 
         should_advance = verdict_str in ("advance", "conditional")
 
