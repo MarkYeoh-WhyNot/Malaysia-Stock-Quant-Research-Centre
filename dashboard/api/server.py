@@ -952,6 +952,14 @@ def paper_trades(idea_id: Optional[int] = None, status: Optional[str] = None, li
     }
 
 
+@app.get("/api/pipeline/family-quotas")
+def family_quotas():
+    """Phase 5.4/§12.2: strategy-family distribution vs quota targets."""
+    from knowledge.ingestion.family_quotas import get_family_distribution, next_underquota_family
+    return {"distribution": get_family_distribution(),
+            "next_underquota_family": next_underquota_family()}
+
+
 @app.get("/api/risk/snapshot")
 def risk_snapshot():
     """Phase 4.4: live portfolio concentration + kill-switch status (audit §10.4)."""

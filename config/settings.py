@@ -197,6 +197,14 @@ class GateConfig:
         "MEDIUM_TERM": 60,    # ~1 quarter of daily bars
         "LONG_TERM":   120,   # low-turnover needs a longer live look
     })
+    # Phase 5.4 — strategy-family quotas (audit §9.3), keyed to the same
+    # factor_type taxonomy RejectionMemory uses for rejection patterns. Report-only
+    # (surfaced in prompts/dashboard) rather than a hard gate — avoids blocking
+    # generation on a heuristic keyword classification.
+    family_quota_targets: dict          = field(default_factory=lambda: {
+        "momentum": 0.20, "value": 0.20, "quality": 0.15, "mean_reversion": 0.15,
+        "event": 0.15, "macro": 0.15,
+    })
     # Gate DQ — data-quality gate (audit §6.4). A strategy is not backtested
     # unless its price data clears a minimum Data Confidence Score (0–100). Clean
     # daily blue-chip data scores ~95–100; thin/gappy/stale series score low.

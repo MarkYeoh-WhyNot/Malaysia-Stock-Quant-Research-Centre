@@ -592,12 +592,16 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 return dup["id"]
 
             kb_context = idea.get("kb_context")
+            from knowledge.ingestion.family_quotas import classify_family
+            family = classify_family(
+                f"{title} {idea.get('hypothesis', '')} {idea.get('factor_formula', '')}")
+
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
                    data_sources, stage, status, novelty_score, logic_score,
-                   strategy_key, signal_signature, parent_idea_id, kb_context)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?, ?)
+                   strategy_key, signal_signature, parent_idea_id, kb_context, family)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'gate0', 'pending', ?, ?, ?, ?, ?, ?, ?)
             """, (
                 slug,
                 title,
@@ -612,10 +616,26 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
                 text_signature,
                 idea.get("parent_idea_id"),
                 json.dumps(kb_context) if kb_context else None,
+                family,
             ))
             row = conn.execute("SELECT id FROM alpha_ideas WHERE slug=?", (slug,)).fetchone()
 
         self.log_daemon("INFO", f"Saved idea [{row['id']}] {ticker} — {slug}")
+
+        # Phase 5.5: non-blocking cemetery similarity check — informational only.
+        try:
+            from knowledge.ingestion.rejection_memory import RejectionMemory
+            similar = RejectionMemory().find_similar_rejected(title, idea.get("hypothesis", ""))
+            if similar:
+                self.log_daemon(
+                    "INFO",
+                    f"Idea [{row['id']}] resembles {len(similar)} past rejection(s), "
+                    f"e.g. '{similar[0]['strategy_name'][:50]}' ({similar[0]['similarity']:.0%} "
+                    f"overlap): {similar[0]['revival_conditions']}"
+                )
+        except Exception as e:
+            self.log_daemon("WARN", f"Cemetery similarity check failed (non-blocking): {e}")
+
         return row["id"]
 
     # ── Gate 0 — initial screening ─────────────────────────────────────────────
