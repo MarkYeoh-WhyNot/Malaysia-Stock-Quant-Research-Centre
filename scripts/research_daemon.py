@@ -171,6 +171,7 @@ class ResearchDaemon:
             self._process_screener_ideas, self._process_cpo_daily,
             self._process_analyst_monitor, self._process_db_maintenance,
             self._process_graph_maintain, self._process_vault_export,
+            self._process_funnel_report,
         )
         for step in steps:
             await step()
@@ -734,6 +735,66 @@ class ResearchDaemon:
             logger.info(f"[VaultExport] {result.get('notes', 0)} notes → {result.get('path')}")
         except Exception as e:
             logger.error(f"[VaultExport] Error: {e}", exc_info=True)
+
+    # ── Pipeline funnel report — 23:00 UTC (07:00 MYT, before briefing) ──────
+
+    def _funnel_counts(self, hours: int) -> dict:
+        """Ideas generated vs. stage progress within the window."""
+        since = f"-{hours} hours"
+        with db_session() as conn:
+            generated = conn.execute(
+                "SELECT COUNT(*) AS n FROM alpha_ideas "
+                "WHERE created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+            gate0_pass = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM gate_decisions "
+                "WHERE gate='gate0' AND decision='approve' "
+                "AND created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+            stage2_pass = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs "
+                "WHERE passed=1 AND created_at >= datetime('now', ?)",
+                (since,)).fetchone()["n"]
+            stage3_pass = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM gate_decisions "
+                "WHERE gate='gate3_rb' AND decision='approve' "
+                "AND created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+        return {"generated": generated, "gate0_pass": gate0_pass,
+                "stage2_pass": stage2_pass, "stage3_pass": stage3_pass}
+
+    async def _process_funnel_report(self):
+        """Daily pipeline throughput report + silent-zero-throughput alert.
+
+        The failure mode this exists for: 60/60 ideas rejected at Gate 0 over
+        days with nobody noticing — budget burning, zero research output.
+        """
+        if not self._job_due("funnel_report", daily_at_hour=23):
+            return
+        try:
+            day = self._funnel_counts(24)
+            week = self._funnel_counts(168)
+            msg = (
+                f"Funnel 24h: generated={day['generated']} → gate0={day['gate0_pass']} "
+                f"→ backtest-pass={day['stage2_pass']} → red-blue={day['stage3_pass']} | "
+                f"7d: {week['generated']} → {week['gate0_pass']} "
+                f"→ {week['stage2_pass']} → {week['stage3_pass']}"
+            )
+            logger.info(f"[Funnel] {msg}")
+            with db_session() as conn:
+                conn.execute(
+                    "INSERT INTO daemon_logs (level, source, message) "
+                    "VALUES ('INFO', 'FunnelReport', ?)", (msg,))
+
+            two_day = self._funnel_counts(48)
+            if two_day["generated"] >= 20 and two_day["gate0_pass"] == 0:
+                send_alert(
+                    f"⚠️ Zero throughput: {two_day['generated']} ideas generated in 48h, "
+                    f"0 passed Gate 0. The pipeline is burning budget producing "
+                    f"nothing — check gate calibration / generation quality.\n{msg}"
+                )
+            else:
+                send_alert(f"📊 {msg}")
+            self._mark_job_run("funnel_report")
+        except Exception as e:
+            logger.error(f"[Funnel] Error: {e}", exc_info=True)
 
     # ── Nightly DB maintenance — 03:00 UTC (11:00 MYT) ───────────────────────
 
