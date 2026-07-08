@@ -179,6 +179,14 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass  # column already exists — safe to ignore
 
+        # content_hash: dedup key — same article re-ingested on a different
+        # day gets a new date-prefixed slug but an identical hash.
+        try:
+            conn.execute("ALTER TABLE kb_documents ADD COLUMN content_hash TEXT")
+            logger.info("Migration applied: kb_documents.content_hash column added")
+        except Exception:
+            pass
+
         # Minor fix 1: rename alpha_ideas.pair → ticker
         try:
             conn.execute("ALTER TABLE alpha_ideas RENAME COLUMN pair TO ticker")
@@ -327,6 +335,66 @@ def init_db(db_path: Path = DB_PATH):
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bs_idea ON backtest_series(idea_id)"
         )
+
+        # GraphRAG knowledge layer: node registry over the existing kb_* tables.
+        # kb_documents/kb_concepts stay untouched; kb_nodes unifies them (plus
+        # techniques, ideas, rejection patterns) so kb_edges can link ANY node
+        # kind — the old kb_links FKs allowed doc-to-doc only.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_type TEXT NOT NULL CHECK(node_type IN
+                    ('note','concept','technique','idea','rejection_pattern')),
+                ref_table TEXT,
+                ref_id INTEGER,
+                slug TEXT UNIQUE NOT NULL,
+                title TEXT,
+                domain TEXT,
+                summary TEXT,
+                tags TEXT,
+                content_hash TEXT,
+                extracted_at TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(ref_table, ref_id)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_nodes_type ON kb_nodes(node_type)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL REFERENCES kb_nodes(id),
+                target_id INTEGER NOT NULL REFERENCES kb_nodes(id),
+                relation TEXT NOT NULL,
+                weight REAL DEFAULT 1.0,
+                origin TEXT DEFAULT 'llm',
+                created_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(source_id, target_id, relation)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_edges_src ON kb_edges(source_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_edges_tgt ON kb_edges(target_id)")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_embeddings (
+                node_id INTEGER PRIMARY KEY REFERENCES kb_nodes(id),
+                model TEXT NOT NULL,
+                dim INTEGER NOT NULL,
+                vector BLOB NOT NULL,
+                content_hash TEXT,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
+        # FTS index over nodes. Synced by knowledge/graph/store.py (single
+        # write path), NOT by triggers — legacy writers bypass the node layer
+        # and a nightly reconcile job heals any gaps.
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
+                title, summary, content, tags, node_id UNINDEXED
+            )
+        """)
 
         # Daemon scheduler: persisted last-run timestamps so daily jobs catch up
         # after downtime instead of being silently skipped

@@ -1023,24 +1023,28 @@ def kb_documents(domain: Optional[str] = None, limit: int = 50, offset: int = 0)
 
 @app.get("/api/kb/search")
 def kb_search(q: str, domain: Optional[str] = None, limit: int = 20):
+    """GraphRAG retrieval — same hybrid search + graph walk as the agents use."""
     if not q.strip():
         return {"results": []}
-    terms = [t.strip() for t in q.lower().split() if len(t.strip()) > 2]
-    if not terms:
-        return {"results": []}
-    like_clauses = " AND ".join([f"(LOWER(title) LIKE ? OR LOWER(summary) LIKE ? OR LOWER(tags) LIKE ?)" for _ in terms])
-    params = []
-    for t in terms:
-        like = f"%{t}%"
-        params += [like, like, like]
-    sql = f"SELECT id, slug, title, domain, summary, tags, source_url, created_at FROM kb_documents WHERE {like_clauses}"
-    if domain:
-        sql += " AND domain=?"
-        params.append(domain)
-    sql += f" ORDER BY updated_at DESC LIMIT {limit}"
-    with db_session() as conn:
-        rows = conn.execute(sql, params).fetchall()
-    return {"results": [dict(r) for r in rows]}
+    from knowledge.search.retriever import retrieve
+    results = retrieve(q, k=limit, hops=2, domain=domain)
+    return {"results": [{
+        # keep legacy id semantics: kb_documents.id for note nodes so the
+        # KB Explorer's document links keep working
+        "id": r["ref_id"] if r["ref_table"] == "kb_documents" else r["node_id"],
+        "slug": r["slug"], "title": r["title"],
+        "domain": r["domain"], "summary": r["summary"],
+        "tags": "", "source_url": "", "created_at": "",
+        "score": r["score"], "node_type": r["node_type"],
+        "via": [list(v) for v in r["via"]], "contradicts": r["contradicts"],
+    } for r in results]}
+
+
+@app.get("/api/kb/graph")
+def kb_graph(limit: int = 500, domain: Optional[str] = None):
+    """Nodes + typed edges for the knowledge-graph view."""
+    from knowledge.graph.store import graph_json
+    return graph_json(limit=limit, domain=domain)
 
 
 @app.get("/api/kb/concepts")

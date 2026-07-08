@@ -224,7 +224,8 @@ class KBIngester(BaseAgent):
 
     def _summarise(self, content: str, title: str, domain: str) -> dict:
         truncated = content[:6000]
-        prompt = f"""Analyse this research document for an FX trading knowledge base.
+        prompt = f"""Analyse this research document for a Bursa Malaysia (KLSE) quantitative
+equity research knowledge base.
 
 Title: {title}
 Domain: {domain}
@@ -234,14 +235,14 @@ Content (truncated):
 
 Return JSON:
 {{
-  "summary": "3-5 sentence summary focused on trading relevance",
+  "summary": "3-5 sentence summary focused on relevance to Bursa Malaysia equity alpha research",
   "tags": ["tag1", "tag2"],
   "key_concepts": [
     {{"name": "...", "description": "...", "domain": "{domain}"}}
   ],
   "trading_relevance": 0.0,
-  "strategy_types": ["carry|momentum|mean_reversion|macro|technical|fundamental"],
-  "applicable_pairs": ["EUR_USD"],
+  "strategy_types": ["momentum|mean_reversion|value|quality|event_driven|macro|technical|fundamental"],
+  "applicable_tickers": ["1155.KL"],
   "time_horizon": "intraday|swing|position|multi-year",
   "data_requirements": ["..."]
 }}"""
@@ -257,15 +258,46 @@ Return JSON:
     def _upsert_document(self, slug: str, title: str, domain: str,
                          content: str, summary: str, source_url: str,
                          tags: list, status: str = "indexed") -> int:
+        # Content-hash dedup: the slug is date-prefixed, so the same article
+        # re-ingested on a different day would otherwise create a duplicate.
+        from knowledge.graph import store as graph_store
+        chash = graph_store.content_hash(title, content[:50000])
+        with db_session() as conn:
+            dup = conn.execute(
+                "SELECT id, slug FROM kb_documents "
+                "WHERE content_hash=? AND slug != ? LIMIT 1",
+                (chash, slug),
+            ).fetchone()
+        if dup:
+            logger.info(f"Duplicate content detected — reusing doc {dup['slug']} instead of {slug}")
+            with db_session() as conn:
+                conn.execute(
+                    "UPDATE kb_documents SET updated_at=datetime('now') WHERE id=?",
+                    (dup["id"],),
+                )
+            return dup["id"]
+
         with db_session() as conn:
             conn.execute("""
-                INSERT INTO kb_documents (slug, title, domain, content, summary, source_url, tags, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO kb_documents (slug, title, domain, content, summary, source_url, tags, status, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slug) DO UPDATE SET
                     summary=excluded.summary, tags=excluded.tags,
-                    updated_at=datetime('now'), status=excluded.status
-            """, (slug, title, domain, content[:50000], summary, source_url, json.dumps(tags), status))
+                    updated_at=datetime('now'), status=excluded.status,
+                    content_hash=excluded.content_hash
+            """, (slug, title, domain, content[:50000], summary, source_url,
+                  json.dumps(tags), status, chash))
             row = conn.execute("SELECT id FROM kb_documents WHERE slug=?", (slug,)).fetchone()
+
+        # Every ingested doc immediately becomes a graph note node
+        try:
+            graph_store.upsert_node(
+                "note", slug=slug, title=title, domain=domain,
+                summary=summary, tags=tags, content=content,
+                ref=("kb_documents", row["id"]),
+            )
+        except Exception as e:
+            logger.warning(f"Graph node creation failed for {slug}: {e}")
         return row["id"]
 
     def _upsert_concept(self, name: str, description: str, domain: str) -> int:
@@ -288,6 +320,7 @@ Return JSON:
         handles broader cross-document connectivity.
         """
         try:
+            from knowledge.graph import store as graph_store
             term = concept_name.lower().strip()
             with db_session() as conn:
                 related = conn.execute(
@@ -297,20 +330,14 @@ Return JSON:
                     ") LIMIT 10",
                     (doc_id, f"%{term}%", f"%{term}%", f"%{term}%"),
                 ).fetchall()
-                for rel in related:
-                    existing = conn.execute(
-                        "SELECT id FROM kb_links "
-                        "WHERE source_id=? AND target_id=? AND relation='shared_concept'",
-                        (doc_id, rel["id"]),
-                    ).fetchone()
-                    if not existing:
-                        conn.execute(
-                            "INSERT INTO kb_links (source_id, target_id, relation, weight) "
-                            "VALUES (?, ?, 'shared_concept', 1.0)",
-                            (doc_id, rel["id"]),
-                        )
-        except Exception:
-            pass  # link creation is supplementary — never fail ingest over it
+            src_node = graph_store.ensure_node_for_document(doc_id)
+            for rel in related:
+                tgt_node = graph_store.ensure_node_for_document(rel["id"])
+                if src_node and tgt_node:
+                    graph_store.add_edge(src_node, tgt_node, "shared_concept",
+                                         weight=0.4, origin="heuristic")
+        except Exception as e:
+            logger.warning(f"Concept linking failed for doc {doc_id}: {e}")
 
     def _link_by_tags(self, doc_id: int, tags: list):
         """Create doc-to-doc links for every shared tag between this doc and existing docs.
@@ -323,11 +350,15 @@ Return JSON:
         if not tags:
             return
         try:
-            with db_session() as conn:
-                for tag in tags:
-                    term = str(tag).lower().strip()
-                    if len(term) < 3:
-                        continue  # skip trivial terms
+            from knowledge.graph import store as graph_store
+            src_node = graph_store.ensure_node_for_document(doc_id)
+            if not src_node:
+                return
+            for tag in tags:
+                term = str(tag).lower().strip()
+                if len(term) < 3:
+                    continue  # skip trivial terms
+                with db_session() as conn:
                     related = conn.execute(
                         "SELECT id FROM kb_documents "
                         "WHERE id != ? AND ("
@@ -335,20 +366,13 @@ Return JSON:
                         ") LIMIT 8",
                         (doc_id, f"%{term}%", f"%{term}%", f"%{term}%"),
                     ).fetchall()
-                    for rel in related:
-                        existing = conn.execute(
-                            "SELECT id FROM kb_links "
-                            "WHERE source_id=? AND target_id=?",
-                            (doc_id, rel["id"]),
-                        ).fetchone()
-                        if not existing:
-                            conn.execute(
-                                "INSERT INTO kb_links (source_id, target_id, relation, weight) "
-                                "VALUES (?, ?, 'shared_tag', 1.0)",
-                                (doc_id, rel["id"]),
-                            )
-        except Exception:
-            pass  # link creation is supplementary — never fail ingest over it
+                for rel in related:
+                    tgt_node = graph_store.ensure_node_for_document(rel["id"])
+                    if tgt_node:
+                        graph_store.add_edge(src_node, tgt_node, "shared_tag",
+                                             weight=0.4, origin="heuristic")
+        except Exception as e:
+            logger.warning(f"Tag linking failed for doc {doc_id}: {e}")
 
     # ------------------------------------------------------------------
     # Relevance check (Layer 1 quality gate)
@@ -608,6 +632,24 @@ Return JSON:
     # ------------------------------------------------------------------
 
     def search(self, query: str, domain: str = None, limit: int = 10) -> list:
+        """GraphRAG retrieval (FTS/BM25 + optional embeddings + graph walk).
+        Keeps the legacy return shape (list of dicts with title/summary/
+        domain/slug) so Telegram /search and other callers are unchanged."""
+        try:
+            from knowledge.search.retriever import retrieve
+            results = retrieve(query, k=limit, hops=2, domain=domain)
+            return [{
+                # keep legacy id semantics: kb_documents.id for note nodes
+                "id": r["ref_id"] if r["ref_table"] == "kb_documents" else r["node_id"],
+                "slug": r["slug"], "title": r["title"],
+                "domain": r["domain"], "summary": r["summary"],
+                "tags": "", "created_at": "",
+                "score": r["score"], "node_type": r["node_type"],
+                "via": r["via"], "contradicts": r["contradicts"],
+            } for r in results]
+        except Exception as e:
+            logger.warning(f"GraphRAG retrieve failed, falling back to LIKE: {e}")
+        # Legacy LIKE fallback (pre-GraphRAG behaviour)
         terms = [t.strip() for t in query.lower().split() if len(t.strip()) > 2]
         if not terms:
             return []

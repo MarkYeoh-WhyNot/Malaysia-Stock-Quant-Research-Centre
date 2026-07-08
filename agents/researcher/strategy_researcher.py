@@ -295,26 +295,41 @@ class StrategyResearcher(BaseAgent):
     # ── Idea generation ────────────────────────────────────────────────────────
 
     def generate_ideas(self, topic: str = None, count: int = 5) -> list:
-        # ── 1. KB context — search relevant documents first ──────────────────
+        # ── 1. KB context — GraphRAG retrieval over the knowledge graph ──────
         kb_context = ""
         try:
-            from knowledge.ingestion.kb_ingester import KBIngester
-            ingester   = KBIngester()
-            query      = topic if topic else "Bursa Malaysia equity strategy alpha factor"
-            kb_results = ingester.search(query, limit=5)
-            if kb_results:
-                kb_context = "\nKNOWLEDGE BASE CONTEXT — use these research findings to ground your ideas:\n"
-                for doc in kb_results:
-                    snippet = (doc.get("summary") or "")[:300]
-                    domain  = doc.get("domain", "")
-                    kb_context += f"- [{domain}] {doc['title']}: {snippet}\n"
-                kb_context += (
-                    "\nGenerate ideas that reference specific techniques and factors from the above "
-                    "KB documents where applicable.\n"
-                )
-                self.log_daemon("INFO", f"KB context: {len(kb_results)} documents found for idea generation")
+            from knowledge.search.retriever import retrieve, assemble_context
+
+            if topic:
+                query = topic
             else:
-                self.log_daemon("INFO", "KB context: 0 documents found — generating without KB context")
+                # No topic given: target the KB's least-covered research angle
+                # instead of a fixed generic query (which just returned the
+                # most-recent docs every time).
+                query = "Bursa Malaysia equity alpha factor"
+                try:
+                    from knowledge.ingestion.diversity_engine import DiversityEngine
+                    balance = DiversityEngine().check_balance()
+                    target = balance.get("least_covered")
+                    if target:
+                        query = f"{target.replace('_', ' ')} Bursa Malaysia KLSE strategy"
+                except Exception:
+                    pass
+
+            kb_results = retrieve(query, k=6, hops=2)
+            if kb_results:
+                kb_context = "\n" + assemble_context(kb_results, max_chars=2500)
+                kb_context += (
+                    "\n\nGenerate ideas that reference specific techniques and factors "
+                    "from the above knowledge-graph context where applicable. Notes "
+                    "flagged as CONTRADICTS highlight known counter-evidence — address it.\n"
+                )
+                self.log_daemon(
+                    "INFO",
+                    f"KB graph context: {len(kb_results)} nodes for query '{query[:60]}'"
+                )
+            else:
+                self.log_daemon("INFO", "KB graph context: 0 nodes — generating without KB context")
         except Exception as e:
             self.log_daemon("WARN", f"KB context fetch failed (non-blocking): {e}")
 
