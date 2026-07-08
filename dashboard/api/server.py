@@ -19,7 +19,7 @@ from config.settings import (
 
 _PROGRESS_FILE = str(PROGRESS_FILE)
 
-app = FastAPI(title="OpenClaw Mission Control", version="2.0.0")
+app = FastAPI(title="Mark's Research Centre — Mission Control", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[DASHBOARD_ORIGIN],
@@ -1238,7 +1238,7 @@ def ai_usage(days: int = 7):
 
 @app.get("/api/system/direction")
 def system_direction():
-    """Return the OpenClaw system direction document as structured JSON,
+    """Return the system direction document as structured JSON,
     with live KB angle coverage pulled from the database."""
     with db_session() as conn:
         kb_by_domain = conn.execute(

@@ -1,4 +1,4 @@
-# Single image shared by all OpenClaw services (api, daemon, telegram,
+# Single image shared by all Mark's Research Centre services (api, daemon, telegram,
 # event-watcher) — docker-compose.yml selects the entrypoint per service via
 # `command:`. Using one image keeps the dependency set identical across
 # services and avoids the "host-mounted venv" fragility of the old compose

@@ -247,7 +247,7 @@ class MorningBriefing:
         today_spend,
     ) -> str:
         lines = [
-            f"🌅 *OpenClaw Morning Briefing* — {now_kl.strftime('%A, %d %b %Y')}",
+            f"🌅 *Mark's Research Centre — Morning Briefing* — {now_kl.strftime('%A, %d %b %Y')}",
             f"",
         ]
 
@@ -291,7 +291,7 @@ class MorningBriefing:
             lines.append(f"  Least-covered angle: `{research_angle}`")
             lines.append("")
 
-        lines.append(f"_OpenClaw v1 | {now_kl.strftime('%H:%M')} KLT_")
+        lines.append(f"_Mark's Research Centre v1 | {now_kl.strftime('%H:%M')} KLT_")
         return "\n".join(lines)
 
     def _send_telegram(self, text: str) -> bool:

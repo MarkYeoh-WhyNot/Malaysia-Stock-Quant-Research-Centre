@@ -29,7 +29,7 @@ def is_allowed(update: Update) -> bool:
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🐋 *OpenClaw — Bursa Malaysia KLSE*\n"
+        "🐋 *Mark's Research Centre — Bursa Malaysia KLSE*\n"
         "_Quantitative equity research pipeline_\n\n"
         "*Pipeline*\n"
         "/status — health report: stages, spend, errors\n"

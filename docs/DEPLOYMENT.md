@@ -1,4 +1,4 @@
-# OpenClaw — 24/7 VPS Deployment Runbook
+# Mark's Research Centre — 24/7 VPS Deployment Runbook
 
 Deploys all five services (api, daemon, telegram, event-watcher, caddy) via
 Docker Compose to a fresh VPS. No host-mounted venv, no `/opt/openclaw`

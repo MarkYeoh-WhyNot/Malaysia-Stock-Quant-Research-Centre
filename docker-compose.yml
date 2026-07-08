@@ -1,4 +1,4 @@
-# OpenClaw 24/7 stack. All services share one image (see Dockerfile) built
+# Mark's Research Centre 24/7 stack. All services share one image (see Dockerfile) built
 # from this repo — no host-mounted venv, no /opt/openclaw dependency.
 #
 # The API is deliberately NOT published on the host; it's only reachable

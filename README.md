@@ -1,4 +1,4 @@
-# OpenClaw — Bursa Malaysia Quant Research Pipeline
+# Mark's Research Centre — Bursa Malaysia Quant Research Pipeline
 
 A multi-agent research system that uses Claude to generate, adversarially review, backtest, and paper-trade quantitative equity strategies for Bursa Malaysia (FBM KLCI) — with a live dashboard, Telegram bot, and full cost tracking.
 

@@ -22,7 +22,7 @@ def send_alert(message: str) -> bool:
     try:
         resp = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={"chat_id": ALERT_TELEGRAM_CHAT_ID, "text": f"🔔 OpenClaw: {message}"},
+            json={"chat_id": ALERT_TELEGRAM_CHAT_ID, "text": f"🔔 Mark's Research Centre: {message}"},
             timeout=10,
         )
         if resp.status_code != 200:

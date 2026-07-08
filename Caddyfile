@@ -1,4 +1,4 @@
-# OpenClaw reverse proxy — terminates TLS and forwards to the api container.
+# Mark's Research Centre reverse proxy — terminates TLS and forwards to the api container.
 #
 # TLS clients don't send SNI for IP literals (RFC 6066), so a plain
 # domain-keyed site block never matches bare-IP connections and the

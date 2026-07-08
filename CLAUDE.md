@@ -1,8 +1,8 @@
-# OpenClaw — Project Briefing
+# Mark's Research Centre — Project Briefing
 
 ## Purpose
 
-OpenClaw is a Claude-powered quantitative equity research and backtesting pipeline for **Bursa Malaysia (KLSE/FBM KLCI)** equities. It automatically generates alpha ideas, screens them through quality gates, backtests them, and paper-trades survivors — all driven by Claude AI agents with Telegram and REST API interfaces.
+Mark's Research Centre is a Claude-powered quantitative equity research and backtesting pipeline for **Bursa Malaysia (KLSE/FBM KLCI)** equities. It automatically generates alpha ideas, screens them through quality gates, backtests them, and paper-trades survivors — all driven by Claude AI agents with Telegram and REST API interfaces.
 
 **Key constraints:**
 - Bursa Malaysia equities ONLY (strict guards prevent FX contamination)
@@ -480,11 +480,11 @@ search; without it everything runs FTS5-only.
 
 ---
 
-## SYSTEM DIRECTION — OPENCLAW NORTH STAR
+## SYSTEM DIRECTION — MARK'S RESEARCH CENTRE NORTH STAR
 
 ```
 ═══════════════════════════════════════════════════════
-OPENCLAW — SYSTEM DIRECTION
+MARK'S RESEARCH CENTRE — SYSTEM DIRECTION
 Bursa Malaysia Quantitative Equity Research System
 Last updated: April 2026
 ═══════════════════════════════════════════════════════
