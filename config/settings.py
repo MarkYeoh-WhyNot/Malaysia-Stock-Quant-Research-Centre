@@ -81,6 +81,7 @@ MARKET_OPEN_HOUR      = _P.MARKET_OPEN_HOUR
 MARKET_CLOSE_HOUR     = _P.MARKET_CLOSE_HOUR
 TRADING_DAYS_PER_YEAR = _P.TRADING_DAYS_PER_YEAR
 MARKET_CALENDAR       = _P.CALENDAR      # "business" | "daily"
+HAS_CORPORATE_ACTIONS = _P.HAS_CORPORATE_ACTIONS  # False on crypto — no splits/dividends
 
 # ── Market rules & transaction cost model (from profile) ─────────────────────
 # MARKET_RULES_VERSION / FEE_MODEL_VERSION are stamped onto every backtest_runs

@@ -66,6 +66,8 @@ MARKET_OPEN_HOUR      = 9
 MARKET_CLOSE_HOUR     = 17
 TRADING_DAYS_PER_YEAR = 252
 CALENDAR              = "business"   # pd.bdate_range — weekends are non-trading
+HAS_CORPORATE_ACTIONS = True         # splits/dividends exist — large unexplained
+                                     # overnight gaps may be unhandled corp actions
 
 # ── Market rules & transaction cost model ─────────────────────────────────────
 MARKET_RULES_VERSION = "2026-07-09"   # T+2 settlement, 100-share board lot, long-only

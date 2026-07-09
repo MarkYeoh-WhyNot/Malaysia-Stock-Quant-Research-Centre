@@ -55,6 +55,10 @@ MARKET_OPEN_HOUR      = 0
 MARKET_CLOSE_HOUR     = 24
 TRADING_DAYS_PER_YEAR = 365     # annualization uses √365 for daily bars
 CALENDAR              = "daily"  # pd.date_range — weekends ARE trading days
+HAS_CORPORATE_ACTIONS = False    # no splits/dividends on perps — a >25% bar is a
+                                 # real market move, NOT a data anomaly; the corp-
+                                 # action DQ penalty false-rejected volatile alts
+                                 # (SOL/USDT: 59.9/100 for 4 genuine moves)
 
 # ── Market rules & transaction cost model ─────────────────────────────────────
 MARKET_RULES_VERSION = "2026-07-09"   # 24/7 USDT-M perps, T+0, long/short, fractional units

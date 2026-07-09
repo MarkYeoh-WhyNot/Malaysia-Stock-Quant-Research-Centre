@@ -1604,14 +1604,22 @@ Return JSON only:
             compute_data_confidence, detect_corporate_action_anomalies)
         try:
             dq = compute_data_confidence(df, interval)
-            # Gap threshold is a daily-move figure; per-bar moves shrink with
-            # bar size, so scale by sqrt(bar-fraction-of-day), floored at 3%.
-            # Exactly the configured value at 1d (Bursa parity).
-            _gap = GATE_CONFIG.dq_corp_action_gap
-            _bpd = _bars_per_day(interval)
-            if _bpd > 1.0:
-                _gap = max(0.03, _gap / np.sqrt(_bpd))
-            anomalies = detect_corporate_action_anomalies(df, _gap)
+            # Corp-action gap detection only makes sense where corporate
+            # actions exist (splits/dividends → unexplained adjusted-price
+            # gaps). On crypto there are none — a >25% bar on a volatile alt
+            # is a real market move, and penalising it false-rejected whole
+            # pairs at the DQ door (SOL/USDT: 59.9/100 for 4 genuine moves).
+            from config.settings import HAS_CORPORATE_ACTIONS
+            anomalies = []
+            if HAS_CORPORATE_ACTIONS:
+                # Gap threshold is a daily-move figure; per-bar moves shrink
+                # with bar size, so scale by sqrt(bar-fraction-of-day), floored
+                # at 3%. Exactly the configured value at 1d (Bursa parity).
+                _gap = GATE_CONFIG.dq_corp_action_gap
+                _bpd = _bars_per_day(interval)
+                if _bpd > 1.0:
+                    _gap = max(0.03, _gap / np.sqrt(_bpd))
+                anomalies = detect_corporate_action_anomalies(df, _gap)
         except Exception as _dq_exc:
             self.log_daemon("WARN", f"[{idea_id}] Gate DQ scoring failed: {_dq_exc}")
             return {"passed": True, "confidence_score": 0.0, "notes": "dq error (fail-open)"}
@@ -2080,7 +2088,16 @@ Return JSON only:
         sharpe_threshold = self._SHARPE_THRESHOLDS.get(hp_class, GATE_CONFIG.stage3_min_sharpe)
         max_dd_threshold = GATE_CONFIG.stage3_max_drawdown
         min_trades       = self._MIN_TRADES.get(hp_class, 30)
-        actual_trades    = test_r.get("total_trades", 0)
+        # Trade count is a statistical-significance requirement on the WHOLE
+        # edge estimate, so it is counted over the full backtest window
+        # (train+val+test, ~5yr), not the test slice alone. The old test-slice
+        # count (~252 bars) made MEDIUM_TERM structurally unpassable: 10-60 day
+        # holds cap out at 25 trades in 252 bars, below the 30-trade minimum —
+        # the gate rejected the very class it was defined for, regardless of
+        # edge (calibration finding, 2026-07-10).
+        actual_trades = (train_r.get("total_trades", 0)
+                         + val_r.get("total_trades", 0)
+                         + test_r.get("total_trades", 0))
 
         # Fundamental-screen strategies are quarterly-rebalanced buy-and-hold positions.
         # Apply relaxed thresholds: a Sharpe of 0.40 with positive OOS confirms a working
