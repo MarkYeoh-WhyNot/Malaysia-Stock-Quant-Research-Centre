@@ -482,7 +482,7 @@ svg text{font-family:var(--font-mono)}
 <div id="page-arsenal" class="page">
   <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
     <h2 style="margin-bottom:0">Quantitative Technique Arsenal</h2>
-    <span style="font-size:12px;color:var(--muted)">When to use which model on Bursa Malaysia</span>
+    <span style="font-size:12px;color:var(--muted)" id="arsenal-subtitle">When to use which quantitative model</span>
   </div>
 
   <!-- Summary stats -->
@@ -571,7 +571,7 @@ svg text{font-family:var(--font-mono)}
   <div class="dir-section">
     <div class="dir-card" id="dir-card-constraints">
       <div class="dir-card-head" onclick="dirToggle('constraints')">
-        <span class="dir-card-title"><span class="ico">🔒</span>Bursa Malaysia Constraints — Non-Negotiable</span>
+        <span class="dir-card-title"><span class="ico">🔒</span>Market Constraints — Non-Negotiable</span>
         <span class="dir-card-chevron">▾</span>
       </div>
       <div class="dir-card-body">
@@ -1208,7 +1208,7 @@ svg text{font-family:var(--font-mono)}
         <div class="panel" style="margin-top:0">
           <div class="panel-head"><span class="panel-title">Closed Paper Trades</span></div>
           <div class="tbl-wrap"><table>
-            <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Units</th><th>PnL (MYR)</th><th>Opened</th><th>Closed</th></tr></thead>
+            <thead><tr><th>ID</th><th>Idea</th><th>Stock</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Units</th><th id="pt-pnl-hdr">PnL</th><th>Opened</th><th>Closed</th></tr></thead>
             <tbody id="pt-closed-table"></tbody>
           </table></div>
         </div>
@@ -1249,6 +1249,7 @@ svg text{font-family:var(--font-mono)}
 
 <!-- ── KB Explorer ─────────────────────────────────────────────────────────── -->
 <div id="page-kb" class="page">
+  <div id="kb-market-note" style="display:none;font-size:12px;color:var(--muted2);background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-bottom:12px"></div>
   <div class="stat-grid" id="kb-stats-cards"></div>
 
   <div class="tabs">
@@ -1583,6 +1584,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const lp = document.getElementById('nav-live-prices');
     if (lp) lp.style.display = '';
   }
+  // Per-market label touch-ups (same index.html serves both markets).
+  const kbNote = document.getElementById('kb-market-note');
+  if (kbNote) {
+    kbNote.textContent = IS_CRYPTO
+      ? 'Crypto knowledge base — independent from the Bursa KB. Documents, angles and alpha seeds here are crypto-only.'
+      : 'Bursa knowledge base — independent from the Crypto KB.';
+    kbNote.style.display = '';
+  }
+  const ptHdr = document.getElementById('pt-pnl-hdr');
+  if (ptHdr) ptHdr.textContent = IS_CRYPTO ? 'PnL (USDT)' : 'PnL (MYR)';
+  const arsSub = document.getElementById('arsenal-subtitle');
+  if (arsSub) arsSub.textContent = IS_CRYPTO
+    ? 'When to use which model in crypto markets'
+    : 'When to use which model on Bursa Malaysia';
 });
 let _allMCLogs = [];
 let _currentPage = 'mc';
@@ -3948,7 +3963,7 @@ async function loadDirection() {
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Gate 0 Feasibility</div>
       <div class="dir-threshold-value">&ge; ${g0.feasibility||0.60}</div>
-      <div class="dir-threshold-note">Bursa implementability</div>
+      <div class="dir-threshold-note">Implementability</div>
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Stage 2 Sharpe</div>
@@ -3973,7 +3988,7 @@ async function loadDirection() {
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Min Stocks</div>
       <div class="dir-threshold-value">${gt.cross_section_stocks||15}+</div>
-      <div class="dir-threshold-note">Positive IC on N of 30 KLCI</div>
+      <div class="dir-threshold-note">Positive IC across the universe</div>
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Stage 4A Sharpe</div>
