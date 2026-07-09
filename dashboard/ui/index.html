@@ -3927,7 +3927,7 @@ async function loadDirection() {
   }).join('');
 
   // Constraints
-  document.getElementById('dir-constraints-list').innerHTML = (d.bursa_constraints||[]).map(c =>
+  document.getElementById('dir-constraints-list').innerHTML = (d.market_constraints||d.bursa_constraints||[]).map(c =>
     `<li>${esc(c)}</li>`
   ).join('');
 

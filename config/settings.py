@@ -131,6 +131,7 @@ JUDGE_REJECT_RULE  = _P.JUDGE_REJECT_RULE
 INSTRUMENT_TYPE  = _P.INSTRUMENT_TYPE
 CONCENTRATION_SECTOR = _P.CONCENTRATION_SECTOR
 ENABLED_JOBS     = _P.ENABLED_JOBS        # None = all jobs
+DIRECTION_DOC    = _P.DIRECTION_DOC        # System Direction dashboard content
 
 # ── Research content (KB hunt / alpha seeds, from profile) ───────────────────
 # Fixes the bug where DiversityEngine/ResearchHunter/KBIngester/AlphaSeedGenerator

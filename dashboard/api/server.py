@@ -1359,16 +1359,14 @@ def system_direction():
 
     domain_counts = {r["domain"]: r["n"] for r in kb_by_domain}
 
+    # Research angles are derived from the active market's RESEARCH_ANGLES so the
+    # labels/descriptions are market-native (crypto vs Bursa) rather than hardcoded.
+    from config import settings as _settings
     angles = [
-        {"id": "price_action",         "label": "Price Action",         "description": "Technical signals, momentum, mean reversion"},
-        {"id": "fundamental",           "label": "Fundamental",          "description": "PE, ROE, earnings, valuation, dividends"},
-        {"id": "event_driven",          "label": "Event Driven",         "description": "PEAD, dividend capture, announcements"},
-        {"id": "institutional",         "label": "Institutional",        "description": "EPF, KWAP, GLC, foreign fund flows"},
-        {"id": "macro",                 "label": "Macro",                "description": "OPR, BNM, GDP, inflation, MYR, global macro"},
-        {"id": "commodity",             "label": "Commodity",            "description": "CPO, palm oil, crude oil, aluminium, tin"},
-        {"id": "sector_rotation",       "label": "Sector Rotation",      "description": "Sector cycles, thematic investing"},
-        {"id": "behavioural",           "label": "Behavioural",          "description": "Retail sentiment, overreaction, anomalies"},
-        {"id": "statistical_modelling", "label": "Statistical Modelling","description": "GARCH, HMM, factor models, ML"},
+        {"id": _id,
+         "label": _id.replace("_", " ").title(),
+         "description": _meta.get("description", "")}
+        for _id, _meta in _settings.RESEARCH_ANGLES.items()
     ]
     for a in angles:
         a["doc_count"] = domain_counts.get(a["id"], 0)
@@ -1394,16 +1392,6 @@ def system_direction():
         "LONG_TERM":   {"min": 15,  "note": ">60 days"},
     }
 
-    transaction_costs = {
-        "commission_pct": 0.08,
-        "stamp_duty_pct": 0.10,
-        "stamp_duty_cap_myr": 1000,
-        "clearing_pct": 0.03,
-        "clearing_cap_myr": 1000,
-        "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.25, "SMALL_CAP": 0.75},
-        "min_liquidity_myr": 500000,
-    }
-
     known_issues = [
         {"status": "fixed",   "issue": "load_dotenv() not called — all API keys were empty"},
         {"status": "fixed",   "issue": "Backtest infinite loop — status not set to processing"},
@@ -1422,39 +1410,23 @@ def system_direction():
         {"status": "pending", "issue": "D3 knowledge graph (when KB hits 200+ docs)"},
     ]
 
-    bursa_constraints = [
-        "Long-only strategies only (short-selling heavily restricted)",
-        "T+2 settlement (effective 2019-04-29) — affects short-term strategy feasibility",
-        "Minimum lot size: 100 shares (affects small-cap liquidity)",
-        "Stamp duty: 0.10% remitted buy-side, capped RM1,000 (real cost)",
-        "Brokerage: ~0.08% per side minimum",
-        "Trading hours: 9:00–12:30 and 14:30–17:00 MYT only",
-        "Circuit breakers: halt if stock moves >30% in a day",
-        "EPF dominates: ~15% of market cap, rebalancing is predictable",
-        "OPR sensitivity: banking stocks move with BNM rate decisions",
-        "CPO correlation: plantation stocks follow palm oil futures",
-    ]
-
     angles_ready = sum(1 for a in angles if a["ready"])
+    _doc = _settings.DIRECTION_DOC
 
     return {
-        "last_updated": "April 2026",
-        "core_purpose": "Find genuine, statistically robust alpha factors in Bursa Malaysia equity markets. Prove them cross-sectionally. Deploy them safely with human oversight at every capital decision point.",
-        "design_philosophy": "Quality over quantity. 10 robust, well-validated strategies beats 300 hastily generated noise ideas. Every component must earn its place. The system should get smarter every day, not just bigger.",
-        "success_metrics": [
-            {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ stocks"},
-            {"rank": 2, "metric": "First idea completes 30-day paper trade with Sharpe >= 1.0"},
-            {"rank": 3, "metric": "First live strategy deployed with positive alpha after costs"},
-            {"rank": 4, "metric": "KB reaches 50 quality docs across all 9 research angles"},
-            {"rank": 5, "metric": "Daily budget stays under $10 while pipeline processes meaningful ideas"},
-        ],
+        "market": _settings.MARKET,
+        "market_name": _settings.MARKET_NAME,
+        "last_updated": _doc["last_updated"],
+        "core_purpose": _doc["core_purpose"],
+        "design_philosophy": _doc["design_philosophy"],
+        "success_metrics": _doc["success_metrics"],
         "research_angles": angles,
         "angles_ready_count": angles_ready,
         "angles_total": len(angles),
         "gate_thresholds": gate_thresholds,
         "min_trades": min_trades,
-        "transaction_costs": transaction_costs,
-        "bursa_constraints": bursa_constraints,
+        "transaction_costs": _doc["transaction_costs"],
+        "market_constraints": _doc["constraints"],
         "known_issues": known_issues,
         "system_state": {
             "total_kb_docs": total_kb,
