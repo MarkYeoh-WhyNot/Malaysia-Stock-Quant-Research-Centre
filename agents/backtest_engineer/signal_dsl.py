@@ -132,6 +132,20 @@ def _leaf_cpo_change(df, node):
     return df["cpo_close"].pct_change(int(node["period"])) > float(node["min_pct"])
 
 
+def _leaf_zscore(df, node):
+    """Rolling z-score of close: z = (close - mean(period)) / std(period).
+    'below' fires when z < value (e.g. -2 → classic mean-reversion long);
+    'above' fires when z > value (e.g. +2 → overextension, short leg)."""
+    close = df["close"]
+    period = int(node["period"])
+    mean = close.rolling(period).mean()
+    std = close.rolling(period).std().replace(0, np.nan)
+    z = (close - mean) / std
+    if "below" in node:
+        return z < float(node["below"])
+    return z > float(node["above"])
+
+
 LEAVES = {
     "rsi": {
         "compute": _leaf_rsi,
@@ -200,6 +214,14 @@ LEAVES = {
         "compute": _leaf_cpo_change,
         "columns": ["cpo_close"],
         "params": {"period": ("int", 1, 30), "min_pct": ("float", -0.2, 0.2)},
+    },
+    "zscore": {
+        # Rolling z-score of price ("standard deviations from the N-bar mean").
+        # Mean-reversion classic: entry z < -T, short_entry z > +T.
+        "compute": _leaf_zscore,
+        "columns": ["close"],
+        "params": {"period": ("int", 10, 200)},
+        "one_of": [("below", ("float", -4.0, 0.0)), ("above", ("float", 0.0, 4.0))],
     },
 }
 

@@ -12,10 +12,30 @@ from config.settings import (
     BURSA_BOARD_LOT, PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT,
     bursa_trade_cost, bursa_slippage_tier,
     ALLOW_SHORT, FUNDING_INTERVAL_HOURS, AVG_FUNDING_RATE_PER_INTERVAL, funding_cost,
+    bars_per_day,
 )
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
+
+# Minutes per sub-daily interval, for equity-slot alignment.
+_INTERVAL_MINUTES = {"15m": 15, "1h": 60, "4h": 240}
+
+
+def equity_slot(interval: str = "1d", now: datetime | None = None) -> str:
+    """The paper_equity `date` key for a mark at `now` on this bar interval.
+
+    Daily/weekly ideas keep the historical plain-date key (YYYY-MM-DD —
+    byte-identical rows, Bursa parity). Sub-daily ideas get an interval-aligned
+    datetime slot (YYYY-MM-DDTHH:MM) so UNIQUE(idea_id, date) dedupes one mark
+    per BAR instead of one per day, with no schema rewrite.
+    """
+    now = now or datetime.utcnow()
+    mins = _INTERVAL_MINUTES.get(interval)
+    if mins is None:
+        return now.strftime("%Y-%m-%d")
+    floored = (now.hour * 60 + now.minute) // mins * mins
+    return f"{now.strftime('%Y-%m-%d')}T{floored // 60:02d}:{floored % 60:02d}"
 
 
 class PortfolioExecutor(BaseAgent):
@@ -31,9 +51,9 @@ class PortfolioExecutor(BaseAgent):
     # Market data helpers
     # ------------------------------------------------------------------
 
-    def _latest_bar(self, ticker: str) -> dict | None:
-        """Last completed daily bar from the parquet cache: close, date, ADV value."""
-        df = self._data_engineer.fetch_prices(ticker, days=90, use_cache=True)
+    def _latest_bar(self, ticker: str, interval: str = "1d") -> dict | None:
+        """Last completed bar from the parquet cache: close, date, ADV value."""
+        df = self._data_engineer.fetch_prices(ticker, interval=interval, days=90, use_cache=True)
         if df is None or df.empty or "close" not in df:
             return None
         close = float(df["close"].iloc[-1])
@@ -85,15 +105,17 @@ class PortfolioExecutor(BaseAgent):
                 cash += (r["exit_price"] or 0) * (r["units"] or 0) - r["exit_cost"]
         return cash
 
-    def _accrue_funding(self, trade_id: int, units: float, price: float) -> None:
-        """Add one day's funding to a trade's running funding_paid (WS3, crypto
-        only — a no-op call site elsewhere since FUNDING_INTERVAL_HOURS is None
-        on Bursa). Daily cadence (this runs once/day per idea via daily_update),
-        scaled by however many funding settlements happen in a day."""
+    def _accrue_funding(self, trade_id: int, units: float, price: float,
+                        hours: float = 24.0) -> None:
+        """Accrue `hours` worth of funding to a trade's running funding_paid
+        (WS3, crypto only — a no-op call site elsewhere since
+        FUNDING_INTERVAL_HOURS is None on Bursa). Daily ideas keep the
+        historical fixed 24h/cycle; sub-daily ideas pass their elapsed time so
+        marking every bar doesn't multiply the funding drag."""
         position = 1.0 if units > 0 else -1.0
         notional = abs(units) * price
-        settlements_per_day = 24.0 / FUNDING_INTERVAL_HOURS
-        day_funding = funding_cost(position, AVG_FUNDING_RATE_PER_INTERVAL, notional) * settlements_per_day
+        settlements = hours / FUNDING_INTERVAL_HOURS
+        day_funding = funding_cost(position, AVG_FUNDING_RATE_PER_INTERVAL, notional) * settlements
         with db_session() as conn:
             conn.execute(
                 "UPDATE paper_trades SET funding_paid = COALESCE(funding_paid,0) + ? WHERE id=?",
@@ -244,34 +266,41 @@ class PortfolioExecutor(BaseAgent):
     # Daily mark-to-market and signal-driven position management
     # ------------------------------------------------------------------
 
-    def mark_to_market(self, idea_id: int) -> dict:
-        """Record today's NAV (cash + open position at latest close) into paper_equity."""
+    def mark_to_market(self, idea_id: int, interval: str = "1d") -> dict:
+        """Record the current slot's NAV (cash + open position at latest close)
+        into paper_equity — one row per calendar day for daily/weekly ideas
+        (historical behavior), one per bar for sub-daily ideas."""
         open_trade = self._open_trade(idea_id)
         cash = self._idea_cash(idea_id)
         units, mark_price = 0.0, None
         nav = cash
         if open_trade:
-            bar = self._latest_bar(open_trade["pair"])
+            bar = self._latest_bar(open_trade["pair"], interval)
             if not bar:
                 return {"error": f"No price data for {open_trade['pair']}"}
             units = open_trade["units"]
             mark_price = bar["close"]
             nav = cash + units * mark_price
 
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        slot = equity_slot(interval)
         with db_session() as conn:
             conn.execute("""
-                INSERT INTO paper_equity (idea_id, date, nav, cash, position_units, mark_price)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO paper_equity (idea_id, date, nav, cash, position_units, mark_price, marked_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(idea_id, date) DO UPDATE SET
                     nav=excluded.nav, cash=excluded.cash,
-                    position_units=excluded.position_units, mark_price=excluded.mark_price
-            """, (idea_id, today, round(nav, 2), round(cash, 2), units, mark_price))
-        return {"idea_id": idea_id, "date": today, "nav": round(nav, 2),
+                    position_units=excluded.position_units, mark_price=excluded.mark_price,
+                    marked_at=excluded.marked_at
+            """, (idea_id, slot, round(nav, 2), round(cash, 2), units, mark_price,
+                  datetime.utcnow().isoformat()))
+        return {"idea_id": idea_id, "date": slot, "nav": round(nav, 2),
                 "position_units": units, "mark_price": mark_price}
 
-    async def daily_update(self, idea_id: int, ticker: str, params: dict) -> dict:
-        """Run once per trading day per stage-4a idea.
+    async def daily_update(self, idea_id: int, ticker: str, params: dict,
+                           interval: str = "1d") -> dict:
+        """Run once per BAR per stage-4a idea (once per trading day for
+        daily/weekly ideas — historical behavior; every 15m/1h/4h bar for
+        sub-daily crypto ideas).
 
         Recomputes the strategy signal from the stored backtest params on fresh
         data, enters/exits accordingly, then marks the idea's NAV to market.
@@ -285,7 +314,8 @@ class PortfolioExecutor(BaseAgent):
         """
         from agents.backtest_engineer.backtest_engineer import BacktestEngineer
 
-        df = self._data_engineer.fetch_prices(ticker, days=365, use_cache=True)
+        df = self._data_engineer.fetch_prices(ticker, interval=interval, days=365,
+                                              use_cache=True)
         if df is None or df.empty:
             return {"error": f"No price data for {ticker}"}
 
@@ -312,9 +342,13 @@ class PortfolioExecutor(BaseAgent):
         # care how recently the position opened).
         still_open = self._open_trade(idea_id)
         if still_open and FUNDING_INTERVAL_HOURS:
-            self._accrue_funding(still_open["id"], still_open["units"], still_open["entry_price"])
+            # Daily ideas keep the historical fixed 24h accrual per cycle;
+            # sub-daily ideas accrue one bar's worth per mark.
+            hours = 24.0 if bars_per_day(interval) <= 1.0 else 24.0 / bars_per_day(interval)
+            self._accrue_funding(still_open["id"], still_open["units"],
+                                 still_open["entry_price"], hours=hours)
 
-        mtm = self.mark_to_market(idea_id)
+        mtm = self.mark_to_market(idea_id, interval)
         return {"idea_id": idea_id, "ticker": ticker, "signal": current_signal,
                 "action": action, "nav": mtm.get("nav")}
 
@@ -338,9 +372,21 @@ class PortfolioExecutor(BaseAgent):
         last = datetime.fromisoformat(series[-1]["date"])
         total_days = (last - first).days
 
+        # Per-mark returns: one mark/day for daily ideas (annualize by trading
+        # days — historical behavior), one mark/bar for sub-daily ideas
+        # (annualize by that interval's bars/year).
+        with db_session() as conn:
+            _tf_row = conn.execute(
+                "SELECT timeframe FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+        _tf = (_tf_row["timeframe"] if _tf_row else None) or "1d"
+        if bars_per_day(_tf) > 1.0:
+            ann_factor = TRADING_DAYS_PER_YEAR * bars_per_day(_tf)
+        else:
+            ann_factor = TRADING_DAYS_PER_YEAR
+
         daily_returns = np.diff(navs) / navs[:-1]
         if len(daily_returns) > 1 and np.std(daily_returns) > 0:
-            sharpe = (np.mean(daily_returns) / np.std(daily_returns)) * np.sqrt(TRADING_DAYS_PER_YEAR)
+            sharpe = (np.mean(daily_returns) / np.std(daily_returns)) * np.sqrt(ann_factor)
         else:
             sharpe = 0.0
 

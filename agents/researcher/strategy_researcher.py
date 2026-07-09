@@ -188,6 +188,19 @@ most stocks; Yahoo Finance .KL data has quality issues (dividend adjustments, sp
 fundamentals). Score with deep scepticism and give low scores unless the edge is compelling."""
 
 
+# Timeframe rule for generation prompts — Bursa renders byte-identical to the
+# historical "MUST be 1d" wording; crypto lists the profile's allowed set.
+from config.settings import ALLOWED_TIMEFRAMES as _ALLOWED_TFS
+if MARKET_MODE == "bursa":
+    _TIMEFRAME_RULE = '"timeframe" MUST be "1d" (daily bars — KLSE primary timeframe).'
+    _TIMEFRAME_JSON = '"1d"'
+else:
+    _TIMEFRAME_RULE = (f'"timeframe" MUST be one of {"/".join(_ALLOWED_TFS)} — default "1d"; '
+                       'use 15m/1h/4h ONLY when the thesis is explicitly about fast '
+                       'mean-reversion or short-horizon effects.')
+    _TIMEFRAME_JSON = '"1d (or 15m/1h/4h/1wk when the thesis needs it)"'
+
+
 # ── Crypto mode: swap the generation prompts, leave Bursa's byte-identical ────
 # The Bursa SYSTEM/GATE0_SYSTEM above are this pipeline's most battle-tested
 # prompts — they are never edited for dual-market support. In crypto mode the
@@ -196,7 +209,7 @@ if MARKET_MODE != "bursa":
     SYSTEM = f"""YOU ARE A CRYPTO PERPETUALS MARKET SPECIALIST (BINANCE USDT-M).
 Every idea you generate MUST:
 1. Trade perpetual futures quoted in USDT on the exchange (e.g. BTC/USDT)
-2. Use ONLY signals derivable from daily OHLCV price and volume data (plus the live
+2. Use ONLY signals derivable from OHLCV price and volume bars, 15m to weekly (plus the live
    funding-rate/open-interest event snapshots this system already monitors — NOT a
    historical funding/OI time series, which is not backtestable here)
 3. Be LONG OR SHORT (this system trades both directions on perps, up to the configured
@@ -210,7 +223,7 @@ NEVER generate ideas involving:
   instrument's long/short state, not a basket spread)
 - On-chain data, a HISTORICAL funding-rate/open-interest time series, order books, or
   whale-wallet tracking (NOT available for backtesting in this system)
-- Intraday execution, scalping, or HFT — daily bars only
+- Tick-level execution, scalping, or HFT — bars from 15m up to weekly only
 - Machine learning models requiring training infrastructure
 - News/social sentiment feeds
 - Leverage above the configured cap
@@ -222,7 +235,7 @@ TRADABLE UNIVERSE ({{n}} liquid USDT perpetuals):
 
 WHAT A GOOD CRYPTO PERP STRATEGY LOOKS LIKE:
 - Trades a specific pair (e.g. BTC/USDT) or a small basket from the universe, long or short
-- Entry from measurable daily-bar conditions (MA crossover, RSI level, breakout,
+- Entry from measurable bar-based conditions (MA crossover, RSI level, breakout,
   volume surge, relative strength vs BTC) — a short thesis needs the same rigor as a long
 - Exit via price target, stop-loss %, time stop, or reverse signal
 - Holding period of days to months (24/7 market, but signals are daily)
@@ -230,7 +243,7 @@ WHAT A GOOD CRYPTO PERP STRATEGY LOOKS LIKE:
 - States how the edge differs from simple BTC long/short exposure, and — if leveraged —
   states the leverage and the resulting liquidation distance
 
-Every factor_formula MUST be computable from daily OHLCV alone.""".replace(
+Every factor_formula MUST be computable from OHLCV bars (15m to weekly) alone.""".replace(
         "{n}", str(len(KLCI_STOCKS))).replace("{universe}", _UNIVERSE_FULL)
 
     GATE0_SYSTEM = f"""You are a skeptical quantitative researcher at a crypto fund whose job
@@ -487,7 +500,7 @@ HARD RULES — VIOLATIONS WILL CAUSE THE ENTIRE RESPONSE TO BE DISCARDED:
    DO NOT use currency pair notation (EUR_USD, USD_JPY, etc.) anywhere.
 2. The "company" field MUST be the actual company name (e.g. "Maybank", "Tenaga Nasional").
 3. The "sector" field MUST be a Bursa Malaysia sector name (Banking, Plantations, etc.).
-4. "timeframe" MUST be "1d" (daily bars — KLSE primary timeframe).
+4. {_TIMEFRAME_RULE}
 5. "holding_period" must express weeks or months, NOT pips or ticks.
 6. "factor_formula" must describe a STOCK price/fundamental signal, NOT an FX rate signal.
 
@@ -549,7 +562,7 @@ Return a valid JSON array of exactly {count} objects. Each object:
   "ticker":         "NNNN.KL  — a valid Bursa .KL symbol, NOT a currency pair",
   "company":        "Full company name",
   "sector":         "Bursa sector (Banking / Plantations / Utilities / etc.)",
-  "timeframe":      "1d",
+  "timeframe":      {_TIMEFRAME_JSON},
   "factor_formula": "Precise signal construction INCLUDING entry AND exit rules. e.g. 'Enter long when 20-day SMA crosses above 50-day SMA and RSI(14) < 65. Exit when death cross (20d below 50d) or -10% stop-loss.'",
   "data_sources":   ["Yahoo Finance daily OHLCV", "Bursa quarterly earnings releases"],
   "strategy_type":  "momentum | value | quality | mean_reversion | event_driven | sector_rotation | technical",
@@ -739,8 +752,10 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
         if not any(kw in blob for kw in UNAVAILABLE_DATA_KEYWORDS):
             score += 0.2
 
-        # +0.15: holding period realistic (daily-bar system; settlement per market)
-        intraday_keywords = ["intraday", "scalp", "1 minute", "5 minute", "hourly", "hft"]
+        # +0.15: holding period realistic (dockable granularities per market
+        # profile — Bursa docks all sub-daily; crypto only sub-15m/tick/HFT)
+        from config.settings import FEASIBILITY_DOCK_KEYWORDS
+        intraday_keywords = FEASIBILITY_DOCK_KEYWORDS
         short_hold_keywords = ["1 day", "2 day", "3 day", "t+1", "t+2"]
         if any(kw in blob for kw in intraday_keywords):
             score -= 0.3

@@ -172,7 +172,8 @@ class ResearchDaemon:
         # ~40 stocks sequentially) can run long enough on their own to blow
         # past the healthcheck's 5-minute staleness window otherwise.
         steps = (
-            self._process_gate0, self._process_stage1, self._process_stage2,
+            self._process_gate0, self._process_stage1, self._process_optimizer_queue,
+            self._process_stage2,
             self._process_red_blue, self._process_stage3, self._process_paper_trading,
             self._daily_knowledge_hunt, self._process_alpha_seeds,
             self._process_morning_briefing, self._process_klse_refresh,
@@ -231,6 +232,105 @@ class ResearchDaemon:
                 await asyncio.sleep(2)
             except Exception as e:
                 logger.error(f"[Stage1] Error {row['id']}: {e}")
+
+    # ── Parameter-sweep optimizer queue ──────────────────────────────────────
+
+    async def _process_optimizer_queue(self):
+        """Run at most ONE queued parameter sweep per cycle (a sweep is CPU
+        minutes — single-concurrency keeps the 60s loop responsive). On
+        completion: persist summary, promote the winner's timeframe/instrument
+        onto the idea, and release the idea to stage2 so the normal gated
+        backtest runs — with the sweep's trial count raising its
+        deflated-Sharpe hurdle."""
+        import json as _json
+
+        with db_session() as conn:
+            job = conn.execute(
+                "SELECT id, idea_id, seed, n_configs FROM optimizer_runs "
+                "WHERE status='queued' ORDER BY id LIMIT 1"
+            ).fetchone()
+        if not job:
+            return
+
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE optimizer_runs SET status='running', "
+                "started_at=datetime('now') WHERE id=?", (job["id"],))
+        logger.info(f"[Optimizer] sweep starting for idea [{job['idea_id']}] "
+                    f"(seed={job['seed']}, n={job['n_configs']})")
+        try:
+            from agents.backtest_engineer.optimizer import run_sweep
+            result = await asyncio.to_thread(
+                run_sweep, job["idea_id"],
+                seed=job["seed"] or 42, n_configs=job["n_configs"] or 300)
+        except Exception as e:
+            result = {"error": str(e)}
+
+        if result.get("error"):
+            with db_session() as conn:
+                conn.execute(
+                    "UPDATE optimizer_runs SET status='failed', error=?, "
+                    "finished_at=datetime('now') WHERE id=?",
+                    (str(result["error"])[:500], job["id"]))
+                conn.execute(
+                    "UPDATE alpha_ideas SET status='rejected', rejection_reason=?, "
+                    "updated_at=datetime('now') WHERE id=? AND status='optimizing'",
+                    (f"optimizer failed: {str(result['error'])[:200]}", job["idea_id"]))
+            logger.warning(f"[Optimizer] sweep FAILED for [{job['idea_id']}]: {result['error']}")
+            return
+
+        winner = result.get("winner")
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE optimizer_runs SET status='done', finished_at=datetime('now'), "
+                "n_configs=?, summary_json=?, winner_json=? WHERE id=?",
+                (result["n_configs"],
+                 _json.dumps({k: result[k] for k in
+                              ("n_evaluated", "n_eligible", "top", "seed")}),
+                 _json.dumps(winner) if winner else None,
+                 job["id"]))
+            if winner:
+                # Promote winner config; release to the normal gated pipeline.
+                conn.execute(
+                    "UPDATE alpha_ideas SET timeframe=?, ticker=?, stage='stage2', "
+                    "status='pending', updated_at=datetime('now') WHERE id=?",
+                    (winner["timeframe"], winner["instrument"], job["idea_id"]))
+            else:
+                conn.execute(
+                    "UPDATE alpha_ideas SET status='rejected', rejection_reason=?, "
+                    "updated_at=datetime('now') WHERE id=?",
+                    (f"optimizer: no configuration survived selection "
+                     f"({result['n_eligible']}/{result['n_evaluated']} eligible of "
+                     f"{result['n_configs']} trials) — correct outcome, not a failure",
+                     job["idea_id"]))
+
+        # Telegram: top-3 summary
+        try:
+            from scripts.alerts import send_alert
+            if winner:
+                top3 = result["top"][:3]
+                lines = [f"  {i+1}. {t['instrument']} {t['timeframe']} "
+                         f"val Sharpe {t['val_sharpe']:.2f} ({t['val_trades']} trades)"
+                         for i, t in enumerate(top3)]
+                send_alert(
+                    f"Optimizer done — idea [{job['idea_id']}]: winner "
+                    f"{winner['instrument']} {winner['timeframe']} "
+                    f"(val {winner['val_sharpe']:.2f}, one-shot test "
+                    f"{winner.get('test_sharpe', float('nan')):.2f}) from "
+                    f"{result['n_configs']} trials.\n" + "\n".join(lines) +
+                    "\nGated backtest queued with the raised deflated hurdle.",
+                    level="INFO")
+            else:
+                send_alert(
+                    f"Optimizer done — idea [{job['idea_id']}]: NO configuration "
+                    f"survived selection across {result['n_configs']} trials. "
+                    f"Idea rejected (honest outcome).", level="INFO")
+        except Exception as e:
+            logger.warning(f"[Optimizer] Telegram notify failed: {e}")
+
+        logger.info(f"[Optimizer] sweep done for [{job['idea_id']}]: "
+                    f"winner={'yes' if winner else 'no'} "
+                    f"({result['n_eligible']}/{result['n_configs']} eligible)")
 
     # ── Stage 2 — backtest (Gates 2+3) ───────────────────────────────────────
 
@@ -493,20 +593,25 @@ class ResearchDaemon:
         at the latest cached KLSE close via PortfolioExecutor.daily_update().
         """
         import json as _json
+        from agents.portfolio_executor.portfolio_executor import equity_slot
 
         with db_session() as conn:
             ideas = conn.execute(
-                "SELECT id, title, ticker FROM alpha_ideas "
+                "SELECT id, title, ticker, timeframe FROM alpha_ideas "
                 "WHERE stage='stage4a' AND status='active' LIMIT 5"
             ).fetchall()
 
-        today = datetime.utcnow().strftime("%Y-%m-%d")
         for row in ideas:
             try:
+                # One mark per equity slot: calendar day for daily/weekly ideas
+                # (historical once-per-day cadence — Bursa identical), the
+                # current bar slot for sub-daily crypto ideas (15m/1h/4h).
+                interval = row["timeframe"] or "1d"
+                slot = equity_slot(interval)
                 with db_session() as conn:
                     done_today = conn.execute(
                         "SELECT 1 FROM paper_equity WHERE idea_id=? AND date=?",
-                        (row["id"], today),
+                        (row["id"], slot),
                     ).fetchone()
                 if done_today:
                     continue
@@ -525,7 +630,8 @@ class ResearchDaemon:
                 params = _json.loads(bt["params"])
                 ticker = row["ticker"] or bt["pair"]
 
-                update = await self.portfolio_executor.daily_update(row["id"], ticker, params)
+                update = await self.portfolio_executor.daily_update(
+                    row["id"], ticker, params, interval=interval)
                 logger.info(
                     f"[Stage4a] [{row['id']}] {ticker} signal={update.get('signal')} "
                     f"action={update.get('action')} nav={update.get('nav')}"

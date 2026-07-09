@@ -135,6 +135,23 @@ BENCHMARK_SYMBOL = _P.BENCHMARK_SYMBOL
 BLOCKED_MODES    = _P.BLOCKED_MODES
 UNAVAILABLE_DATA_KEYWORDS = _P.UNAVAILABLE_DATA_KEYWORDS
 EXOTIC_KEYWORDS  = _P.EXOTIC_KEYWORDS
+FEASIBILITY_DOCK_KEYWORDS = _P.FEASIBILITY_DOCK_KEYWORDS
+
+# ── Timeframes (profile-driven; Bursa values reproduce daily/weekly-only) ────
+ALLOWED_TIMEFRAMES = _P.ALLOWED_TIMEFRAMES
+FETCH_DAYS_BY_INTERVAL = _P.FETCH_DAYS_BY_INTERVAL
+CACHE_STALENESS_HOURS_BY_INTERVAL = _P.CACHE_STALENESS_HOURS_BY_INTERVAL
+
+
+def bars_per_day(interval: str) -> float:
+    """Bars per calendar/trading day for the active market's data backend.
+    Exactly 1.0 for '1d', so every formula scaled by this is neutral on the
+    daily path (Bursa parity)."""
+    if DATA_BACKEND == "binance":
+        from data.binance.client import BARS_PER_YEAR
+    else:
+        from data.yahoo.client import BARS_PER_YEAR
+    return BARS_PER_YEAR.get(interval, BARS_PER_YEAR["1d"]) / BARS_PER_YEAR["1d"]
 MARKET_BRIEF     = _P.MARKET_BRIEF
 RED_TEAM_ATTACKS = _P.RED_TEAM_ATTACKS
 BLUE_DEFENSE_NOTES = _P.BLUE_DEFENSE_NOTES
@@ -197,6 +214,7 @@ class GateConfig:
     stage4a_min_rebalance_cycles: int   = 3      # full rebalance cycles (alt to days)
     stage4a_min_days_by_class: dict     = field(default_factory=lambda: {
         "INTRADAY":    30,
+        "SUBDAILY":    30,    # calendar days — sub-daily marks accumulate fast
         "SHORT_TERM":  30,
         "MEDIUM_TERM": 60,    # ~1 quarter of daily bars
         "LONG_TERM":   120,   # low-turnover needs a longer live look

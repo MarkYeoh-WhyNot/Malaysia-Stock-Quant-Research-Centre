@@ -40,7 +40,7 @@ with db_session() as conn:
         "INSERT OR IGNORE INTO alpha_ideas (id, slug, title, ticker, stage, status) "
         "VALUES (?, 'test-short', 'Short test', 'BTC/USDT', 'stage4a', 'active')", (IDEA_ID,))
 _price = {"v": 100_000.0}
-def fake_latest_bar(self, ticker):
+def fake_latest_bar(self, ticker, interval="1d"):
     return {"close": _price["v"], "date": "2026-07-08", "adv_value": 5_000_000_000.0}
 PortfolioExecutor._latest_bar = fake_latest_bar
 """

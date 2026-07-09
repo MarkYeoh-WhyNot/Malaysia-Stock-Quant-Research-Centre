@@ -960,28 +960,62 @@ class SandboxBody(BaseModel):
     ticker: str = "1155.KL"
     timeframe: str = "1d"
     factor_formula: str
+    optimize: bool = False
 
 
 @app.post("/api/sandbox/run")
 async def sandbox_run(body: SandboxBody):
     """Synchronous manual sandbox: insert at stage2 + backtest inline. Now goes
-    through the shared submit path, which adds a feasibility pre-check + dedup."""
+    through the shared submit path, which adds a feasibility pre-check + dedup.
+    With optimize=true the idea is queued for a parameter sweep instead (the
+    daemon runs it async; results land in optimizer_runs)."""
     from pipeline.sandbox import submit_sandbox_idea
 
     brief = {"title": body.title, "hypothesis": body.hypothesis,
              "ticker": body.ticker, "timeframe": body.timeframe,
              "factor_formula": body.factor_formula}
     submission = await _in_thread(
-        lambda: submit_sandbox_idea(brief, run_backtest=True, source="sandbox"))
+        lambda: submit_sandbox_idea(brief, run_backtest=not body.optimize,
+                                    source="sandbox", optimize=body.optimize))
     if not submission.get("ok"):
         return {"error": submission.get("error"),
                 "feasibility": submission.get("feasibility"),
                 "duplicate_of": submission.get("duplicate_of")}
+    if submission.get("optimizing"):
+        return {"idea_id": submission["idea_id"], "slug": submission["slug"],
+                "feasibility": submission["feasibility"], "optimizing": True,
+                "message": "Parameter sweep queued — the daemon will run ~300 "
+                           "configs and report the winner (or an honest 'none survived')."}
     result = submission.get("result", {})
     result["idea_id"] = submission["idea_id"]
     result["slug"] = submission["slug"]
     result["feasibility"] = submission["feasibility"]
     return result
+
+
+@app.get("/api/optimizer/runs")
+def optimizer_runs_list(idea_id: int | None = None, limit: int = 20):
+    """Parameter-sweep runs: queue status, top-config summaries, winners."""
+    q = ("SELECT o.*, a.title FROM optimizer_runs o "
+         "JOIN alpha_ideas a ON a.id = o.idea_id ")
+    args: list = []
+    if idea_id:
+        q += "WHERE o.idea_id=? "
+        args.append(idea_id)
+    q += "ORDER BY o.id DESC LIMIT ?"
+    args.append(limit)
+    with db_session() as conn:
+        rows = conn.execute(q, args).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("summary_json", "winner_json"):
+            try:
+                d[k[:-5]] = json.loads(d.pop(k)) if d.get(k) else None
+            except Exception:
+                d[k[:-5]] = None
+        out.append(d)
+    return {"runs": out}
 
 
 # ─── Paper Trades ─────────────────────────────────────────────────────────────

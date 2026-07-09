@@ -30,10 +30,16 @@ class DataEngineer(BaseAgent):
         safe = symbol.replace(".", "_").replace("/", "_")
         return CACHE_DIR / f"{safe}_{interval}.parquet"
 
-    def _is_stale(self, path: Path, max_age_hours: int = 12) -> bool:
-        """Equity data needs less frequent refresh than FX (markets closed overnight)."""
+    def _is_stale(self, path: Path, max_age_hours: float | None = None,
+                  interval: str = "1d") -> bool:
+        """Staleness tracks the bar size (profile-driven): 12h for daily bars
+        in every market (historical behavior), down to 15 minutes for 15m
+        crypto bars so sub-daily paper marking sees fresh data."""
         if not path.exists():
             return True
+        if max_age_hours is None:
+            from config.settings import CACHE_STALENESS_HOURS_BY_INTERVAL
+            max_age_hours = CACHE_STALENESS_HOURS_BY_INTERVAL.get(interval, 12.0)
         age = datetime.utcnow() - datetime.utcfromtimestamp(path.stat().st_mtime)
         return age > timedelta(hours=max_age_hours)
 
@@ -78,7 +84,7 @@ class DataEngineer(BaseAgent):
         symbol = primary
 
         path = self._cache_path(symbol, interval)
-        if use_cache and not self._is_stale(path):
+        if use_cache and not self._is_stale(path, interval=interval):
             df = self._load_cache(path)
             if not df.empty:
                 self.log_daemon("INFO", f"Cache hit: {symbol} {interval} ({len(df)} bars)")

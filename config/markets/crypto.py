@@ -171,15 +171,29 @@ INSTRUMENT_TYPE  = "spot"            # fee_schedules resolution key — perp tak
                                       # seeded row is reused; funding is tracked separately
                                       # via funding_cost(), not through fee_schedules.
 
-# Hard-blocked trading modes — long/short USDT-M perps on daily bars (WS3).
-# Still out of scope: options, intraday/HFT (no sub-daily data), and multi-leg
-# spread/arb structures (the DSL expresses one instrument's long/short state,
-# not a basket spread). Plain shorting/perps/margin/leverage are NO LONGER
-# blocked — that's the whole point of this profile now.
+# ── Timeframes ────────────────────────────────────────────────────────────────
+# Sub-daily bars down to 15m are supported (Binance retains full history and
+# ccxt paginates it). 1m/5m stay blocked: 5yr of 1m is ~2.6M bars/pair and the
+# statistical gates need multi-year windows. Fetch depth shrinks with
+# granularity to keep bar counts sane; cache staleness tracks the bar size so
+# sub-daily paper marking sees fresh data.
+ALLOWED_TIMEFRAMES = ["15m", "1h", "4h", "1d", "1wk"]
+FETCH_DAYS_BY_INTERVAL = {"15m": 400, "1h": 1095, "4h": 1825, "1d": 1825, "1wk": 1825}
+CACHE_STALENESS_HOURS_BY_INTERVAL = {"15m": 0.25, "1h": 1.0, "4h": 4.0, "1d": 12.0, "1wk": 12.0}
+
+# Feasibility dock: only truly-unsupported granularities/styles. "hourly" and
+# "15 minute" are NOT docked here — sub-daily bars are first-class in crypto.
+FEASIBILITY_DOCK_KEYWORDS = ["1 minute", "5 minute", "tick data", "scalp", "hft"]
+
+# Hard-blocked trading modes — long/short USDT-M perps, bars from 15m up.
+# Still out of scope: options, tick-level/HFT execution and sub-15m bars, and
+# multi-leg spread/arb structures (the DSL expresses one instrument's
+# long/short state, not a basket spread). Plain shorting/perps/margin/leverage
+# are NO LONGER blocked — that's the whole point of this profile now.
 BLOCKED_MODES = [
     "pairs trade", "pairs trading", "spread trade", "arbitrage between",
     "options contract", "options strategy",
-    "intraday", "scalp", "hft", "tick data",
+    "scalp", "hft", "tick data", "1 minute", "5 minute", "1m bar", "5m bar",
 ]
 
 # Feasibility scoring keyword lists (data we do NOT have in v1). Funding rate
@@ -203,9 +217,9 @@ MARKET_BRIEF = """
 CRYPTO PERPETUAL MARKET STRUCTURE (BINANCE USDT-M) — MUST KNOW:
 - 24/7/365 trading: no sessions, no gaps-by-closure. Weekend liquidity is
   materially thinner — moves on Sat/Sun often retrace Monday.
-- This system trades LONG AND SHORT perpetual futures on daily bars, up to
-  {max_leverage}x leverage (paper-modeled, no live account). No intraday/HFT
-  execution — no sub-daily data.
+- This system trades LONG AND SHORT perpetual futures on bars from 15m up to
+  weekly, up to {max_leverage}x leverage (paper-modeled, no live account). No
+  tick-level/HFT execution and no sub-15m bars.
 - Funding: paid/received every {funding_hours}h based on the funding rate at
   settlement. A long position PAYS when funding is positive; a short RECEIVES.
   Funding is a real, recurring cost/income component of every held position —
@@ -275,13 +289,13 @@ BLUE_DEFENSE_NOTES = """When defending, always address crypto-specific mechanics
   thin books.
 - If regime dependency is raised: show performance across at least two market
   regimes (not just one bull or one bear leg).
-- If data feasibility is raised: confirm the signal uses only daily OHLCV (and
-  live, not historical, funding/OI where relevant) available here."""
+- If data feasibility is raised: confirm the signal uses only OHLCV bars (15m
+  or slower; live, not historical, funding/OI where relevant) available here."""
 
 JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that relies on "
-                     "intraday/HFT execution, multi-instrument spread/pairs/arbitrage "
-                     "structures (the DSL expresses one instrument's long/short state, not "
-                     "a basket spread), options, or a HISTORICAL funding-rate/open-interest/"
+                     "tick-level/HFT execution or sub-15m bars, multi-instrument spread/pairs/"
+                     "arbitrage structures (the DSL expresses one instrument's long/short state, "
+                     "not a basket spread), options, or a HISTORICAL funding-rate/open-interest/"
                      "on-chain/order-book time series this system does not have. Reject any "
                      "leverage request above the configured cap. A strategy's backtest must "
                      "be net of funding accrual, not spot-price PnL alone.")

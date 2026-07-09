@@ -306,6 +306,15 @@ def init_db(db_path: Path = DB_PATH):
         except Exception:
             pass
 
+        # Sub-daily paper trading: exact mark timestamp alongside the slot key
+        # (`date` holds YYYY-MM-DD for daily ideas — unchanged — and an
+        # interval-aligned YYYY-MM-DDTHH:MM slot for sub-daily crypto ideas).
+        try:
+            conn.execute("ALTER TABLE paper_equity ADD COLUMN marked_at TEXT")
+            logger.info("Migration applied: paper_equity.marked_at added")
+        except Exception:
+            pass
+
         # Backtest Lab: verdict + verdict_reason on backtest_runs
         for _col in ("verdict TEXT", "verdict_reason TEXT"):
             try:
@@ -797,6 +806,7 @@ def init_db(db_path: Path = DB_PATH):
                 cash           REAL,
                 position_units REAL DEFAULT 0,
                 mark_price     REAL,
+                marked_at      TEXT,
                 created_at     TEXT DEFAULT (datetime('now')),
                 UNIQUE(idea_id, date)
             )
@@ -1108,6 +1118,28 @@ def init_db(db_path: Path = DB_PATH):
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_su_index ON stock_universe(index_member)"
+        )
+
+        # Parameter-sweep optimizer queue + results. n_configs feeds the
+        # deflated-Sharpe hurdle of the idea's post-sweep gated backtest.
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS optimizer_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            idea_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'queued',      -- queued | running | done | failed
+            seed INTEGER,
+            n_configs INTEGER,
+            started_at TEXT,
+            finished_at TEXT,
+            summary_json TEXT,                 -- top configs by val score (no trees)
+            winner_json TEXT,                  -- winning config incl. dsl tree
+            error TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (idea_id) REFERENCES alpha_ideas(id)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_optruns_status ON optimizer_runs(status)"
         )
 
     logger.info(f"Database initialized at {db_path}")

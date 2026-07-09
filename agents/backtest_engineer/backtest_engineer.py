@@ -26,6 +26,8 @@ def _stamp_versions(conn):
         (MARKET_RULES_VERSION, FEE_MODEL_VERSION),
     )
 from data.market_data import extract_tickers, get_historical_data, BARS_PER_YEAR
+from config.settings import bars_per_day as _bars_per_day
+from config.settings import FETCH_DAYS_BY_INTERVAL as _FETCH_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -379,19 +381,22 @@ Rules:
 
     # ── Performance metrics ───────────────────────────────────────────────────
 
-    def _cost_rates(self, df: pd.DataFrame) -> dict:
+    def _cost_rates(self, df: pd.DataFrame, interval: str = "1d") -> dict:
         """Per-side Bursa cost rates for this stock (QC3).
 
         Uses the shared cost model in config.settings — commission, buy-side
         stamp duty (RM1,000 cap), clearing (RM1,000 cap), and slippage tiered by
-        the stock's average daily traded value over the last 60 bars. Rates are
-        expressed as a fraction of trade value at the paper-capital notional,
-        so the caps are reflected realistically for our trade size.
+        the stock's average DAILY traded value. On sub-daily bars the per-bar
+        mean is scaled up by bars-per-day so the tier thresholds (which are
+        daily-ADV figures) classify correctly; at 1d the factor is exactly 1.0.
+        Rates are expressed as a fraction of trade value at the paper-capital
+        notional, so the caps are reflected realistically for our trade size.
         """
         adv_value = 0.0
         if "volume" in df.columns and len(df):
-            tail = df.tail(60)
-            adv_value = float((tail["close"] * tail["volume"]).mean())
+            lookback = max(60, int(60 * _bars_per_day(interval)))  # ~60 days of bars
+            tail = df.tail(lookback)
+            adv_value = float((tail["close"] * tail["volume"]).mean()) * _bars_per_day(interval)
         tier = bursa_slippage_tier(adv_value)
         notional = PAPER_CAPITAL_MYR * PAPER_ALLOC_PCT
         # Phase 1.1: use the fee schedule in force at the backtest's midpoint so a
@@ -465,7 +470,7 @@ Rules:
         gross_returns = gross_bar.values[1:]   # drop bar 0 (always 0 after shift)
 
         # ── QC3: per-side costs on every position change ──────────────────────
-        rates          = self._cost_rates(df)
+        rates          = self._cost_rates(df, interval)
         deltas         = np.diff(signal_shifted.values)
         buys           = np.clip(deltas, 0, None)
         sells          = np.clip(-deltas, 0, None)
@@ -582,14 +587,14 @@ Rules:
 
         close      = df["close"]
         daily_ret  = close.pct_change()
-        rolling_vol = daily_ret.rolling(60).std() * np.sqrt(252)  # annualised
+        rolling_vol = daily_ret.rolling(60).std() * np.sqrt(BARS_PER_YEAR.get(interval, 252))  # annualised
 
         # Signals on full series (so MAs etc. have full context)
         sig          = self._compute_signals(df, params)
         sig_shifted  = sig.shift(1).fillna(0)
 
         # Per-bar net return (same cost model as _compute_performance)
-        rates        = self._cost_rates(df)
+        rates        = self._cost_rates(df, interval)
         deltas       = sig_shifted.diff().fillna(0)
         cost_bar     = deltas.clip(lower=0) * rates["buy"] + (-deltas).clip(lower=0) * rates["sell"]
         net_bar      = (sig_shifted * daily_ret - cost_bar).fillna(0)
@@ -642,8 +647,10 @@ Rules:
             flags.append(f"Suspiciously low drawdown: {max_dd:.1%}")
         if win_rate > 0.70:
             flags.append(f"Suspiciously high win rate: {win_rate:.1%}")
-        if trade_count > 500 and timeframe == "1d":
-            flags.append(f"Too many trades for daily strategy: {trade_count}")
+        # Daily-or-faster only (weekly was never flagged — preserved); the
+        # threshold scales with bar frequency so sub-daily isn't over-flagged.
+        if _bars_per_day(timeframe) >= 1.0 and trade_count > 500 * _bars_per_day(timeframe):
+            flags.append(f"Too many trades for a {timeframe} strategy: {trade_count}")
         return flags
 
     # ── Data requirements pre-check ──────────────────────────────────────────
@@ -1078,7 +1085,9 @@ Rules:
         if len(portfolio_rets) > 20:
             pr  = np.array(portfolio_rets)
             std = float(np.std(pr, ddof=1))
-            quintile_sharpe = round(float(np.mean(pr) / std * np.sqrt(252)), 3) if std > 1e-10 else 0.0
+            # Cross-sectional IC deliberately stays a DAILY test even for
+            # sub-daily ideas; annualize by the market's daily bar count.
+            quintile_sharpe = round(float(np.mean(pr) / std * np.sqrt(BARS_PER_YEAR.get("1d", 252))), 3) if std > 1e-10 else 0.0
 
         # ── Gate: factor is real? ─────────────────────────────────────────────
         factor_is_real = (
@@ -1378,6 +1387,13 @@ Rules:
           MEDIUM_TERM — 10-60 trading days (most KLSE strategies)
           LONG_TERM   — > 60 trading days
         """
+        # Numeric-first: an idea whose ACTUAL bar interval is sub-daily is
+        # SUBDAILY (crypto 15m/1h/4h — really backtested on those bars), not
+        # keyword-guessed INTRADAY (which means "sub-daily thesis forced onto
+        # daily bars" and carries the indicative-only caveat).
+        if _bars_per_day(timeframe) > 1.0:
+            return "SUBDAILY"
+
         blob = f"{timeframe} {factor_formula} {hypothesis}".lower()
 
         intraday_kw  = ["intraday", "scalp", "tick", "1 minute", "5 minute", "15 minute",
@@ -1398,6 +1414,7 @@ Rules:
     # Minimum trade count requirements per holding period class (Fix 6)
     _MIN_TRADES = {
         "INTRADAY":    100,
+        "SUBDAILY":    100,   # sub-daily bars produce plenty; demand real evidence
         "SHORT_TERM":   50,
         "MEDIUM_TERM":  30,
         "LONG_TERM":    15,
@@ -1406,6 +1423,7 @@ Rules:
     # Sharpe thresholds per holding period class (Fix 4)
     _SHARPE_THRESHOLDS = {
         "INTRADAY":    1.1,   # indicative only — needs tick data
+        "SUBDAILY":    1.1,   # genuinely backtested on its own bars
         "SHORT_TERM":  1.1,
         "MEDIUM_TERM": 1.1,
         "LONG_TERM":   0.8,   # fewer trades, lower bar
@@ -1554,8 +1572,14 @@ Return JSON only:
             compute_data_confidence, detect_corporate_action_anomalies)
         try:
             dq = compute_data_confidence(df, interval)
-            anomalies = detect_corporate_action_anomalies(
-                df, GATE_CONFIG.dq_corp_action_gap)
+            # Gap threshold is a daily-move figure; per-bar moves shrink with
+            # bar size, so scale by sqrt(bar-fraction-of-day), floored at 3%.
+            # Exactly the configured value at 1d (Bursa parity).
+            _gap = GATE_CONFIG.dq_corp_action_gap
+            _bpd = _bars_per_day(interval)
+            if _bpd > 1.0:
+                _gap = max(0.03, _gap / np.sqrt(_bpd))
+            anomalies = detect_corporate_action_anomalies(df, _gap)
         except Exception as _dq_exc:
             self.log_daemon("WARN", f"[{idea_id}] Gate DQ scoring failed: {_dq_exc}")
             return {"passed": True, "confidence_score": 0.0, "notes": "dq error (fail-open)"}
@@ -1716,16 +1740,38 @@ Return JSON only:
         self.log_daemon("INFO", f"Backtesting [{idea_id}] {row['title']} — {symbol} {interval}")
         self._log_progress(idea_id, 10, f"Fetching price data for {symbol}")
 
+        # Optimizer promotion: if a parameter sweep chose this idea's winning
+        # config, use its exact DSL tree — re-parsing the free-text formula
+        # could drift from what was actually swept and selected.
+        params = None
+        try:
+            with db_session() as conn:
+                _opt = conn.execute(
+                    "SELECT winner_json FROM optimizer_runs WHERE idea_id=? "
+                    "AND status='done' ORDER BY id DESC LIMIT 1", (idea_id,)
+                ).fetchone()
+            if _opt and _opt["winner_json"]:
+                _w = json.loads(_opt["winner_json"])
+                if _w.get("dsl"):
+                    params = {"signal_type": "dsl", "dsl": _w["dsl"],
+                              "representable": True}
+                    self.log_daemon(
+                        "INFO", f"Backtest [{idea_id}] using optimizer winner DSL "
+                                f"({_w.get('instrument')} {_w.get('timeframe')})")
+        except Exception:
+            params = None
+
         # Parse factor formula into a signal DSL tree. Honesty gate: if the
         # idea can't be expressed by the available conditions, REJECT with
         # the parser's reason — never silently substitute a momentum proxy
         # (the historical failure that flattened every thesis into the same
         # template and made real edges indistinguishable from noise).
-        params = self._parse_factor(
-            row["factor_formula"] or "",
-            row["title"],
-            row["hypothesis"] or "",
-        )
+        if params is None:
+            params = self._parse_factor(
+                row["factor_formula"] or "",
+                row["title"],
+                row["hypothesis"] or "",
+            )
         if not params.get("representable"):
             return self._reject_idea(
                 idea_id, row, "dsl_unrepresentable",
@@ -1810,16 +1856,18 @@ Return JSON only:
                 )
                 return self._run_fundamental_screen_backtest(idea_id, dict(row))
 
-        # Fetch 5 years of daily data for robust train/val/test split
-        df = self._fetch_prices(symbol, interval, days=1825)
-        # QC4: minimum 252 bars (1 year) required for any statistically meaningful backtest
+        # Fetch history for a robust train/val/test split. Depth is per-interval
+        # (profile-driven): sub-daily intervals fetch fewer calendar days but far
+        # more bars; 1d/1wk keep the historical 5-year window.
+        df = self._fetch_prices(symbol, interval, days=_FETCH_DAYS.get(interval, 1825))
+        # QC4: minimum 252 bars required for any statistically meaningful backtest
         if df.empty or len(df) < 252:
-            msg = f"Insufficient history ({len(df)} bars) — need minimum 252 bars (1yr)"
+            msg = f"Insufficient history ({len(df)} bars) — need minimum 252 bars"
             self.log_daemon("WARN", f"[{idea_id}] {msg}")
             return {"error": msg, "idea_id": idea_id, "symbol": symbol}
 
         # ── Liquidity floor: reject names too thin to trade realistically ─────
-        _liq = self._cost_rates(df)
+        _liq = self._cost_rates(df, interval)
         if _liq["adv_value_myr"] < BURSA_MIN_DAILY_VALUE_MYR:
             msg = (f"Liquidity floor: {symbol} avg daily traded value "
                    f"RM{_liq['adv_value_myr']:,.0f} < RM{BURSA_MIN_DAILY_VALUE_MYR:,.0f}")
@@ -1935,7 +1983,10 @@ Return JSON only:
             needs_review      = 0 if (verification["verified"] and verification["confidence"] >= 0.7) else 1
             verification_note = verification.get("issue", "") or ""
 
-        # INTRADAY on daily bars — flag immediately, do not trust results
+        # INTRADAY on daily bars — flag immediately, do not trust results.
+        # (SUBDAILY is different: the backtest genuinely ran on the idea's own
+        # sub-daily bars, so no indicative-only caveat — but the model limits
+        # are still worth stating on every sub-daily run.)
         if hp_class == "INTRADAY":
             needs_review = 1
             verification_note = (
@@ -1945,6 +1996,12 @@ Return JSON only:
             self.log_daemon(
                 "WARN",
                 f"Backtest [{idea_id}] INTRADAY strategy on daily OHLCV — results are indicative only",
+            )
+        elif hp_class == "SUBDAILY":
+            verification_note = (
+                (verification_note + " | " if verification_note else "")
+                + f"Sub-daily ({interval}) backtest — liquidation modeled per bar close, "
+                  "slippage constant across timeframes"
             )
 
         self._log_progress(idea_id, 50, "Running train/val/test split")
@@ -2106,6 +2163,17 @@ Return JSON only:
             n_trials = conn.execute(
                 "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs"
             ).fetchone()["n"] + 1
+            # Honest multiple-testing accounting: if this idea's params were
+            # chosen by a parameter sweep, every swept config was a trial —
+            # the winner must clear the hurdle those trials imply.
+            try:
+                _sweep_trials = conn.execute(
+                    "SELECT COALESCE(SUM(n_configs), 0) AS n FROM optimizer_runs "
+                    "WHERE idea_id=? AND status='done'", (idea_id,)
+                ).fetchone()["n"]
+                n_trials += int(_sweep_trials or 0)
+            except Exception:
+                pass
         _ann_qc6 = BARS_PER_YEAR.get(interval, 252)
         _n_bars = max(len(train_df) + len(val_df) + len(test_df), 2)
         deflated_hurdle = float(

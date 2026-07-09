@@ -158,6 +158,17 @@ DATA_BACKEND   = "yahoo"
 BENCHMARK_SYMBOL = "^KLSE"
 INSTRUMENT_TYPE  = "listed_equity"   # fee_schedules resolution key
 
+# ── Timeframes ────────────────────────────────────────────────────────────────
+# Daily/weekly only (yfinance intraday retention is ~60 days — too shallow for
+# real backtests). Values reproduce the pre-sub-daily behavior exactly.
+ALLOWED_TIMEFRAMES = ["1d", "1wk"]
+FETCH_DAYS_BY_INTERVAL = {"1d": 1825, "1wk": 1825}
+CACHE_STALENESS_HOURS_BY_INTERVAL = {"1d": 12.0, "1wk": 12.0}
+
+# Feasibility dock: sub-daily/execution styles this market can't support.
+# (Historical Bursa list, unchanged.)
+FEASIBILITY_DOCK_KEYWORDS = ["intraday", "scalp", "1 minute", "5 minute", "hourly", "hft"]
+
 # Hard-blocked trading modes — long-only, daily-bar system (mirrors Gate 0's
 # _filter_infeasible so the sandbox path matches the generated-idea path).
 BLOCKED_MODES = [

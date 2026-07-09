@@ -23,6 +23,7 @@ from data.database import db_session
 # bars in every market.
 from config.settings import (
     TICKER_REGEX, TICKER_EXAMPLE, BLOCKED_MODES, MARKET_NAME, ALLOW_SHORT,
+    ALLOWED_TIMEFRAMES,
 )
 
 # Matches the pipeline's Gate 0 feasibility bar (North Star: feasibility >= 0.60).
@@ -54,7 +55,7 @@ def _signal_signature(factor_formula: str, ticker: str) -> str:
 
 
 def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
-                        source: str = "sandbox") -> dict:
+                        source: str = "sandbox", optimize: bool = False) -> dict:
     """Insert a human/Concierge-vouched idea at stage2 and (optionally) backtest.
 
     brief: {title, hypothesis, ticker, timeframe, factor_formula}.
@@ -73,6 +74,11 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
     factor_formula = brief.get("factor_formula") or ""
     timeframe = brief.get("timeframe") or "1d"
     raw_ticker = brief.get("ticker") or ""
+
+    if timeframe not in ALLOWED_TIMEFRAMES:
+        return {"ok": False,
+                "error": f"Timeframe '{timeframe}' is not supported on {MARKET_NAME} — "
+                         f"allowed: {', '.join(ALLOWED_TIMEFRAMES)}."}
 
     found_tickers = TICKER_REGEX.findall(raw_ticker)
     if not found_tickers:
@@ -101,7 +107,9 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
     slug = f"{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{slug}"
     signature = _signal_signature(factor_formula, ticker)
-    status = "active" if run_backtest else "pending"
+    # optimize=True parks the idea as 'optimizing' — the daemon's sweep job
+    # picks it up, and the winner (if any) releases it back to stage2/pending.
+    status = "optimizing" if optimize else ("active" if run_backtest else "pending")
 
     try:
         from knowledge.ingestion.family_quotas import classify_family
@@ -132,6 +140,14 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
 
     out = {"ok": True, "idea_id": idea_id, "slug": slug,
            "feasibility": feasibility, "status": status, "ticker": ticker}
+
+    if optimize:
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO optimizer_runs (idea_id, status, seed, n_configs) "
+                "VALUES (?, 'queued', ?, ?)", (idea_id, 42, 300))
+        out["optimizing"] = True
+        return out
 
     if run_backtest:
         from agents.backtest_engineer.backtest_engineer import BacktestEngineer

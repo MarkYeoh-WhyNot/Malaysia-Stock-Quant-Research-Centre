@@ -61,7 +61,7 @@ def compute_data_confidence(df: pd.DataFrame, interval: str = "1d") -> dict:
     # span. Bursa trades business days (bdate_range); crypto trades 24/7
     # (date_range) — using the business calendar for crypto would flag every
     # weekend as "missing" and Gate DQ would false-reject everything.
-    from config.settings import MARKET_CALENDAR
+    from config.settings import MARKET_CALENDAR, bars_per_day
     missing_frac = 0.0
     if interval == "1d" and n > 1 and isinstance(df.index, pd.DatetimeIndex):
         if MARKET_CALENDAR == "daily":
@@ -71,6 +71,15 @@ def compute_data_confidence(df: pd.DataFrame, interval: str = "1d") -> dict:
         if len(expected):
             present = df.index.normalize().intersection(expected.normalize())
             missing_frac = float(max(0.0, 1.0 - len(present) / len(expected)))
+    elif (n > 1 and isinstance(df.index, pd.DatetimeIndex)
+          and MARKET_CALENDAR == "daily" and bars_per_day(interval) > 1.0):
+        # Sub-daily on a 24/7 market: expected bar count is elapsed time ×
+        # bars/day; missing bars = shortfall vs that. (Bursa never reaches
+        # here — its profile allows no sub-daily interval.)
+        elapsed_days = (df.index[-1] - df.index[0]).total_seconds() / 86400.0
+        expected_bars = elapsed_days * bars_per_day(interval) + 1
+        if expected_bars > 1:
+            missing_frac = float(max(0.0, 1.0 - n / expected_bars))
 
     components = {
         "price_completeness":  price_completeness,

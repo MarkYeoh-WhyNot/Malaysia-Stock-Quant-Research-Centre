@@ -109,10 +109,12 @@ def test_crypto_ticker_rules(crypto):
     assert crypto.ALLOW_SHORT is True
     for mode in ("perpetual", "margin", "leverage", "short sell"):
         assert mode not in crypto.BLOCKED_MODES
-    # Multi-leg spread/pairs structures and intraday/HFT remain out of scope
-    # (single-instrument DSL; no sub-daily data).
-    for mode in ("pairs trade", "spread trade", "intraday"):
+    # Multi-leg spread/pairs structures and tick-level/sub-15m execution
+    # remain out of scope (single-instrument DSL; 15m is the sub-daily floor).
+    # Plain "intraday" is no longer blocked — 15m/1h/4h bars are first-class.
+    for mode in ("pairs trade", "spread trade", "scalp", "hft", "1 minute"):
         assert mode in crypto.BLOCKED_MODES
+    assert "intraday" not in crypto.BLOCKED_MODES
 
 
 def test_crypto_gate_overrides_shape(crypto):

@@ -29,7 +29,7 @@ def executor(monkeypatch):
     ex = PortfolioExecutor()
     state = {"close": 10.00}
 
-    def fake_latest_bar(self, ticker):
+    def fake_latest_bar(self, ticker, interval="1d"):
         return {"close": state["close"], "date": "2026-07-08",
                 "adv_value": 30_000_000.0}
 

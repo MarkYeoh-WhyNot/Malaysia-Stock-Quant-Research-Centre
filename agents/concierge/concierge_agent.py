@@ -20,6 +20,7 @@ from config.settings import (
     CONCIERGE_MODEL, CONCIERGE_DAILY_BUDGET_USD, CONCIERGE_MAX_TOOL_ITERS,
     KLCI_STOCKS, KLCI_BY_SYMBOL, KLCI_SECTORS,
     MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE, ALLOW_SHORT, MAX_LEVERAGE,
+    ALLOWED_TIMEFRAMES,
 )
 from data.database import db_session
 
@@ -30,7 +31,8 @@ _DIRECTION_DESC = (
     "Submit a fully-specified LONG OR SHORT " if ALLOW_SHORT else "Submit a fully-specified long-only "
 )
 _NEVER_DESC = (
-    "Never for multi-leg spread/pairs trades, intraday, options, or leverage above the configured cap."
+    "Never for multi-leg spread/pairs trades, tick-level/sub-15m execution, options, "
+    "or leverage above the configured cap."
     if ALLOW_SHORT else
     "Never for short-selling/pairs/intraday/derivatives."
 )
@@ -50,7 +52,15 @@ TOOLS = [
                 "title": {"type": "string", "description": "Short strategy name"},
                 "hypothesis": {"type": "string", "description": "1-2 sentence economic rationale"},
                 "ticker": {"type": "string", "description": f"One or more tickers, comma-separated (e.g. {_EXAMPLE_TICKER})"},
-                "timeframe": {"type": "string", "description": "Bar/holding timeframe, e.g. 1d, 1wk"},
+                "timeframe": {"type": "string", "description": (
+                    f"Bar timeframe — one of {', '.join(ALLOWED_TIMEFRAMES)} (default 1d)")},
+                "optimize": {"type": "boolean", "description": (
+                    "Set true when the user wants to FIND the best parameters/"
+                    "timeframe/pair for a strategy family rather than test one "
+                    "fixed configuration — queues a ~300-config parameter sweep "
+                    "(runs async; results arrive via Telegram and the dashboard). "
+                    "The sweep's trial count honestly raises the winner's "
+                    "multiple-testing hurdle.")},
                 "factor_formula": {"type": "string", "description": (
                     "Concrete entry/exit rule in terms of price/volume/indicators. "
                     + ("State the direction explicitly — e.g. 'long when RSI<30' or "
@@ -146,14 +156,16 @@ def _system_prompt() -> str:
     from agents.backtest_engineer import signal_dsl
     universe = "\n".join(
         f"  {s['symbol']} — {s['name']} ({s['sector']})" for s in KLCI_STOCKS)
-    direction_job = ("a concrete, long OR short, daily-or-slower" if ALLOW_SHORT
+    direction_job = ("a concrete, long OR short" if ALLOW_SHORT
                      else "a concrete, long-only, daily-or-slower")
     direction_rules = (
         f"- Long AND short are both supported (perpetuals, up to {MAX_LEVERAGE:.0f}x leverage — "
         "paper-modeled, no live account). State the direction explicitly in factor_formula. "
         "Multi-leg spread/pairs trades are still out of scope — one instrument's long/short "
         "state at a time.\n"
-        "- No intraday/scalping/HFT — daily bars or slower. No options.\n"
+        f"- Bar timeframes: {', '.join(ALLOWED_TIMEFRAMES)}. Sub-daily bars (15m/1h/4h) suit "
+        "fast mean-reversion theses; default to 1d otherwise. No tick-level/sub-15m execution, "
+        "no HFT, no options.\n"
         "- If a strategy is leveraged, mention the leverage and that liquidation risk applies."
         if ALLOW_SHORT else
         "- Long-only ONLY. No short-selling, pairs, long/short, market-neutral,\n"
@@ -179,6 +191,12 @@ HARD RULES — never violate:
   explain that you can get an idea paper-trading-ready but the human makes the
   live call.
 - If an idea is infeasible, say so plainly instead of forcing it through.
+- When the user wants to DISCOVER where a strategy family works best (best
+  parameters, timeframe, or pair) rather than test one fixed setup, submit with
+  optimize=true — a ~300-config parameter sweep runs asynchronously and the
+  trial count honestly raises the winner's multiple-testing hurdle. Tell them
+  results arrive later via Telegram/dashboard, and that "no configuration
+  survived" is a legitimate outcome.
 
 Write factor_formula in terms the backtester can parse — prefer these conditions:
 {signal_dsl.leaf_catalog_text()}
@@ -223,7 +241,8 @@ class ConciergeAgent(BaseAgent):
             "timeframe": args.get("timeframe") or "1d",
             "factor_formula": args.get("factor_formula"),
         }
-        result = submit_sandbox_idea(brief, run_backtest=False, source="concierge")
+        result = submit_sandbox_idea(brief, run_backtest=False, source="concierge",
+                                     optimize=bool(args.get("optimize")))
         if result.get("ok"):
             with db_session() as conn:
                 conn.execute(

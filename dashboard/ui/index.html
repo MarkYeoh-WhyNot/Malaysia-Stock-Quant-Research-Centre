@@ -1056,6 +1056,10 @@ svg text{font-family:var(--font-mono)}
           <label>Factor Formula</label>
           <textarea id="sb-formula" rows="4" placeholder="Describe the signal logic, e.g.:&#10;&#10;SMA(20) crosses above SMA(50) on 1155.KL → long&#10;RSI(14) &lt; 30 on 5285.KL — oversold plantation&#10;P/B &lt; 1.0 on banking sector stocks&#10;5 days before ex-date on high-yield stocks"></textarea>
         </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-bottom:8px">
+          <input type="checkbox" id="sb-optimize">
+          Optimize parameters (sweep ~300 configs across params/timeframes/pairs — runs async; the trial count raises the winner's multiple-testing hurdle)
+        </label>
         <button class="btn btn-cyan" onclick="runSandbox()" id="sb-run-btn" style="width:100%">
           🧪 Run Backtest
         </button>
@@ -1070,6 +1074,13 @@ svg text{font-family:var(--font-mono)}
           <div class="panel-head"><span class="panel-title">Backtest Results</span></div>
           <div id="sb-result-content"></div>
         </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Parameter Sweeps</span>
+          <button class="btn btn-sm" onclick="loadSweeps()">↻ Refresh</button>
+        </div>
+        <div id="sb-sweeps" style="font-size:12px;color:var(--muted)">No sweeps yet.</div>
       </div>
       <div class="panel">
         <div class="panel-head"><span class="panel-title">Signal Type Reference</span></div>
@@ -1670,6 +1681,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const calStrip = document.getElementById('calendar-strip-panel');
     if (calStrip) calStrip.style.display = 'none';
 
+    // Sub-daily timeframes are crypto-only (Bursa stays 1d/1wk)
+    const sbTf = document.getElementById('sb-tf');
+    if (sbTf) sbTf.innerHTML =
+      '<option value="15m">15m</option><option value="1h">1h</option>' +
+      '<option value="4h">4h</option><option value="1d" selected>1d (Daily)</option>' +
+      '<option value="1wk">1wk (Weekly)</option>';
+
     // Small copy leaks elsewhere: KB search placeholder, net-Sharpe cost tip
     const kbQ = document.getElementById('kb-q');
     if (kbQ) kbQ.placeholder = 'e.g. funding rate carry BTC momentum regime…';
@@ -1745,6 +1763,7 @@ function nav(id, el) {
     'ai-usage': loadUsage, logs: loadLogsPage,
     'event-feed': () => { loadEventFeed(); loadCalendarStrip(); },
     'live-prices': loadLivePrices,
+    'factor-sandbox': loadSweeps,
   };
   if (loaders[id]) loaders[id]();
   // Auto-refresh event feed while on that page
@@ -2807,20 +2826,56 @@ async function loadConciergeIdeas() {
 }
 
 // ── Factor Sandbox ──────────────────────────────────────────────────────────
+async function loadSweeps() {
+  const box = document.getElementById('sb-sweeps');
+  if (!box) return;
+  const d = await fetch(API + '/optimizer/runs?limit=10').then(r => r.json()).catch(() => null);
+  const runs = d?.runs || [];
+  if (!runs.length) { box.textContent = 'No sweeps yet.'; return; }
+  box.innerHTML = runs.map(r => {
+    const w = r.winner;
+    const statusCol = {done:'var(--green)', failed:'var(--red)', running:'var(--cyan)', queued:'var(--muted)'}[r.status] || 'var(--muted)';
+    const wLine = w
+      ? `winner: <b>${w.instrument} ${w.timeframe}</b> — val ${Number(w.val_sharpe).toFixed(2)}, one-shot test ${w.test_sharpe!=null?Number(w.test_sharpe).toFixed(2):'—'} (${r.n_configs} trials raise the deflated hurdle)`
+      : (r.status === 'done' ? `no configuration survived selection (${r.n_configs} trials) — honest outcome` : (r.error || ''));
+    const top = (r.summary?.top || []).slice(0, 3).map((t, i) =>
+      `<div style="color:var(--muted2)">&nbsp;&nbsp;${i+1}. ${t.instrument} ${t.timeframe} — val ${Number(t.val_sharpe).toFixed(2)} (${t.val_trades} trades)</div>`).join('');
+    return `<div style="border-bottom:1px solid var(--bg3);padding:6px 0">
+      <div><span style="color:${statusCol};font-weight:bold">[${r.status.toUpperCase()}]</span>
+        #${r.idea_id} ${r.title ? r.title.substring(0, 45) : ''}</div>
+      <div style="color:var(--muted2)">${wLine}</div>${top}</div>`;
+  }).join('');
+}
+
 async function runSandbox() {
   const title = document.getElementById('sb-title').value.trim();
   const formula = document.getElementById('sb-formula').value.trim();
   if (!title || !formula) { showToast('Title and formula required', true); return; }
   const btn = document.getElementById('sb-run-btn');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Running backtest…';
+  const optimize = !!document.getElementById('sb-optimize')?.checked;
+  btn.disabled = true; btn.innerHTML = optimize
+    ? '<span class="spinner"></span> Queuing parameter sweep…'
+    : '<span class="spinner"></span> Running backtest…';
   const r = await apiPost('/sandbox/run', {
     title, hypothesis: document.getElementById('sb-hypothesis').value,
     ticker: document.getElementById('sb-pair').value,
     timeframe: document.getElementById('sb-tf').value,
     factor_formula: formula,
+    optimize,
   });
   btn.disabled = false; btn.innerHTML = '🧪 Run Backtest';
   if (!r || r.error) { showToast(r?.error || 'Failed', true); return; }
+  if (r.optimizing) {
+    document.getElementById('sb-result-panel').style.display = 'block';
+    document.getElementById('sb-result-content').innerHTML = `
+      <div style="background:var(--bg3);padding:12px;border-radius:4px">
+        <div style="font-size:14px;font-weight:bold">🔬 Parameter sweep queued — idea #${r.idea_id}</div>
+        <div style="color:var(--muted2);font-size:12px;margin-top:6px">${r.message||''}
+        Results will appear below and on Telegram when the sweep finishes.</div>
+      </div>`;
+    loadSweeps();
+    return;
+  }
   document.getElementById('sb-result-panel').style.display = 'block';
   const pass = r.gate3_pass;
   document.getElementById('sb-result-content').innerHTML = `
