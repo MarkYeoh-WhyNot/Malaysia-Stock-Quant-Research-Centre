@@ -57,17 +57,40 @@ TRADING_DAYS_PER_YEAR = 365     # annualization uses √365 for daily bars
 CALENDAR              = "daily"  # pd.date_range — weekends ARE trading days
 
 # ── Market rules & transaction cost model ─────────────────────────────────────
-MARKET_RULES_VERSION = "2026-07-09"   # 24/7 spot, T+0, long-only, fractional units
-FEE_MODEL_VERSION    = "2026-07-09"   # 0.10% taker per side + ADV-tiered slippage
+MARKET_RULES_VERSION = "2026-07-09"   # 24/7 USDT-M perps, T+0, long/short, fractional units
+FEE_MODEL_VERSION    = "2026-07-09"   # 0.10% taker per side + funding accrual + ADV-tiered slippage
 
-# On-exchange spot settles instantly on fill.
+# On-exchange perp settles instantly on fill; no settlement lag on either leg.
 SETTLEMENT_CYCLE = "T+0"
 
-# Binance spot base fee: 0.10% maker / 0.10% taker (no BNB discount assumed —
-# conservative). We model every fill as TAKER. No stamp duty, no clearing fee,
-# no board lot on crypto spot.
+# WS3: long/short via perpetuals — paper-modeled only (still no live account,
+# still human-gated; see docs/DEPLOYMENT.md and the North Star). Long-only spot
+# was v1's deliberate scope; this profile now enables the short leg because a
+# genuine crypto quant book is long/short, and funding is itself a structural
+# edge (technique_library's funding_rate_carry / perp_basis_arb techniques) —
+# there was no way to backtest either honestly while long-only.
+ALLOW_SHORT = True
+
+MAX_LEVERAGE        = 3.0    # conservative cap — this is risk modeling, not a live-account setting
+DEFAULT_LEVERAGE    = 1.0    # backtester default when an idea specifies no leverage (conservative)
+LIQUIDATION_BUFFER   = 0.20   # treat a position as liquidated at 80% of the theoretical distance-to-liquidation
+FUNDING_INTERVAL_HOURS = 8    # Binance USDT-M standard funding interval
+
+# No historical funding-rate time series is wired into the backtester (see
+# UNAVAILABLE_DATA_KEYWORDS above) — a real per-bar funding number isn't
+# available for backtesting. AVG_FUNDING_RATE_PER_INTERVAL is a disclosed,
+# conservative MODELED AVERAGE (long-run typical funding on majors) applied
+# uniformly per interval so backtests are net of a realistic funding drag
+# instead of silently ignoring it. This is NOT real historical funding —
+# every backtest_runs row using it is labeled accordingly.
+AVG_FUNDING_RATE_PER_INTERVAL = 0.0001   # 0.01% per 8h interval (~11% annualized on a
+                                          # permanently-held long — a conservative long-run estimate)
+
+# Binance USDT-M perp base fee: 0.10% maker / 0.10% taker (no BNB discount
+# assumed — conservative). We model every fill as TAKER. No stamp duty, no
+# clearing fee, no board lot.
 COMMISSION_RATE     = 0.0010    # 0.10% taker, per side
-STAMP_DUTY_RATE     = 0.0       # n/a on crypto spot
+STAMP_DUTY_RATE     = 0.0       # n/a on crypto
 STAMP_DUTY_CAP      = 0.0
 STAMP_REMISSION_END = ""
 CLEARING_RATE       = 0.0       # n/a
@@ -98,15 +121,31 @@ def slippage_tier(avg_daily_value: float) -> str:
 
 def trade_cost(trade_value: float, side: str,
                tier: str = "BLUE_CHIP") -> float:
-    """Total cost in USDT for one side of a spot trade: taker fee + slippage.
+    """Total cost in USDT for one side of a perp trade: taker fee + slippage.
 
-    `side` is accepted for interface parity with the Bursa model; crypto spot
-    fees are symmetric (no buy-side-only components).
+    `side` is accepted for interface parity with the Bursa model; the fee is
+    symmetric (no buy-side-only components). Funding is a separate, per-bar-
+    held-position cost — see funding_cost() — not a per-trade cost.
     """
     value = abs(trade_value)
     cost = value * COMMISSION_RATE
     cost += value * SLIPPAGE_TIERS.get(tier, SLIPPAGE_TIERS["MID_CAP"])
     return cost
+
+
+def funding_cost(position: float, funding_rate: float, notional: float) -> float:
+    """USDT funding paid (positive) or received (negative) for ONE funding
+    interval on an open position.
+
+    position: +1 long, -1 short, 0 flat. Funding convention (matches Binance):
+    when funding_rate > 0, longs pay shorts. So a long position's cost is
+    +position * funding_rate * notional; a short position with positive
+    funding RECEIVES (cost is negative, i.e. income). This is charged once
+    per FUNDING_INTERVAL_HOURS the position is held, not per trade.
+    """
+    if position == 0:
+        return 0.0
+    return position * funding_rate * abs(notional)
 
 
 def size_units(nav: float, price: float, alloc_pct: float) -> float:
@@ -127,24 +166,32 @@ TICKER_EXAMPLE = "BTC/USDT (Bitcoin)"
 DATA_BACKEND   = "binance"
 EXCHANGE_ID    = os.getenv("CRYPTO_EXCHANGE_ID", "binance")
 BENCHMARK_SYMBOL = "BTC/USDT"
-INSTRUMENT_TYPE  = "spot"            # fee_schedules resolution key
+INSTRUMENT_TYPE  = "spot"            # fee_schedules resolution key — perp taker fees
+                                      # are identical to spot on Binance, so the existing
+                                      # seeded row is reused; funding is tracked separately
+                                      # via funding_cost(), not through fee_schedules.
 
-# Hard-blocked trading modes — long-only SPOT, daily bars. Everything
-# derivative/levered/short is out of scope by design.
+# Hard-blocked trading modes — long/short USDT-M perps on daily bars (WS3).
+# Still out of scope: options, intraday/HFT (no sub-daily data), and multi-leg
+# spread/arb structures (the DSL expresses one instrument's long/short state,
+# not a basket spread). Plain shorting/perps/margin/leverage are NO LONGER
+# blocked — that's the whole point of this profile now.
 BLOCKED_MODES = [
-    "short sell", "short-sell", "short-selling", "short selling", "sell short",
-    "pairs trade", "pairs trading", "long/short", "long-short", "market neutral",
-    "delta neutral", "spread trade", "arbitrage between",
-    "perpetual", "perps", "futures", "margin", "leverage", "leveraged",
-    "funding rate arbitrage", "options contract",
+    "pairs trade", "pairs trading", "spread trade", "arbitrage between",
+    "options contract", "options strategy",
     "intraday", "scalp", "hft", "tick data",
 ]
 
-# Feasibility scoring keyword lists (data we do NOT have in v1)
+# Feasibility scoring keyword lists (data we do NOT have in v1). Funding rate
+# and open interest have a LIVE snapshot (event monitor, WS2) but no
+# historical time series merged into the backtester yet — a strategy whose
+# entry/exit logic needs funding/OI as a per-bar historical input still can't
+# be honestly backtested, so they stay listed here until that data-plumbing
+# lands as its own follow-up.
 UNAVAILABLE_DATA_KEYWORDS = [
     "options", "level 2", "order book", "tick data", "dark pool",
     "on-chain", "onchain", "funding rate", "open interest",
-    "perpetual", "liquidation data", "whale wallet",
+    "liquidation data", "whale wallet",
 ]
 EXOTIC_KEYWORDS = [
     "options greeks", "implied volatility surface", "cds spread",
@@ -153,53 +200,91 @@ EXOTIC_KEYWORDS = [
 
 # ── Red/Blue + researcher market brief ────────────────────────────────────────
 MARKET_BRIEF = """
-CRYPTO SPOT MARKET STRUCTURE (BINANCE) — MUST KNOW:
+CRYPTO PERPETUAL MARKET STRUCTURE (BINANCE USDT-M) — MUST KNOW:
 - 24/7/365 trading: no sessions, no gaps-by-closure. Weekend liquidity is
   materially thinner — moves on Sat/Sun often retrace Monday.
-- This system is LONG-ONLY SPOT on daily bars: no perps, no margin, no
-  shorting, no funding-rate strategies. Reject anything that needs them.
+- This system trades LONG AND SHORT perpetual futures on daily bars, up to
+  {max_leverage}x leverage (paper-modeled, no live account). No intraday/HFT
+  execution — no sub-daily data.
+- Funding: paid/received every {funding_hours}h based on the funding rate at
+  settlement. A long position PAYS when funding is positive; a short RECEIVES.
+  Funding is a real, recurring cost/income component of every held position —
+  a strategy's edge must survive it, not just spot-price PnL.
+- Liquidation: leverage creates a real liquidation price. A backtest that
+  ignores this is fiction — the engine wipes a position if the adverse move
+  exceeds 1/leverage minus a {liq_buffer:.0%} safety buffer.
 - Settlement: T+0 (instant on-exchange). No board lots — fractional units.
-- Fees: ~0.10% taker per side + slippage. Round trip ~0.25-0.30% on majors.
+- Fees: ~0.10% taker per side + slippage, PLUS funding while held. Round trip
+  ~0.25-0.30% on majors before funding.
 - BTC-beta dominance: most alts are high-beta BTC proxies. An "alt strategy"
   that is just levered BTC exposure has no independent alpha — demand evidence
-  of decorrelation from BTC.
+  of decorrelation from BTC. This applies to shorts too: shorting a weak alt
+  is often just a leveraged BTC short in disguise.
 - Exchange/counterparty risk: funds live on the exchange; exchange outages and
   withdrawal freezes happen. Not a pricing factor, but a real operational risk.
 - Stablecoin risk: USDT is the quote asset; a depeg event distorts every pair
-  simultaneously.
+  simultaneously and can trigger cascading liquidations on both sides.
 - Regulatory shocks: SEC/global actions cause violent regime breaks
-  (single-day -20% moves on affected assets).
+  (single-day -20% moves on affected assets) — dangerous for leveraged shorts
+  caught in a short squeeze as much as leveraged longs in a crash.
 - Halving/narrative cycles: BTC's ~4-year cycle drives long regimes; strategies
-  fit on one regime often die in the next.
+  fit on one regime (esp. a pure-short strategy fit in a bear market) often
+  die in the next.
+- Crowded-carry unwind: when funding is extreme, the crowded side (whichever
+  is paying) is prone to a violent squeeze against it — this is a genuine risk
+  to funding-carry strategies, not just an equity-market analogy.
 - Extreme tails: daily moves of ±10-20% are routine in alts; volatility
   clustering is severe. Sharpe norms differ from equities.
 - No fundamentals: no earnings/dividends/book value. "Value" framings need a
   crypto-native metric, and on-chain data is NOT wired into this system in v1.
-"""
+- Data limits: funding rate and open interest have a LIVE snapshot (for event
+  monitoring) but no historical time series in the backtester yet — a strategy
+  that needs funding/OI as a per-bar historical input is NOT backtestable here.
+""".format(max_leverage=3.0, funding_hours=8, liq_buffer=0.20)
 
 RED_TEAM_ATTACKS = """You MUST specifically attack:
-- BTC-beta risk: is this "alpha" just BTC exposure in disguise? Would BTC
-  buy-and-hold beat it after costs?
-- Regime dependency: was the edge fit on a single bull/bear regime (halving
-  cycle) that has since ended?
+- BTC-beta risk: is this "alpha" just BTC exposure (long or short) in disguise?
+  Would BTC buy-and-hold, or a simple BTC short, beat it after costs?
+- Funding drag: has the strategy's PnL been shown NET of funding while held?
+  A carry-style strategy that looks good on spot price alone but ignores
+  funding is not honestly backtested.
+- Liquidation risk: at the stated leverage, what adverse move triggers
+  liquidation? Is that move plausible given this pair's realistic volatility?
+- Crowded-side squeeze: if this is a funding-carry or crowded-short thesis,
+  what happens when the crowd unwinds violently against it?
+- Regime dependency: was the edge fit on a single bull/bear/halving regime
+  that has since ended? Pure-short strategies fit in a bear market are the
+  classic version of this trap.
 - Weekend/thin-liquidity risk: does the signal fire into thin weekend books
-  where slippage assumptions break?
-- Tail risk: what does a routine -15% overnight move do to the drawdown math?
-- Data feasibility: does it secretly need on-chain, funding, or order-book data
-  that this system does not have?
+  where slippage or liquidation assumptions break?
+- Tail risk: what does a routine -15% overnight move do to the drawdown math,
+  and to a leveraged position's liquidation distance?
+- Data feasibility: does it secretly need on-chain, or a HISTORICAL funding/OI
+  time series, that this system does not have wired into the backtester?
 - Stablecoin/exchange risk: does the thesis survive a USDT wobble or an
-  exchange halt?"""
+  exchange halt on either the long or short leg?"""
 
 BLUE_DEFENSE_NOTES = """When defending, always address crypto-specific mechanics directly:
-- If BTC-beta is raised: show the strategy's decorrelation from simple BTC exposure.
-- If liquidity/weekends are raised: cite the pair's ADV and how fills avoid thin books.
-- If regime dependency is raised: show performance across at least two market regimes.
-- If data feasibility is raised: confirm the signal uses only daily OHLCV available here."""
+- If BTC-beta is raised: show the strategy's decorrelation from simple BTC
+  long/short exposure.
+- If funding drag is raised: show the backtest's Sharpe/return is net of
+  funding accrual, not spot-price-only.
+- If liquidation risk is raised: state the leverage used and the resulting
+  liquidation distance, and show it's wide relative to this pair's volatility.
+- If liquidity/weekends are raised: cite the pair's ADV and how fills avoid
+  thin books.
+- If regime dependency is raised: show performance across at least two market
+  regimes (not just one bull or one bear leg).
+- If data feasibility is raised: confirm the signal uses only daily OHLCV (and
+  live, not historical, funding/OI where relevant) available here."""
 
-JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that requires "
-                     "shorting, perpetuals, margin, or leverage; relies on intraday "
-                     "execution; or depends on data this system lacks (on-chain, funding "
-                     "rates, order books).")
+JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that relies on "
+                     "intraday/HFT execution, multi-instrument spread/pairs/arbitrage "
+                     "structures (the DSL expresses one instrument's long/short state, not "
+                     "a basket spread), options, or a HISTORICAL funding-rate/open-interest/"
+                     "on-chain/order-book time series this system does not have. Reject any "
+                     "leverage request above the configured cap. A strategy's backtest must "
+                     "be net of funding accrual, not spot-price PnL alone.")
 
 # Concentration risk: the sector analog whose over-weight the risk monitor flags.
 CONCENTRATION_SECTOR = "Smart Contract"

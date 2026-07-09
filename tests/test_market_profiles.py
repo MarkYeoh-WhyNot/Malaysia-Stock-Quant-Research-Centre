@@ -104,8 +104,14 @@ def test_crypto_fractional_sizing(crypto):
 def test_crypto_ticker_rules(crypto):
     assert crypto.TICKER_REGEX.search("BTC/USDT")
     assert not crypto.TICKER_REGEX.search("1155.KL")
-    # derivatives / leverage are hard-blocked in addition to shorts/intraday
-    for mode in ("perpetual", "margin", "leverage", "short sell", "intraday"):
+    # WS3: perpetuals/margin/leverage/shorting are the point of crypto mode now
+    # (long/short via perps) — no longer blocked.
+    assert crypto.ALLOW_SHORT is True
+    for mode in ("perpetual", "margin", "leverage", "short sell"):
+        assert mode not in crypto.BLOCKED_MODES
+    # Multi-leg spread/pairs structures and intraday/HFT remain out of scope
+    # (single-instrument DSL; no sub-daily data).
+    for mode in ("pairs trade", "spread trade", "intraday"):
         assert mode in crypto.BLOCKED_MODES
 
 

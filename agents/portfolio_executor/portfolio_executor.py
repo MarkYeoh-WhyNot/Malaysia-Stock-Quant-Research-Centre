@@ -11,6 +11,7 @@ from config.settings import (
     MODEL_FAST, GATE_CONFIG, TRADING_DAYS_PER_YEAR,
     BURSA_BOARD_LOT, PAPER_CAPITAL_MYR, PAPER_ALLOC_PCT,
     bursa_trade_cost, bursa_slippage_tier,
+    ALLOW_SHORT, FUNDING_INTERVAL_HOURS, AVG_FUNDING_RATE_PER_INTERVAL, funding_cost,
 )
 from data.database import db_session
 
@@ -60,20 +61,44 @@ class PortfolioExecutor(BaseAgent):
     # ------------------------------------------------------------------
 
     def _idea_cash(self, idea_id: int) -> float:
-        """Current cash for an idea: starting capital ± all realized flows."""
+        """Current cash for an idea: starting capital ± all realized flows.
+
+        Sign-agnostic for long/short: `units` is stored signed (negative for a
+        short), so a short's entry correctly credits proceeds and its exit
+        correctly debits the buy-to-cover cost with no direction branching.
+        `funding_paid` (WS3) is a real cash flow — subtracted like any other
+        cost (positive = paid, negative = received, so subtracting nets both).
+        """
         with db_session() as conn:
             rows = conn.execute(
                 "SELECT entry_price, exit_price, units, status, "
                 "       COALESCE(entry_cost,0) AS entry_cost, "
-                "       COALESCE(exit_cost,0)  AS exit_cost "
+                "       COALESCE(exit_cost,0)  AS exit_cost, "
+                "       COALESCE(funding_paid,0) AS funding_paid "
                 "FROM paper_trades WHERE idea_id=?", (idea_id,)
             ).fetchall()
         cash = PAPER_CAPITAL_MYR
         for r in rows:
             cash -= (r["entry_price"] or 0) * (r["units"] or 0) + r["entry_cost"]
+            cash -= r["funding_paid"]
             if r["status"] == "closed":
                 cash += (r["exit_price"] or 0) * (r["units"] or 0) - r["exit_cost"]
         return cash
+
+    def _accrue_funding(self, trade_id: int, units: float, price: float) -> None:
+        """Add one day's funding to a trade's running funding_paid (WS3, crypto
+        only — a no-op call site elsewhere since FUNDING_INTERVAL_HOURS is None
+        on Bursa). Daily cadence (this runs once/day per idea via daily_update),
+        scaled by however many funding settlements happen in a day."""
+        position = 1.0 if units > 0 else -1.0
+        notional = abs(units) * price
+        settlements_per_day = 24.0 / FUNDING_INTERVAL_HOURS
+        day_funding = funding_cost(position, AVG_FUNDING_RATE_PER_INTERVAL, notional) * settlements_per_day
+        with db_session() as conn:
+            conn.execute(
+                "UPDATE paper_trades SET funding_paid = COALESCE(funding_paid,0) + ? WHERE id=?",
+                (round(day_funding, 4), trade_id),
+            )
 
     def _open_trade(self, idea_id: int):
         with db_session() as conn:
@@ -88,9 +113,22 @@ class PortfolioExecutor(BaseAgent):
 
     async def paper_entry(self, idea_id: int, ticker: str, direction: str = "long",
                           signal: str = "", **_legacy) -> dict:
-        """Open a paper position at the latest cached KLSE close (long-only)."""
-        if direction != "long":
-            return {"error": "Bursa paper trading is long-only"}
+        """Open a paper position at the latest cached close.
+
+        WS3: `direction` may be "short" where ALLOW_SHORT (crypto perps) — the
+        entire cash/PnL model is UNCHANGED by storing SIGNED units (negative
+        for a short): _idea_cash()'s arithmetic already nets out correctly for
+        either sign (a short's entry credits proceeds, exit debits the
+        buy-to-cover cost), so no separate short-side accounting branch is
+        needed. Bursa (ALLOW_SHORT=False) still rejects anything but "long".
+        Still unleveraged (1x) in paper trading — the backtester carries the
+        leverage/liquidation model (see BacktestEngineer._compute_performance);
+        paper trading validates day-to-day signal execution, not margin math.
+        """
+        if direction == "short" and not ALLOW_SHORT:
+            return {"error": "This market is long-only paper trading"}
+        if direction not in ("long", "short"):
+            return {"error": f"Unknown direction '{direction}' — use 'long' or 'short'"}
         if self._open_trade(idea_id):
             return {"error": f"Idea {idea_id} already has an open paper trade"}
 
@@ -119,19 +157,22 @@ class PortfolioExecutor(BaseAgent):
         if fill["status"] == "FAILED":
             return {"error": f"NAV RM{nav:,.0f} too small for one board lot of "
                              f"{ticker} @ RM{bar['close']:.2f} ({fill['reason']})"}
-        units = fill["units"]
+        sign = -1 if direction == "short" else 1
+        units = sign * fill["units"]
 
+        # A short OPENS with a sell (proceeds credited); a long opens with a buy.
+        entry_side = "sell" if direction == "short" else "buy"
         tier = bursa_slippage_tier(bar["adv_value"])
-        value = units * bar["close"]
-        entry_cost = bursa_trade_cost(value, "buy", tier)
+        value = abs(units) * bar["close"]
+        entry_cost = bursa_trade_cost(value, entry_side, tier)
 
         with db_session() as conn:
             conn.execute("""
                 INSERT INTO paper_trades
                 (idea_id, pair, direction, entry_price, units, signal,
                  entry_cost, opened_at, status)
-                VALUES (?, ?, 'long', ?, ?, ?, ?, datetime('now'), 'open')
-            """, (idea_id, ticker, bar["close"], units, signal, round(entry_cost, 2)))
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), 'open')
+            """, (idea_id, ticker, direction, bar["close"], units, signal, round(entry_cost, 2)))
             trade_id = conn.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
             # Phase 6.3: reconciliation trail. Paper mode has no independent fill
             # source yet, so expected == actual by construction — the row exists
@@ -140,22 +181,22 @@ class PortfolioExecutor(BaseAgent):
                 INSERT INTO paper_trade_reconciliation
                   (trade_id, side, expected_price, actual_price,
                    expected_cost, actual_cost, price_diff, cost_diff, clean)
-                VALUES (?, 'buy', ?, ?, ?, ?, 0, 0, 1)
-            """, (trade_id, bar["close"], bar["close"],
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1)
+            """, (trade_id, entry_side, bar["close"], bar["close"],
                   round(entry_cost, 2), round(entry_cost, 2)))
 
-        fill_note = f" [{fill['status']}: {units}/{fill['requested_units']} sh]" \
+        fill_note = f" [{fill['status']}: {fill['units']}/{fill['requested_units']} sh]" \
             if fill["status"] == "PARTIAL_FILL" else ""
         self.log_daemon("INFO",
-                        f"Paper entry [{trade_id}] long {ticker} {units} sh @ RM{bar['close']:.3f} "
-                        f"(cost RM{entry_cost:.2f}, tier {tier}){fill_note}")
-        return {"trade_id": trade_id, "ticker": ticker, "direction": "long",
+                        f"Paper entry [{trade_id}] {direction} {ticker} {fill['units']} sh @ "
+                        f"RM{bar['close']:.3f} (cost RM{entry_cost:.2f}, tier {tier}){fill_note}")
+        return {"trade_id": trade_id, "ticker": ticker, "direction": direction,
                 "entry_price": bar["close"], "units": units,
                 "entry_cost": round(entry_cost, 2), "fill_date": bar["date"],
                 "fill_status": fill["status"]}
 
     async def paper_exit(self, trade_id: int) -> dict:
-        """Close a paper position at the latest cached KLSE close."""
+        """Close a paper position at the latest cached close."""
         with db_session() as conn:
             row = conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
         if not row or row["status"] == "closed":
@@ -166,11 +207,18 @@ class PortfolioExecutor(BaseAgent):
         if not bar:
             return {"error": f"No price data for {ticker}"}
 
-        value = row["units"] * bar["close"]
+        units = row["units"]  # signed: negative for a short
+        # A short CLOSES with a buy (to cover); a long closes with a sell.
+        exit_side = "buy" if units < 0 else "sell"
+        value = abs(units) * bar["close"]
         tier = bursa_slippage_tier(bar["adv_value"])
-        exit_cost = bursa_trade_cost(value, "sell", tier)
-        pnl = ((bar["close"] - row["entry_price"]) * row["units"]
-               - (row["entry_cost"] or 0) - exit_cost)
+        exit_cost = bursa_trade_cost(value, exit_side, tier)
+        # Signed units make long/short PnL fall out of the SAME formula: a
+        # short's negative units correctly turn a price rise into a loss.
+        # funding_paid (WS3) is subtracted like any other real cost/income —
+        # 0 on Bursa, so this is a no-op there.
+        pnl = ((bar["close"] - row["entry_price"]) * units
+               - (row["entry_cost"] or 0) - exit_cost - (row["funding_paid"] or 0))
 
         with db_session() as conn:
             conn.execute("""
@@ -182,8 +230,8 @@ class PortfolioExecutor(BaseAgent):
                 INSERT INTO paper_trade_reconciliation
                   (trade_id, side, expected_price, actual_price,
                    expected_cost, actual_cost, price_diff, cost_diff, clean)
-                VALUES (?, 'sell', ?, ?, ?, ?, 0, 0, 1)
-            """, (trade_id, bar["close"], bar["close"],
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0, 1)
+            """, (trade_id, exit_side, bar["close"], bar["close"],
                   round(exit_cost, 2), round(exit_cost, 2)))
 
         self.log_daemon("INFO",
@@ -227,6 +275,13 @@ class PortfolioExecutor(BaseAgent):
 
         Recomputes the strategy signal from the stored backtest params on fresh
         data, enters/exits accordingly, then marks the idea's NAV to market.
+
+        WS3: current_signal may be -1/0/1 (DSL long/short trees). A held
+        position whose direction no longer matches the signal (including a
+        long<->short flip) is exited THIS cycle; a fresh entry in the new
+        direction happens on the NEXT cycle if the signal still holds — avoids
+        same-bar entry+exit and keeps cost/fill realism (mirrors the
+        backtester's 1-bar signal delay).
         """
         from agents.backtest_engineer.backtest_engineer import BacktestEngineer
 
@@ -239,13 +294,25 @@ class PortfolioExecutor(BaseAgent):
 
         action = "hold"
         open_trade = self._open_trade(idea_id)
-        if current_signal == 1 and not open_trade:
-            result = await self.paper_entry(idea_id, ticker, "long",
-                                            signal=params.get("signal_type", ""))
-            action = "entry" if "error" not in result else f"entry_failed: {result['error']}"
-        elif current_signal == 0 and open_trade:
+        held_sign = 0
+        if open_trade:
+            held_sign = 1 if open_trade["units"] > 0 else -1
+
+        if open_trade and current_signal != held_sign:
             result = await self.paper_exit(open_trade["id"])
             action = "exit" if "error" not in result else f"exit_failed: {result['error']}"
+        elif not open_trade and current_signal != 0:
+            direction = "long" if current_signal > 0 else "short"
+            result = await self.paper_entry(idea_id, ticker, direction,
+                                            signal=params.get("signal_type", ""))
+            action = "entry" if "error" not in result else f"entry_failed: {result['error']}"
+
+        # WS3: accrue funding once per cycle on whatever position is open now
+        # (including one opened this same cycle — funding settlement doesn't
+        # care how recently the position opened).
+        still_open = self._open_trade(idea_id)
+        if still_open and FUNDING_INTERVAL_HOURS:
+            self._accrue_funding(still_open["id"], still_open["units"], still_open["entry_price"])
 
         mtm = self.mark_to_market(idea_id)
         return {"idea_id": idea_id, "ticker": ticker, "signal": current_signal,

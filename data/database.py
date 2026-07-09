@@ -368,6 +368,17 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # WS3: long/short via perpetuals — leverage used and cumulative funding
+        # drag (net of position sign, MODELED AVERAGE not real historical
+        # funding — see AVG_FUNDING_RATE_PER_INTERVAL) on every run. 0/NULL on
+        # Bursa (no leverage, no funding concept).
+        for _col in ("leverage_used REAL", "funding_drag_pct REAL"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
         # Phase 1.1: versioned transaction-cost schedules (audit §3.2). Costs are
         # date-dependent on Bursa (stamp-duty remission 0.15%→0.10% from
         # 2023-07-13). Store schedules by effective date so a backtest spanning
@@ -801,6 +812,15 @@ def init_db(db_path: Path = DB_PATH):
                 logger.info(f"Migration applied: paper_trades.{_col.split()[0]} added")
             except Exception:
                 pass
+
+        # WS3: cumulative funding paid (positive) / received (negative) while a
+        # perp position was open — accrued once per daily_update cycle. 0 on
+        # Bursa (no perp funding concept).
+        try:
+            conn.execute("ALTER TABLE paper_trades ADD COLUMN funding_paid REAL DEFAULT 0")
+            logger.info("Migration applied: paper_trades.funding_paid added")
+        except Exception:
+            pass
 
         # CPO module: daily CPO spot price cache
         conn.execute("""

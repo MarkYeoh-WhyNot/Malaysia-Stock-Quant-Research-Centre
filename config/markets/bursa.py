@@ -76,6 +76,17 @@ FEE_MODEL_VERSION    = "2026-07-09"   # 0.10% remitted stamp (cap RM1000), 0.03%
 # reasoning; it does not feed the cost math below.
 SETTLEMENT_CYCLE = "T+2"
 
+# Bursa is long-only by design (short-selling heavily restricted, RSS/IDSS
+# approved-list only — see MARKET_BRIEF below); crypto's ALLOW_SHORT=True
+# (WS3, perpetuals) is the exception, not the default. Leverage/liquidation/
+# funding are perp-only concepts with no Bursa equivalent.
+ALLOW_SHORT = False
+MAX_LEVERAGE = 1.0
+DEFAULT_LEVERAGE = 1.0
+LIQUIDATION_BUFFER = 0.0
+FUNDING_INTERVAL_HOURS = None
+AVG_FUNDING_RATE_PER_INTERVAL = 0.0
+
 COMMISSION_RATE     = 0.0008     # 0.08% per side
 # Stamp duty: statutory RM1.50/RM1,000 (0.15%), but REMITTED to an effective
 # 0.10% for contract notes executed 2023-07-13 → 2028-07-12, capped at RM1,000
@@ -124,6 +135,12 @@ def trade_cost(trade_value: float, side: str,
         cost += min(value * STAMP_DUTY_RATE, STAMP_DUTY_CAP)
     cost += value * SLIPPAGE_TIERS.get(tier, SLIPPAGE_TIERS["MID_CAP"])
     return cost
+
+
+def funding_cost(position: float, funding_rate: float, notional: float) -> float:
+    """No-op — funding is a perpetual-futures concept with no Bursa equity
+    equivalent. Present only for interface parity with the crypto profile."""
+    return 0.0
 
 
 def size_units(nav: float, price: float, alloc_pct: float) -> float:
