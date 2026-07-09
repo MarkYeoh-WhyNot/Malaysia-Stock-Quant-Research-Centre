@@ -3789,7 +3789,7 @@ function renderArsenal() {
             <div class="tc-profile-text">${esc(t.phenomenon)}</div>
           </div>` : ''}
           ${t.bursa_nuance ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">Bursa Nuance</div>
+            <div class="tc-profile-label">Market Nuance</div>
             <div class="tc-profile-text" style="color:var(--cyan)">${esc(t.bursa_nuance)}</div>
           </div>` : ''}
           ${t.entry_condition ? `<div class="tc-profile-section">
@@ -3831,7 +3831,7 @@ function renderArsenal() {
           <span class="tc-badge ${cplxClass}" title="Overfitting risk">${riskLabels[t.overfitting_risk]||t.overfitting_risk}</span>
         </div>
       </div>
-      <div class="tc-applicability">${esc(t.bursa_applicability)}</div>
+      <div class="tc-applicability">${esc(t.market_applicability || t.bursa_applicability || '')}</div>
       ${icBench}
       ${useItems ? `<div class="tc-use-label">Use when</div>
       <ul class="tc-use-list">${useItems}</ul>` : ''}
