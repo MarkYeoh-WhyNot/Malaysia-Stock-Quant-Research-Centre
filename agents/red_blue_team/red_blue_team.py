@@ -4,11 +4,16 @@ from agents.base_agent import BaseAgent
 from config.settings import (
     MODEL_MAIN, MODEL_HEAVY, GATE_CONFIG,
     MARKET_NAME, MARKET_BRIEF, RED_TEAM_ATTACKS, BLUE_DEFENSE_NOTES,
-    JUDGE_REJECT_RULE,
+    JUDGE_REJECT_RULE, MARKET_MODE,
 )
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
+
+# Noun used in the red/blue/judge user prompts. Bursa keeps its historical
+# wording byte-identical; other markets get the profile name.
+_STRATEGY_NOUN = ("Bursa Malaysia equity strategy" if MARKET_MODE == "bursa"
+                  else f"{MARKET_NAME} strategy")
 
 # Market structure brief + attack/defense lines come from the active market
 # profile (config/markets/) — Bursa text is verbatim what previously lived here;
@@ -144,6 +149,29 @@ class RedBlueTeam(BaseAgent):
         block = "\nACCUMULATED FAILURE KNOWLEDGE (use as attack ammunition):\n" + "\n".join(lines[:8])
         return block[:1200] + "\n"
 
+    def _technique_caveats(self, idea: dict) -> str:
+        """when_to_avoid caveats for Technique Arsenal entries the idea relies
+        on — concrete attack ammunition, mirroring the technique matching in
+        StrategyResearcher.research_idea(). Non-blocking."""
+        try:
+            from knowledge.ingestion.technique_library import TECHNIQUE_LIBRARY
+            text = f"{idea.get('factor_formula') or ''} {idea.get('hypothesis') or ''}".lower()
+            lines = []
+            for key, tech in TECHNIQUE_LIBRARY.items():
+                if key.replace("_", " ") in text or key in text:
+                    avoid = "; ".join(tech.get("when_to_avoid", [])[:3])
+                    if avoid:
+                        lines.append(f"• [{key}] avoid when: {avoid}")
+                if len(lines) >= 3:
+                    break
+            if not lines:
+                return ""
+            block = ("\nTECHNIQUE CAVEATS (attack if the strategy violates "
+                     "these):\n" + "\n".join(lines))
+            return block[:800] + "\n"
+        except Exception:
+            return ""
+
     def red_team_attack(self, idea: dict, backtest_results: dict) -> dict:
         signal_type_context = ""
         if _is_fundamental_screen(idea):
@@ -154,8 +182,9 @@ class RedBlueTeam(BaseAgent):
             ).replace("{k}", str(k)).replace("{k*4*0.4:.1f}", f"{k * 4 * 0.4:.1f}")
 
         failure_knowledge = self._failure_knowledge(idea)
+        technique_caveats = self._technique_caveats(idea)
 
-        prompt = f"""Stress-test this Bursa Malaysia equity strategy as a hostile adversary.
+        prompt = f"""Stress-test this {_STRATEGY_NOUN} as a hostile adversary.
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
@@ -165,7 +194,7 @@ Research score: {idea.get('research_score')}
 
 Backtest results:
 {json.dumps(backtest_results, indent=2)}
-{signal_type_context}{failure_knowledge}
+{signal_type_context}{failure_knowledge}{technique_caveats}
 Return JSON:
 {{
   "critical_flaws": [
@@ -216,7 +245,7 @@ Return JSON:
         }
         red_json = json.dumps(red_summary, indent=2)
 
-        prompt = f"""Defend this Bursa Malaysia equity strategy against the following red-team critique.
+        prompt = f"""Defend this {_STRATEGY_NOUN} against the following red-team critique.
 
 Strategy: {idea.get('title')}
 Hypothesis: {idea.get('hypothesis')}
@@ -268,7 +297,7 @@ Return JSON:
             "verdict", "verdict_reason", "oos_degradation",
         )}
 
-        prompt = f"""Judge this Bursa Malaysia equity strategy debate and give a final verdict.
+        prompt = f"""Judge this {_STRATEGY_NOUN} debate and give a final verdict.
 
 Strategy: {idea.get('title')} | Ticker: {idea.get('ticker')}
 Backtest: {json.dumps(bt_summary, indent=2)}

@@ -1100,7 +1100,7 @@ svg text{font-family:var(--font-mono)}
       <div class="panel" style="display:flex;flex-direction:column;height:70vh">
         <div class="panel-head">
           <span class="panel-title">🤖 Research Concierge</span>
-          <span style="font-size:12px;color:var(--muted)">Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long-only, paper-only — I never trigger live trades.)</span>
+          <span id="cc-subtitle" style="font-size:12px;color:var(--muted)">Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long-only, paper-only — I never trigger live trades.)</span>
         </div>
         <div id="cc-messages" style="flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:10px"></div>
         <div style="display:flex;gap:8px;margin-top:8px">
@@ -1117,7 +1117,7 @@ svg text{font-family:var(--font-mono)}
       </div>
       <div class="panel">
         <div class="panel-head"><span class="panel-title">Try asking</span></div>
-        <div style="font-size:11px;color:var(--muted2);line-height:1.7">
+        <div id="cc-examples" style="font-size:11px;color:var(--muted2);line-height:1.7">
           • "Test a 20/50 MA crossover on Maybank"<br>
           • "Try an RSI oversold strategy on plantation stocks"<br>
           • "How is idea 123 doing?"<br>
@@ -1599,6 +1599,19 @@ document.addEventListener('DOMContentLoaded', () => {
   if (arsSub) arsSub.textContent = IS_CRYPTO
     ? 'When to use which model in crypto markets'
     : 'When to use which model on Bursa Malaysia';
+  // Concierge panel copy is long-only/Bursa by default; swap for crypto.
+  if (IS_CRYPTO) {
+    const ccSub = document.getElementById('cc-subtitle');
+    if (ccSub) ccSub.textContent = "Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long/short perps, paper-only — I never trigger live trades.)";
+    const ccInput = document.getElementById('cc-input');
+    if (ccInput) ccInput.placeholder = 'e.g. Short ETH/USDT when it closes below the 50-day MA';
+    const ccEx = document.getElementById('cc-examples');
+    if (ccEx) ccEx.innerHTML =
+      '• "Test a 20/50 MA crossover on BTC/USDT"<br>' +
+      '• "Short SOL/USDT on RSI overbought"<br>' +
+      '• "How is idea 123 doing?"<br>' +
+      '• "List the ideas I\'ve submitted"';
+  }
 });
 let _allMCLogs = [];
 let _currentPage = 'mc';
@@ -2675,11 +2688,15 @@ let _ccGreeted = false;
 function loadConcierge() {
   if (_ccGreeted) return;
   _ccGreeted = true;
-  ccAppend('assistant',
-    "Hi — I'm your research concierge. Describe a strategy idea in plain English " +
-    "and I'll structure it, run it through the backtest → red/blue → paper pipeline, " +
-    "and report back. I'm long-only and paper-only: I can get an idea ready for a live " +
-    "decision, but you make the live call.");
+  ccAppend('assistant', IS_CRYPTO
+    ? "Hi — I'm your research concierge. Describe a strategy idea in plain English " +
+      "and I'll structure it, run it through the backtest → red/blue → paper pipeline, " +
+      "and report back. I can trade long or short (perps, paper-only): I can get an idea " +
+      "ready for a live decision, but you make the live call."
+    : "Hi — I'm your research concierge. Describe a strategy idea in plain English " +
+      "and I'll structure it, run it through the backtest → red/blue → paper pipeline, " +
+      "and report back. I'm long-only and paper-only: I can get an idea ready for a live " +
+      "decision, but you make the live call.");
 }
 
 function ccAppend(role, text) {

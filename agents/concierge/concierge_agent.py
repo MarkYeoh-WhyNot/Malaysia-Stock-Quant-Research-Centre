@@ -99,7 +99,47 @@ TOOLS = [
             "required": ["names"],
         },
     },
+    {
+        "name": "suggest_techniques",
+        "description": "Look up the Technique Arsenal before refining or submitting an "
+                       "idea. Pass a technique key (from the arsenal index in your "
+                       "instructions) for its full use/avoid guidance, or pass "
+                       "strategy_type/holding_period to get the top-ranked techniques "
+                       "for that shape of idea. Read-only.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "Exact technique key, e.g. from the arsenal index"},
+                "strategy_type": {"type": "string", "description": "e.g. momentum, mean_reversion, carry, event_driven"},
+                "holding_period": {"type": "string", "description": "short_term, medium_term, or long_term"},
+            },
+        },
+    },
 ]
+
+
+def _technique_index() -> str:
+    """Compact key — name index of the active market's Technique Arsenal.
+
+    Full detail stays behind the suggest_techniques tool so the (already heavy)
+    system prompt only grows by one line per technique. Non-blocking: an import
+    failure must never take down chat.
+    """
+    try:
+        from knowledge.ingestion.technique_library import TechniqueLibrary
+        lib = TechniqueLibrary()
+        lines = "\n".join(
+            f"  {k} — {(lib.get_by_key(k) or {}).get('name', k)}"
+            for k in lib.all_keys())
+        if not lines:
+            return ""
+        return (f"\nTECHNIQUE ARSENAL (call suggest_techniques for full "
+                f"use/avoid guidance before refining an idea):\n{lines}\n"
+                "When a user's idea maps to a known technique, consult "
+                "suggest_techniques and fold its guidance into the "
+                "factor_formula or your feedback.\n")
+    except Exception:
+        return ""
 
 
 def _system_prompt() -> str:
@@ -142,7 +182,7 @@ HARD RULES — never violate:
 
 Write factor_formula in terms the backtester can parse — prefer these conditions:
 {signal_dsl.leaf_catalog_text()}
-
+{_technique_index()}
 Tradable universe:
 {universe}
 
@@ -217,6 +257,21 @@ class ConciergeAgent(BaseAgent):
                 "ORDER BY l.id DESC", (session_id,)).fetchall()
         return {"ideas": [dict(r) for r in rows]}
 
+    def _tool_suggest_techniques(self, args: dict) -> dict:
+        try:
+            from knowledge.ingestion.technique_library import TechniqueLibrary
+            lib = TechniqueLibrary()
+            key = (args.get("key") or "").strip()
+            if key:
+                return {"techniques": lib.format_full_detail(key)}
+            text = lib.get_relevant_techniques(
+                strategy_type=args.get("strategy_type") or "",
+                holding_period=args.get("holding_period") or "medium_term",
+                max_techniques=3)
+            return {"techniques": text or "No matching techniques."}
+        except Exception as e:
+            return {"error": f"technique lookup failed: {e}", "techniques": ""}
+
     def _tool_search_kb(self, query: str) -> dict:
         try:
             from knowledge.search.retriever import retrieve
@@ -238,6 +293,8 @@ class ConciergeAgent(BaseAgent):
             return self._tool_search_kb(args.get("query", ""))
         if name == "resolve_tickers":
             return self._tool_resolve_tickers(args.get("names", []))
+        if name == "suggest_techniques":
+            return self._tool_suggest_techniques(args)
         return {"error": f"unknown tool {name}"}
 
     # ── Session + turn handling ─────────────────────────────────────────────

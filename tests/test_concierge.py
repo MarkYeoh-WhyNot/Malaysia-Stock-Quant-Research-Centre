@@ -39,10 +39,31 @@ def _session():
 def test_toolset_has_no_live_or_destructive_tools():
     names = {t["name"] for t in TOOLS}
     assert names == {"submit_strategy_idea", "get_idea_status", "list_session_ideas",
-                     "search_knowledge_base", "resolve_tickers"}
+                     "search_knowledge_base", "resolve_tickers", "suggest_techniques"}
     blob = " ".join(names).lower()
     for forbidden in ("live", "approve", "delete", "promote", "stage4b"):
         assert forbidden not in blob
+
+
+# ── Technique Arsenal wiring ──────────────────────────────────────────────────
+def test_system_prompt_carries_technique_arsenal_index():
+    from agents.concierge.concierge_agent import _system_prompt
+    p = _system_prompt()
+    assert "TECHNIQUE ARSENAL" in p
+    assert "suggest_techniques" in p
+    # Bursa default mode → a Bursa-library key should be in the index
+    assert "kalman_filter" in p
+
+
+def test_suggest_techniques_by_key_and_by_shape():
+    c = ConciergeAgent()
+    by_key = c._tool_suggest_techniques({"key": "kalman_filter"})
+    assert "TECHNIQUE:" in by_key["techniques"]
+    assert "WHEN TO USE" in by_key["techniques"]
+    ranked = c._tool_suggest_techniques({"strategy_type": "momentum"})
+    assert ranked["techniques"].strip()
+    unknown = c._tool_suggest_techniques({"key": "no_such_technique"})
+    assert "not found" in unknown["techniques"]
 
 
 # ── Tool implementations ──────────────────────────────────────────────────────

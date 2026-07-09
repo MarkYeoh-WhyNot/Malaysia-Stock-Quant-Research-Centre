@@ -42,6 +42,20 @@ def test_short_selling_is_hard_blocked():
     assert "long-only" in r["error"].lower()
 
 
+def test_bursa_refusal_wording_pinned():
+    """Bursa refusal strings must stay byte-identical — the wording is now
+    built from ALLOW_SHORT, and this pins the ALLOW_SHORT=False rendering."""
+    blocked = submit_sandbox_idea({
+        "title": "SBX pin blocked", "hypothesis": "short sell the weakest bank",
+        "ticker": "1155.KL", "factor_formula": "short when rsi above 70 for days",
+    })
+    assert blocked["error"].endswith(
+        "this system is long-only and trades daily bars "
+        "(no short-selling, pairs, or intraday).")
+    from pipeline.sandbox import _INFEASIBLE_HINT
+    assert _INFEASIBLE_HINT == "short-selling, intraday, or unavailable-data reliance"
+
+
 def test_intraday_is_hard_blocked():
     r = submit_sandbox_idea({
         "title": "SBX scalp", "hypothesis": "intraday scalping the open",

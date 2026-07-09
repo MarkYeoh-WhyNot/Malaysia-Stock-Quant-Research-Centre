@@ -54,6 +54,66 @@ print(json.dumps({"ok": ok["ok"], "status": ok.get("status"),
     assert r["spread_bad"] is False
 
 
+def test_crypto_refusal_wording_is_long_short():
+    """The blocked-mode refusal must not claim 'long-only' in crypto mode
+    (ALLOW_SHORT=True) — it should state the long/short capability."""
+    out = run_crypto("""
+import json
+from data.database import init_db
+init_db()
+from pipeline.sandbox import submit_sandbox_idea, _INFEASIBLE_HINT
+spread = submit_sandbox_idea({"title": "CRX spread word", "hypothesis": "spread trade between two majors",
+                              "ticker": "SOL/USDT", "factor_formula": "close above sma(50)"})
+print(json.dumps({"err": spread.get("error", ""), "hint": _INFEASIBLE_HINT}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert "long-only" not in r["err"]
+    assert "long/short" in r["err"]
+    assert "short-selling" not in r["hint"]
+
+
+def test_crypto_templates_are_long_short():
+    """WS3 follow-through: crypto-mode event→formula templates must express
+    both directions (short_entry-able phrasing), in price/indicator terms."""
+    out = run_crypto("""
+import json
+import scripts.event_watcher as ew
+t = ew.FACTOR_FORMULA_TEMPLATES
+print(json.dumps({
+    "funding_short": "enter short" in t["funding_spike"],
+    "funding_long": "enter long" in t["funding_spike"],
+    "unlock_short": "short" in t["unlock"].lower(),
+    "basis_directional": "enter short" in t["basis_dislocation"] and "enter long" in t["basis_dislocation"],
+    "btc_symmetric": "short" in t["btc_move"],
+    "listing_long_only": "short" not in t["listing"].lower(),
+    "price_based_entry": "close < sma(10)" in t["funding_spike"],
+}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert all(r.values()), r
+
+
+def test_crypto_concierge_prompt_lists_crypto_techniques():
+    """The concierge system prompt's arsenal index must carry the CRYPTO
+    technique set (and its new tool must return detail for a crypto key)."""
+    out = run_crypto("""
+import json
+from agents.concierge.concierge_agent import _system_prompt, ConciergeAgent
+p = _system_prompt()
+c = ConciergeAgent.__new__(ConciergeAgent)  # tool method needs no client
+detail = c._tool_suggest_techniques({"key": "funding_rate_carry"})
+print(json.dumps({"arsenal": "TECHNIQUE ARSENAL" in p,
+                  "crypto_key": "funding_rate_carry" in p,
+                  "bursa_key": "epf_flow" in p,
+                  "detail_ok": "TECHNIQUE:" in detail.get("techniques", "")}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert r["arsenal"] is True
+    assert r["crypto_key"] is True
+    assert r["bursa_key"] is False
+    assert r["detail_ok"] is True
+
+
 def test_funding_rate_formula_docked_not_hard_blocked_at_sandbox():
     """A formula needing a HISTORICAL funding-rate series (not backtestable —
     no such DSL leaf/data column exists) is docked by the deterministic

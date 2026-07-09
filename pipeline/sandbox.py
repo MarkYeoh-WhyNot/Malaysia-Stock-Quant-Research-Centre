@@ -7,8 +7,9 @@ prompt) who has vouched for the idea. The daemon then carries it stage2 → stag
 (red/blue) → stage4a (paper) automatically; nothing here reaches live trading.
 
 A deterministic feasibility pre-check (reused from StrategyResearcher) runs first
-so an infeasible brief (short-selling, bad ticker, unavailable data) is refused
-before it consumes a backtest — the previous inline sandbox skipped this.
+so an infeasible brief (a hard-blocked mode for the active market profile, bad
+ticker, unavailable data) is refused before it consumes a backtest — the previous
+inline sandbox skipped this.
 """
 from __future__ import annotations
 
@@ -18,14 +19,26 @@ from datetime import datetime
 
 from data.database import db_session
 # Ticker format + hard-blocked trading modes come from the active market profile
-# (Bursa: .KL codes; crypto: /USDT pairs + no perps/margin). Same long-only,
-# daily-bar philosophy in every market.
+# (Bursa: .KL codes, long-only; crypto: /USDT pairs, long/short perps). Daily
+# bars in every market.
 from config.settings import (
-    TICKER_REGEX, TICKER_EXAMPLE, BLOCKED_MODES, MARKET_NAME,
+    TICKER_REGEX, TICKER_EXAMPLE, BLOCKED_MODES, MARKET_NAME, ALLOW_SHORT,
 )
 
 # Matches the pipeline's Gate 0 feasibility bar (North Star: feasibility >= 0.60).
 MIN_FEASIBILITY = 0.60
+
+# Refusal wording tracks the active profile's capabilities (ALLOW_SHORT is the
+# one semantic switch); the Bursa strings are pinned byte-identical in tests.
+_CAPABILITY_NOTE = (
+    "this system trades long/short on daily bars (no multi-leg spread/pairs, "
+    "options, or intraday)" if ALLOW_SHORT else
+    "this system is long-only and trades daily bars (no short-selling, pairs, "
+    "or intraday)")
+_INFEASIBLE_HINT = (
+    "intraday, multi-leg structure, or unavailable-data reliance (e.g. "
+    "historical funding/OI series)" if ALLOW_SHORT else
+    "short-selling, intraday, or unavailable-data reliance")
 
 
 def _blocked_mode(text: str) -> str | None:
@@ -70,12 +83,11 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
     ticker = ",".join(t for t in found_tickers if not (t in seen or seen.add(t)))
     primary = found_tickers[0]
 
-    # Hard block on structurally infeasible modes (long-only, daily-bar system).
+    # Hard block on structurally infeasible modes for the active market profile.
     blocked = _blocked_mode(f"{title} {hypothesis} {factor_formula}")
     if blocked:
         return {"ok": False,
-                "error": f"'{blocked}' is not supported — this system is long-only "
-                         f"and trades daily bars (no short-selling, pairs, or intraday)."}
+                "error": f"'{blocked}' is not supported — {_CAPABILITY_NOTE}."}
 
     # Deterministic feasibility pre-check — fail cheap before a backtest.
     feasibility = StrategyResearcher._compute_feasibility(
@@ -84,7 +96,7 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
         return {"ok": False, "feasibility": feasibility,
                 "error": f"Idea is not feasible on {MARKET_NAME} (feasibility "
                          f"{feasibility:.2f} < {MIN_FEASIBILITY:.2f}) — likely "
-                         f"short-selling, intraday, or unavailable-data reliance."}
+                         f"{_INFEASIBLE_HINT}."}
 
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
     slug = f"{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{slug}"

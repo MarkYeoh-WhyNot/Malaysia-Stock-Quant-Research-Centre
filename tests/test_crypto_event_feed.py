@@ -111,3 +111,83 @@ def test_gate0_ticker_gate_accepts_crypto_pairs(monkeypatch):
          "confidence": 0.8, "historical_edge": "test"},
     )
     assert idea_id == 42  # previously always returned None for non-.KL tickers
+
+
+# ── Formula templates: Bursa pinned long-only, crypto long/short ─────────────
+
+def test_bursa_templates_stay_long_only():
+    """Default (Bursa) process: crypto template overrides must NOT apply —
+    ALLOW_SHORT=False, so the WS2 long-only phrasing is pinned."""
+    import scripts.event_watcher as ew
+    assert "reduce/avoid new long entries" in ew.FACTOR_FORMULA_TEMPLATES["funding_spike"]
+    assert "enter short" not in ew.FACTOR_FORMULA_TEMPLATES["funding_spike"]
+    assert ew.FACTOR_FORMULA_TEMPLATES["unlock"].startswith("Reduce exposure")
+    assert "Enter long when RSI(14) > 45" in ew.FACTOR_FORMULA_TEMPLATES["earnings_beat"]
+
+
+def test_crypto_event_types_have_typed_emojis():
+    """Every crypto event type in EVENT_DOMAIN_MAP renders a typed alert tag,
+    not the [INFO] fallback."""
+    import scripts.event_watcher as ew
+    crypto_types = ["funding_spike", "oi_surge", "basis_dislocation", "btc_move",
+                    "eth_move", "btc_dominance_shift", "listing", "unlock",
+                    "depeg", "dxy_move", "yield_move", "regulatory"]
+    for t in crypto_types:
+        assert t in ew.EVENT_DOMAIN_MAP
+        assert t in ew.EVENT_TYPE_EMOJIS, f"{t} would fall back to [INFO]"
+
+
+# ── run_cycle news gating: Brave runs in BOTH markets, Bursa-only sources don't ─
+
+class _Recorder:
+    def __init__(self, result=None):
+        self.calls = 0
+        self.result = result if result is not None else []
+
+    def __call__(self, *a, **kw):
+        self.calls += 1
+        return self.result
+
+
+def _bare_watcher(ew):
+    w = ew.EventWatcher.__new__(ew.EventWatcher)
+    w._rss_cycle = 0
+    w._cycle_count = 0
+    w.rss = type("R", (), {})()
+    w.bursa = type("B", (), {})()
+    w.commodities = type("C", (), {})()
+    w.crypto = type("X", (), {})()
+    w.rss.fetch_all_feeds = _Recorder()
+    w.bursa.fetch_announcements = _Recorder()
+    w.commodities.check_moves = _Recorder()
+    w.crypto.check_moves = _Recorder()
+    w.check_economic_calendar = _Recorder()
+    return w
+
+
+def test_run_cycle_crypto_fetches_news_skips_bursa_sources(monkeypatch):
+    import config.settings as settings
+    import scripts.event_watcher as ew
+    monkeypatch.setattr(settings, "MARKET_MODE", "crypto")
+    monkeypatch.setattr(ew, "_log_daemon", lambda *a, **kw: None)
+    w = _bare_watcher(ew)
+    for _ in range(3):
+        w.run_cycle()
+    assert w.rss.fetch_all_feeds.calls == 1          # 3rd cycle → news search ran
+    assert w.bursa.fetch_announcements.calls == 0    # Bursa-only source skipped
+    assert w.check_economic_calendar.calls == 0      # Bursa-only source skipped
+    assert w.crypto.check_moves.calls == 3           # perp monitor every cycle
+
+
+def test_run_cycle_bursa_news_cadence_unchanged(monkeypatch):
+    import config.settings as settings
+    import scripts.event_watcher as ew
+    monkeypatch.setattr(settings, "MARKET_MODE", "bursa")
+    monkeypatch.setattr(ew, "_log_daemon", lambda *a, **kw: None)
+    w = _bare_watcher(ew)
+    for _ in range(6):
+        w.run_cycle()
+    assert w.rss.fetch_all_feeds.calls == 2          # every 3rd cycle, as before
+    assert w.bursa.fetch_announcements.calls == 6
+    assert w.check_economic_calendar.calls == 6
+    assert w.crypto.check_moves.calls == 0

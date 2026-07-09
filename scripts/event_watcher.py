@@ -68,6 +68,19 @@ EVENT_TYPE_EMOJIS = {
     "macro_context": "[GRAY]",
     "analyst_upgrade": "[BLUE]",
     "analyst_downgrade": "[RED]",
+    # Crypto event types (previously fell through to the [INFO] fallback)
+    "funding_spike": "[ORANGE]",
+    "oi_surge": "[ORANGE]",
+    "basis_dislocation": "[YELLOW]",
+    "btc_move": "[YELLOW]",
+    "eth_move": "[YELLOW]",
+    "btc_dominance_shift": "[YELLOW]",
+    "listing": "[BLUE]",
+    "unlock": "[PURPLE]",
+    "depeg": "[RED]",
+    "dxy_move": "[GRAY]",
+    "yield_move": "[GRAY]",
+    "regulatory": "[GRAY]",
 }
 
 EVENT_DOMAIN_MAP = {
@@ -157,8 +170,8 @@ FACTOR_FORMULA_TEMPLATES = {
         "On China PMI release below 50, reduce exposure to export-sensitive industrials. "
         "Monitor for 10 trading days before re-entry."
     ),
-    # Crypto event types (WS2) — long-only spot phrasing (perp long/short lands
-    # in Workstream 3); these are directional entry rules on the affected pair.
+    # Crypto event types (WS2) — long-only phrasing; overridden below with perp
+    # long/short variants when the active profile has ALLOW_SHORT=True.
     "funding_spike": (
         "When perp funding rate exceeds +0.05% (crowded long), reduce/avoid new long entries "
         "for 2-3 days pending mean reversion. When funding is very negative, treat as a "
@@ -195,6 +208,54 @@ FACTOR_FORMULA_TEMPLATES = {
         "for 1-2 trading days pending confirmation of risk-off continuation."
     ),
 }
+
+# Perp long/short template variants (WS3): only the crypto profile has
+# ALLOW_SHORT=True, so Bursa's dict above stays byte-identical. The event is
+# the trigger — entry/exit stay in price/indicator terms the signal DSL can
+# parse (historical funding/OI series are not backtestable inputs).
+from config.settings import ALLOW_SHORT  # noqa: E402
+
+if ALLOW_SHORT:
+    FACTOR_FORMULA_TEMPLATES.update({
+        "funding_spike": (
+            "After a crowded-long funding extreme (>+0.05%), enter short the next day if "
+            "close < sma(10); exit after 3-5 trading days or when RSI(14) < 30. After a "
+            "deeply negative funding print, mirror it: enter long if close > sma(10), "
+            "exit after 3-5 trading days or RSI(14) > 70."
+        ),
+        "oi_surge": (
+            "After a >15% open-interest jump alongside a price move, wait for the immediate "
+            "session to close — avoid chasing into a potential liquidation cascade. If price "
+            "then closes back inside the pre-surge range, enter counter-trend (short after "
+            "an up-spike, long after a down-spike); exit after 2-3 trading days."
+        ),
+        "basis_dislocation": (
+            "When perp basis exceeds +0.5% above index (perp rich), treat as short-term "
+            "overextension: enter short on the next lower close, exit on basis "
+            "normalisation or day 3. When the perp trades at a discount, mirror it: enter "
+            "long on the next higher close."
+        ),
+        "btc_move": (
+            "On a BTC move >5%, expect alts to follow with a 0-2 day lag and amplified beta. "
+            "Enter long the lagging correlated pair after an up-move, or short it after a "
+            "down-move; exit after 3-5 trading days or on convergence."
+        ),
+        "eth_move": (
+            "On an ETH move >6%, expect smart-contract/L2/DeFi tokens to follow with a "
+            "0-2 day lag. Enter long the lagging correlated pair after an up-move, or short "
+            "it after a down-move; exit after 3-5 trading days or on convergence."
+        ),
+        "unlock": (
+            "Enter short 1-2 trading days before a confirmed large token-unlock date. "
+            "Cover 5 trading days after the unlock once sell pressure is absorbed."
+        ),
+        "dxy_move": (
+            "On DXY strength >0.6%, take a short bias on majors for 1-2 trading days "
+            "pending confirmation of risk-off continuation; on DXY weakness, mirror with "
+            "a long bias."
+        ),
+        # "listing" stays long-only — a new listing is a naturally long event.
+    })
 
 
 def _send_telegram(message: str):
@@ -302,9 +363,11 @@ class EventWatcher:
     def run_cycle(self):
         """Single scan cycle.
 
-        Dual-market: sources 1, 2 and 4 (Bursa announcements, Malaysian news
-        RSS, Bursa economic calendar) are Bursa-only and are skipped in crypto
-        mode. Source 3 (the price-move monitor) is market-aware — its
+        Dual-market: sources 1 and 4 (Bursa announcements, Bursa economic
+        calendar) are Bursa-only and are skipped in crypto mode. Source 2
+        (news search) is market-aware — RSSClient's Brave query set is
+        profile-conditional (Malaysian outlets for Bursa, crypto news for
+        crypto). Source 3 (the price-move monitor) is market-aware — its
         watchlist is profile-conditional (commodities for Bursa, BTC/ETH
         majors for crypto).
         """
@@ -321,17 +384,17 @@ class EventWatcher:
             except Exception as exc:
                 _log_daemon("WARN", f"Bursa scraper error: {exc}")
 
-        # 2. RSS feeds — every 3rd cycle (15 min cadence; Bursa news sources)
-        if _is_bursa:
-            self._rss_cycle += 1
-            if self._rss_cycle >= 3:
-                try:
-                    rss = self.rss.fetch_all_feeds()
-                    raw_events.extend(rss)
-                    logger.debug(f"RSS: {len(rss)} entries")
-                except Exception as exc:
-                    _log_daemon("WARN", f"RSS error: {exc}")
-                self._rss_cycle = 0
+        # 2. News search — every 3rd cycle (15 min cadence; Brave query set is
+        # per-profile, so this runs in both markets)
+        self._rss_cycle += 1
+        if self._rss_cycle >= 3:
+            try:
+                rss = self.rss.fetch_all_feeds()
+                raw_events.extend(rss)
+                logger.debug(f"RSS: {len(rss)} entries")
+            except Exception as exc:
+                _log_daemon("WARN", f"RSS error: {exc}")
+            self._rss_cycle = 0
 
         # 3. Market price-move monitor — every cycle (watchlist per profile)
         try:
