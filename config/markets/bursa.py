@@ -391,3 +391,51 @@ ENABLED_JOBS = None
 
 # GateConfig field overrides for this market (none — defaults ARE Bursa).
 GATE_OVERRIDES: dict = {}
+
+
+# ── System Direction document (dashboard /api/system/direction) ────────────────
+# Market-specific "north star" content, moved verbatim out of the endpoint so the
+# endpoint is market-agnostic. The endpoint merges this with live KB / idea /
+# spend numbers and derives research-angle coverage from RESEARCH_ANGLES.
+DIRECTION_DOC = {
+    "last_updated": "April 2026",
+    "core_purpose": (
+        "Find genuine, statistically robust alpha factors in Bursa Malaysia equity markets. "
+        "Prove them cross-sectionally. Deploy them safely with human oversight at every "
+        "capital decision point."
+    ),
+    "design_philosophy": (
+        "Quality over quantity. 10 robust, well-validated strategies beats 300 hastily "
+        "generated noise ideas. Every component must earn its place. The system should get "
+        "smarter every day, not just bigger."
+    ),
+    "success_metrics": [
+        {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ stocks"},
+        {"rank": 2, "metric": "First idea completes 30-day paper trade with Sharpe >= 1.0"},
+        {"rank": 3, "metric": "First live strategy deployed with positive alpha after costs"},
+        {"rank": 4, "metric": "KB reaches 50 quality docs across all 9 research angles"},
+        {"rank": 5, "metric": "Daily budget stays under $10 while pipeline processes meaningful ideas"},
+    ],
+    "constraints": [
+        "Long-only strategies only (short-selling heavily restricted)",
+        "T+2 settlement (effective 2019-04-29) — affects short-term strategy feasibility",
+        "Minimum lot size: 100 shares (affects small-cap liquidity)",
+        "Stamp duty: 0.10% remitted buy-side, capped RM1,000 (real cost)",
+        "Brokerage: ~0.08% per side minimum",
+        "Trading hours: 9:00-12:30 and 14:30-17:00 MYT only",
+        "Circuit breakers: halt if stock moves >30% in a day",
+        "EPF dominates: ~15% of market cap, rebalancing is predictable",
+        "OPR sensitivity: banking stocks move with BNM rate decisions",
+        "CPO correlation: plantation stocks follow palm oil futures",
+    ],
+    "transaction_costs": {
+        "commission_pct": 0.08,
+        "stamp_duty_pct": 0.10,
+        "stamp_duty_cap_myr": 1000,
+        "clearing_pct": 0.03,
+        "clearing_cap_myr": 1000,
+        "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.25, "SMALL_CAP": 0.75},
+        "min_liquidity_myr": 500000,
+        "settlement": "T+2",
+    },
+}

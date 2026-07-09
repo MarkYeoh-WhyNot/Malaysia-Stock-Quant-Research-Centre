@@ -412,3 +412,48 @@ GATE_OVERRIDES: dict = {
     "max_single_name_pct":  0.30,   # BTC/ETH legitimately dominate a book
     "max_sector_pct":       0.50,   # "Smart Contract" analog covers half the universe
 }
+
+
+# ── System Direction document (dashboard /api/system/direction) ────────────────
+# Market-specific "north star" content. The endpoint merges this with live KB /
+# idea / spend numbers and derives the research-angle coverage from
+# RESEARCH_ANGLES above. Kept honest to current capability: long/short perp
+# funding + liquidation constraints are added when Workstream 3 lands.
+DIRECTION_DOC = {
+    "last_updated": "July 2026",
+    "core_purpose": (
+        "Find genuine, statistically robust alpha in liquid crypto markets. Prove it "
+        "cross-sectionally across majors, survive 24/7 volatility and funding costs, and "
+        "paper-trade every strategy before any capital — human oversight at each step."
+    ),
+    "design_philosophy": (
+        "Quality over quantity. A handful of robust, well-validated strategies beats hundreds "
+        "of noise ideas. Crypto is faster and rougher than equities — the gates must be "
+        "stricter, not looser."
+    ),
+    "success_metrics": [
+        {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ liquid pairs"},
+        {"rank": 2, "metric": "First idea completes a 30-day paper trade with Sharpe >= 1.0 after funding + fees"},
+        {"rank": 3, "metric": "First strategy paper-proven long AND short across a regime shift"},
+        {"rank": 4, "metric": "KB reaches 50 quality crypto-quant docs across all 9 research angles"},
+        {"rank": 5, "metric": "Daily budget stays under $10 while the pipeline processes meaningful ideas"},
+    ],
+    "constraints": [
+        "24/7/365 market — no sessions, no closing gaps; weekend liquidity is materially thinner",
+        "T+0 settlement (instant on-exchange); fractional sizing, no board lots",
+        "Taker fees ~0.10% per side + slippage — round-trip ~0.25-0.30% on majors",
+        "BTC-beta dominates: most alts are high-beta BTC proxies — demand independent alpha",
+        "High volatility: ±10-20% daily tails are normal; drawdown tolerance is wider by design",
+        "Stablecoin depeg + exchange counterparty risk are real tail risks",
+        "Paper-only, human-gated to live — no automated capital deployment",
+    ],
+    "transaction_costs": {
+        "taker_pct": 0.10,
+        "maker_pct": 0.10,
+        "stamp_duty_pct": 0.0,
+        "clearing_pct": 0.0,
+        "slippage": {"BLUE_CHIP": 0.05, "MID_CAP": 0.15, "SMALL_CAP": 0.40},
+        "min_liquidity_usdt": 1_000_000,
+        "settlement": "T+0",
+    },
+}

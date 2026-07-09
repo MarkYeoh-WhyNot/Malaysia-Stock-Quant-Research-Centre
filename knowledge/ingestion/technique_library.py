@@ -7,7 +7,7 @@ for generate_ideas() and research_idea() in strategy_researcher.py.
 
 Each technique entry describes:
   - when_to_use / when_to_avoid (decision rules)
-  - bursa_applicability          (KLSE-specific guidance)
+  - market_applicability          (KLSE-specific guidance)
   - ic_improvement_*             (quantitative benchmarks where known)
   - implemented                  (True = already in the backtest codebase)
   - complexity / overfitting_risk
@@ -18,7 +18,7 @@ from typing import Optional
 
 # ── Technique definitions ─────────────────────────────────────────────────────
 
-TECHNIQUE_LIBRARY: dict[str, dict] = {
+BURSA_TECHNIQUE_LIBRARY: dict[str, dict] = {
 
     # ── Statistical / Signal Processing ──────────────────────────────────────
 
@@ -36,7 +36,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Very liquid blue-chips where price is informationally efficient",
             "Holding periods < 3 days — filter adds latency",
         ],
-        "bursa_applicability":    "High — Bursa mid-caps have noisy price series due to low liquidity",
+        "market_applicability":    "High — Bursa mid-caps have noisy price series due to low liquidity",
         "ic_improvement_vs_sma":  "15–25% on ASEAN mid-cap mean reversion strategies",
         "stock_types":            ["mid_cap", "small_cap"],
         "strategy_types":         ["mean_reversion", "momentum"],
@@ -61,7 +61,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Holding periods < 5 days — regime switches are slow",
             "Very illiquid stocks where price is discontinuous",
         ],
-        "bursa_applicability":    "High — Bursa has distinct bull/bear regimes driven by EPF flows and OPR cycles",
+        "market_applicability":    "High — Bursa has distinct bull/bear regimes driven by EPF flows and OPR cycles",
         "ic_improvement_vs_sma":  "Regime-conditional strategies show 20–35% better Sharpe vs unconditional",
         "stock_types":            ["all"],
         "strategy_types":         ["momentum", "sector_rotation", "mean_reversion"],
@@ -85,7 +85,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Strategies that don't adjust position size — GARCH adds complexity for no benefit",
             "Very short holding periods < 2 days",
         ],
-        "bursa_applicability":    "Medium — useful for earnings season volatility on KLCI stocks",
+        "market_applicability":    "Medium — useful for earnings season volatility on KLCI stocks",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["mean_reversion", "momentum", "event_driven"],
         "holding_periods":        ["short_term", "medium_term"],
@@ -107,7 +107,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
         "when_to_avoid": [
             "Single-stock time series strategies — IC is a cross-sectional metric",
         ],
-        "bursa_applicability":    "Critical — required for all cross-sectional validation at Stage 3",
+        "market_applicability":    "Critical — required for all cross-sectional validation at Stage 3",
         "stock_types":            ["all"],
         "strategy_types":         ["all"],
         "holding_periods":        ["all"],
@@ -132,7 +132,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Holding periods < 10 days — too many false signals",
             "Sideways or range-bound markets — whipsaws destroy returns",
         ],
-        "bursa_applicability":    "Medium — works on KLCI blue-chips, poor on small caps",
+        "market_applicability":    "Medium — works on KLCI blue-chips, poor on small caps",
         "stock_types":            ["blue_chip"],
         "strategy_types":         ["momentum", "trend_following"],
         "holding_periods":        ["medium_term", "long_term"],
@@ -156,7 +156,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "GLC stocks with thin retail participation",
             "Very illiquid stocks where RSI is noise",
         ],
-        "bursa_applicability":    "High — retail-dominated Bursa creates persistent overreaction patterns",
+        "market_applicability":    "High — retail-dominated Bursa creates persistent overreaction patterns",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["mean_reversion", "event_driven"],
         "holding_periods":        ["short_term", "medium_term"],
@@ -178,7 +178,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Trending markets where bands never squeeze",
             "Very low-volume stocks — false breakouts are common",
         ],
-        "bursa_applicability":    "Medium — works well around Bursa quarterly reporting seasons",
+        "market_applicability":    "Medium — works well around Bursa quarterly reporting seasons",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["momentum", "event_driven"],
         "holding_periods":        ["short_term", "medium_term"],
@@ -203,7 +203,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Low-liquidity stocks where spreads exceed abnormal return",
             "Events with no clean announcement date (rolling fundamental signals)",
         ],
-        "bursa_applicability":    "Very high — event-driven alpha is structurally under-exploited on Bursa",
+        "market_applicability":    "Very high — event-driven alpha is structurally under-exploited on Bursa",
         "ic_improvement_vs_sma":  "Event windows show 2–4× better IC than rolling price signals on KLCI",
         "stock_types":            ["all"],
         "strategy_types":         ["event_driven"],
@@ -226,7 +226,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "GLCs and mature dividend payers — earnings rarely surprise",
             "Very large-cap stocks — institutions reprice instantly",
         ],
-        "bursa_applicability":    "High — Bursa retail-dominated mid-caps show multi-week PEAD",
+        "market_applicability":    "High — Bursa retail-dominated mid-caps show multi-week PEAD",
         "ic_improvement_vs_sma":  "3–5% abnormal return over 20 days post-positive-surprise on KLCI",
         "stock_types":            ["mid_cap", "growth"],
         "strategy_types":         ["event_driven"],
@@ -251,7 +251,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Strategies with < 15 stocks in the universe",
             "Short holding periods — PCA factors are slow-moving",
         ],
-        "bursa_applicability":    "High — EPF and foreign flows create systematic factors not captured by global models",
+        "market_applicability":    "High — EPF and foreign flows create systematic factors not captured by global models",
         "stock_types":            ["all"],
         "strategy_types":         ["sector_rotation", "momentum"],
         "holding_periods":        ["medium_term", "long_term"],
@@ -273,7 +273,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "KLCI blue-chip-only universe — SMB factor has no variation",
             "Short-term technical strategies — fundamental factors are slow",
         ],
-        "bursa_applicability":    "Medium — size and value premia exist on Bursa but are weaker than in US data",
+        "market_applicability":    "Medium — size and value premia exist on Bursa but are weaker than in US data",
         "stock_types":            ["all"],
         "strategy_types":         ["value", "fundamental"],
         "holding_periods":        ["medium_term", "long_term"],
@@ -295,7 +295,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Small caps not held by EPF",
             "Strategies requiring daily rebalance — EPF data lags",
         ],
-        "bursa_applicability":    "Very high — EPF controls ~15% of Bursa market cap; predictable rebalancing creates alpha",
+        "market_applicability":    "Very high — EPF controls ~15% of Bursa market cap; predictable rebalancing creates alpha",
         "stock_types":            ["blue_chip", "GLC"],
         "strategy_types":         ["institutional", "event_driven"],
         "holding_periods":        ["medium_term", "long_term"],
@@ -317,7 +317,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Non-plantation sectors — CPO correlation is sector-specific",
             "Intraday strategies — CPO futures close before Bursa opens",
         ],
-        "bursa_applicability":    "Very high — plantation stocks are ~15% of KLCI; CPO price is the primary driver",
+        "market_applicability":    "Very high — plantation stocks are ~15% of KLCI; CPO price is the primary driver",
         "ic_improvement_vs_sma":  "CPO-lagged signal IC 0.12–0.18 on plantation stocks vs 0.03–0.05 for generic momentum",
         "stock_types":            ["plantation"],
         "strategy_types":         ["commodity", "sector_rotation"],
@@ -340,7 +340,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Non-banking sectors — OPR sensitivity is sector-specific",
             "Very short-term trades < 5 days — OPR effects take weeks to flow through",
         ],
-        "bursa_applicability":    "Very high — banking is ~30% of KLCI; OPR is the single biggest systematic driver",
+        "market_applicability":    "Very high — banking is ~30% of KLCI; OPR is the single biggest systematic driver",
         "ic_improvement_vs_sma":  "OPR-conditional banking signal IC ~0.15 vs ~0.04 for simple momentum",
         "stock_types":            ["banking"],
         "strategy_types":         ["macro", "sector_rotation"],
@@ -367,7 +367,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Market-wide corrections > 10% — momentum crashes in reversals",
             "When momentum factor is crowded (tracking error compression signal)",
         ],
-        "bursa_applicability":    "High — momentum holds on Bursa with slightly shorter formation windows than US due to lower liquidity; skip-month rule is critical",
+        "market_applicability":    "High — momentum holds on Bursa with slightly shorter formation windows than US due to lower liquidity; skip-month rule is critical",
         "ic_improvement_vs_sma":  "IC 0.04–0.07 on FBM70 monthly cross-section; top/bottom quintile return spread 12–18% on ASEAN markets",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["momentum", "cross_sectional"],
@@ -393,7 +393,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "During earnings season — drops are often fundamental, not technical",
             "Illiquid stocks where spread costs exceed expected edge (< MYR 500K ADV)",
         ],
-        "bursa_applicability":    "High — Bursa mid-caps have thinner liquidity and higher retail ownership, creating more pronounced overreactions",
+        "market_applicability":    "High — Bursa mid-caps have thinner liquidity and higher retail ownership, creating more pronounced overreactions",
         "ic_improvement_vs_sma":  "IC 0.03–0.05 at 5-day horizon; win rate ~62% with announcement filter, ~48% without — filter is critical",
         "stock_types":            ["mid_cap", "small_cap"],
         "strategy_types":         ["mean_reversion"],
@@ -418,7 +418,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "When interest rates are rising rapidly — defensive sectors hurt by rate increases",
             "When low-vol factor is crowded (low-vol ETF flows compressing valuations)",
         ],
-        "bursa_applicability":    "Very high — Bursa retail participation (~35% of volume) systematically overprices volatile stocks; illiquidity filter critical",
+        "market_applicability":    "Very high — Bursa retail participation (~35% of volume) systematically overprices volatile stocks; illiquidity filter critical",
         "ic_improvement_vs_sma":  "Low-vol quintile Sharpe 0.6–0.9 vs 0.2–0.4 for high-vol quintile; annualised alpha vs KLCI 3–6% risk-adjusted",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["low_volatility", "cross_sectional"],
@@ -444,7 +444,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Gaps > 8% — extreme gaps are rarely fully filled in the near term",
             "During broad market stress — gap fills fail when market direction is down",
         ],
-        "bursa_applicability":    "Medium — Bursa overnight gaps are common after US/Asia sessions; T+2 settlement creates short-term supply/demand imbalances that drive fill",
+        "market_applicability":    "Medium — Bursa overnight gaps are common after US/Asia sessions; T+2 settlement creates short-term supply/demand imbalances that drive fill",
         "ic_improvement_vs_sma":  "Gap fill win rate 58–65% on KLCI stocks when announcement filter applied; average return 1.5–2.5% over 2 days",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["mean_reversion", "event_driven"],
@@ -470,7 +470,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "During Bursa circuit breaker / trading halts",
             "Ex-dividend dates — gap affects range calculation",
         ],
-        "bursa_applicability":    "Low (data constraint) — Bursa intraday data not available via yfinance free tier; deferred until intraday data source acquired",
+        "market_applicability":    "Low (data constraint) — Bursa intraday data not available via yfinance free tier; deferred until intraday data source acquired",
         "stock_types":            ["blue_chip"],
         "strategy_types":         ["momentum", "breakout"],
         "holding_periods":        ["short_term"],
@@ -494,7 +494,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Very short holding periods < 2 days — GARCH forecast latency exceeds edge",
             "Strategies that don't dynamically size positions — adds complexity with no benefit",
         ],
-        "bursa_applicability":    "Medium — useful for earnings season volatility clustering on KLCI stocks; overlay for cross_sectional_momentum and rsi_mean_reversion",
+        "market_applicability":    "Medium — useful for earnings season volatility clustering on KLCI stocks; overlay for cross_sectional_momentum and rsi_mean_reversion",
         "stock_types":            ["blue_chip", "mid_cap"],
         "strategy_types":         ["mean_reversion", "momentum", "event_driven"],
         "holding_periods":        ["short_term", "medium_term"],
@@ -518,7 +518,7 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
             "Holding periods < 5 days — regime switches are slow-moving",
             "Very illiquid stocks where price is discontinuous and uninformative",
         ],
-        "bursa_applicability":    "High — Bursa has distinct bull/bear/sideways regimes driven by EPF flows and OPR cycles; 2-state model effective",
+        "market_applicability":    "High — Bursa has distinct bull/bear/sideways regimes driven by EPF flows and OPR cycles; 2-state model effective",
         "ic_improvement_vs_sma":  "Regime-conditional strategies show 20–35% better Sharpe vs unconditional on ASEAN data",
         "stock_types":            ["all"],
         "strategy_types":         ["momentum", "sector_rotation", "mean_reversion"],
@@ -529,6 +529,18 @@ TECHNIQUE_LIBRARY: dict[str, dict] = {
         "overfitting_risk":       "medium",
     },
 }
+
+# ── Market selection ──────────────────────────────────────────────────────────
+# The active market's technique set. Bursa uses the equity library above; crypto
+# uses a purpose-authored perp/spot set. Everything below (indices, class methods)
+# reads TECHNIQUE_LIBRARY, so selecting here switches the whole arsenal per market.
+from config.settings import DATA_BACKEND  # noqa: E402
+
+if DATA_BACKEND == "binance":
+    from knowledge.ingestion.crypto_techniques import CRYPTO_TECHNIQUE_LIBRARY as TECHNIQUE_LIBRARY
+else:
+    TECHNIQUE_LIBRARY = BURSA_TECHNIQUE_LIBRARY
+
 
 # ── Lookup helpers ────────────────────────────────────────────────────────────
 
@@ -627,13 +639,13 @@ class TechniqueLibrary:
                 continue
             status = "✓ implemented" if tech.get("implemented") else "○ not yet implemented"
             complexity = tech.get("complexity", "?")
-            applicability = tech.get("bursa_applicability", "")
+            applicability = tech.get("market_applicability", "")
             use_cases = "; ".join(tech.get("when_to_use", [])[:3])
             avoid = "; ".join(tech.get("when_to_avoid", [])[:2])
             ic_note = tech.get("ic_improvement_vs_sma", "")
 
             lines.append(f"  [{key}] {tech['name']} [{status}, complexity={complexity}]")
-            lines.append(f"    Bursa applicability: {applicability}")
+            lines.append(f"    Market applicability: {applicability}")
             lines.append(f"    Use when: {use_cases}")
             if avoid:
                 lines.append(f"    Avoid when: {avoid}")
@@ -649,7 +661,7 @@ class TechniqueLibrary:
         lines = [
             f"TECHNIQUE: {tech['name']}",
             f"Research angle: {tech.get('angle', '?')}",
-            f"Bursa applicability: {tech.get('bursa_applicability', '?')}",
+            f"Market applicability: {tech.get('market_applicability', '?')}",
             f"Complexity: {tech.get('complexity', '?')} | "
             f"Overfitting risk: {tech.get('overfitting_risk', '?')} | "
             f"Implemented: {'Yes' if tech.get('implemented') else 'No'}",
@@ -677,7 +689,7 @@ class TechniqueLibrary:
             lines = [
                 f"{status_icon} *{tech['name']}*",
                 f"Key: `{key}` | Complexity: `{tech.get('complexity','?')}` | Overfit risk: {risk_icon}",
-                f"\n*Bursa applicability:* _{tech.get('bursa_applicability','?')}_\n",
+                f"\n*Market applicability:* _{tech.get('market_applicability','?')}_\n",
                 "*Use when:*",
             ]
             for item in tech.get("when_to_use", []):
@@ -728,7 +740,7 @@ class TechniqueLibrary:
                 "implemented":          tech.get("implemented", False),
                 "complexity":           tech.get("complexity", ""),
                 "overfitting_risk":     tech.get("overfitting_risk", ""),
-                "bursa_applicability":  tech.get("bursa_applicability", ""),
+                "market_applicability":  tech.get("market_applicability", ""),
                 "ic_benchmark":         tech.get("ic_improvement_vs_sma", ""),
                 "when_to_use":          tech.get("when_to_use", []),
                 "when_to_avoid":        tech.get("when_to_avoid", []),
