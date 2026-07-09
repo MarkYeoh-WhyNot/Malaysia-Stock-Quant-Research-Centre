@@ -34,6 +34,33 @@ if MARKET_MODE == "crypto":
             "lag_days": 2,
             "event_type": "eth_move",
         },
+        # Macro cross-asset (WS2): risk-on/risk-off context that historically
+        # correlates with crypto beta. Same yfinance mechanism, just non-crypto
+        # symbols — DXY/gold/yields need no ccxt path either.
+        "DX-Y.NYB": {
+            "name": "US Dollar Index (DXY)",
+            "threshold_pct": 0.6,
+            "affected_sectors": ["crypto_majors", "macro_risk"],
+            "affected_tickers": ["BTC/USDT", "ETH/USDT"],
+            "lag_days": 1,
+            "event_type": "dxy_move",
+        },
+        "GC=F": {
+            "name": "Gold",
+            "threshold_pct": 1.5,
+            "affected_sectors": ["macro_risk"],
+            "affected_tickers": ["BTC/USDT"],
+            "lag_days": 1,
+            "event_type": "gold_move",
+        },
+        "^TNX": {
+            "name": "US 10-Year Treasury Yield",
+            "threshold_pct": 3.0,
+            "affected_sectors": ["macro_risk"],
+            "affected_tickers": ["BTC/USDT", "ETH/USDT"],
+            "lag_days": 1,
+            "event_type": "yield_move",
+        },
     }
 else:
     COMMODITY_WATCHLIST = {

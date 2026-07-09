@@ -32,6 +32,7 @@ from data.events.rss_client import RSSClient
 from data.events.bursa_scraper import BursaScraper
 from data.events.finnhub_client import FinnhubClient
 from data.events.commodity_monitor import CommodityMonitor
+from data.events.crypto_monitor import CryptoMonitor
 from agents.event_classifier import EventClassifier, HISTORICAL_EDGES
 from agents.researcher.strategy_researcher import StrategyResearcher
 from knowledge.ingestion.kb_ingester import KBIngester
@@ -96,6 +97,19 @@ EVENT_DOMAIN_MAP = {
     "ecb_decision": "macro",
     "macro_context": "macro",
     "macro_event": "macro",
+    # Crypto event types (WS2)
+    "funding_spike": "event_driven",
+    "oi_surge": "behavioural",
+    "basis_dislocation": "statistical_modelling",
+    "btc_move": "commodity",       # crypto's "commodity" angle = BTC-dominance/beta
+    "eth_move": "commodity",
+    "listing": "event_driven",
+    "unlock": "event_driven",
+    "depeg": "event_driven",
+    "btc_dominance_shift": "commodity",
+    "dxy_move": "macro",
+    "yield_move": "macro",
+    "regulatory": "macro",
 }
 
 FACTOR_FORMULA_TEMPLATES = {
@@ -142,6 +156,43 @@ FACTOR_FORMULA_TEMPLATES = {
     "china_pmi_weak": (
         "On China PMI release below 50, reduce exposure to export-sensitive industrials. "
         "Monitor for 10 trading days before re-entry."
+    ),
+    # Crypto event types (WS2) — long-only spot phrasing (perp long/short lands
+    # in Workstream 3); these are directional entry rules on the affected pair.
+    "funding_spike": (
+        "When perp funding rate exceeds +0.05% (crowded long), reduce/avoid new long entries "
+        "for 2-3 days pending mean reversion. When funding is very negative, treat as a "
+        "contrarian long-entry signal."
+    ),
+    "oi_surge": (
+        "After a >15% open-interest jump alongside a price move, wait for the immediate "
+        "session to close before entering — avoid chasing into a potential liquidation cascade. "
+        "Re-evaluate 1-2 days later."
+    ),
+    "basis_dislocation": (
+        "When perp basis exceeds 0.5% above index, treat as a short-term overextension signal "
+        "on the spot side; avoid fresh long entries until basis normalises."
+    ),
+    "btc_move": (
+        "On a BTC move >5%, expect alts to follow with a 0-2 day lag and amplified beta. "
+        "Enter long the lagging correlated pair after BTC's move, exit after 3-5 trading days "
+        "or on convergence."
+    ),
+    "eth_move": (
+        "On an ETH move >6%, expect smart-contract/L2/DeFi tokens to follow with a 0-2 day lag. "
+        "Enter long the lagging correlated pair, exit after 3-5 trading days or on convergence."
+    ),
+    "listing": (
+        "Enter long on the trading day after a major-exchange listing announcement is confirmed. "
+        "Hold for 3-5 trading days or exit on RSI(14) > 75, whichever comes first."
+    ),
+    "unlock": (
+        "Reduce exposure ahead of a confirmed large token-unlock date. Re-evaluate for re-entry "
+        "5 trading days after the unlock once sell pressure is absorbed."
+    ),
+    "dxy_move": (
+        "On DXY strength >0.6%, treat as a mild headwind — avoid fresh long entries on majors "
+        "for 1-2 trading days pending confirmation of risk-off continuation."
     ),
 }
 
@@ -241,6 +292,7 @@ class EventWatcher:
         self.bursa = BursaScraper()
         self.finnhub = FinnhubClient()
         self.commodities = CommodityMonitor()
+        self.crypto = CryptoMonitor()
         self.classifier = EventClassifier()
         self.researcher = StrategyResearcher()
         self.kb = KBIngester()
@@ -295,6 +347,15 @@ class EventWatcher:
                 self.check_economic_calendar()
             except Exception as exc:
                 _log_daemon("WARN", f"Calendar check error: {exc}")
+
+        # 5. Perp funding/OI/basis monitor — every cycle (crypto only)
+        if not _is_bursa:
+            try:
+                crypto_events = self.crypto.check_moves()
+                raw_events.extend(crypto_events)
+                logger.debug(f"Crypto perp events: {len(crypto_events)}")
+            except Exception as exc:
+                _log_daemon("WARN", f"Crypto monitor error: {exc}")
 
         # Process all new events
         ideas_created = 0
@@ -356,9 +417,14 @@ class EventWatcher:
                 _log_daemon("WARN", f"create_gate0_idea: no ticker for event {event.get('event_id')}")
                 return None
 
-            # Use primary ticker
+            # Use primary ticker — validated against the active market's ticker
+            # shape (.KL for Bursa, BASE/USDT for crypto), not hardcoded .KL.
+            # (Fix: this previously rejected every crypto event outright, so
+            # BTC/ETH price-move and funding/OI events could never become ideas.)
+            from config.settings import TICKER_REGEX, DATA_BACKEND
+
             primary = ticker.split(",")[0].strip()
-            if not primary.endswith(".KL"):
+            if not TICKER_REGEX.fullmatch(primary):
                 return None
 
             title = classified.get("suggested_idea_title") or (
@@ -380,7 +446,7 @@ class EventWatcher:
                 "ticker": primary,
                 "timeframe": "1d",
                 "factor_formula": factor_formula,
-                "data_sources": ["yahoo_finance", event.get("source", "event")],
+                "data_sources": [DATA_BACKEND, event.get("source", "event")],
                 "novelty_score": 0.70,
                 "logic_score": 0.75,
                 "screen_source": f"event_{event_type}",
