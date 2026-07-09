@@ -274,13 +274,20 @@ def validate(tree: dict) -> list[str]:
             if cname in node and node[cname] not in choices:
                 errors.append(f"{leaf}.{cname}={node[cname]!r} not in {choices}")
 
+    # A tree needs at least one side: entry (long) or short_entry (short —
+    # crypto perps only, WS3). A short-only tree is valid where ALLOW_SHORT.
     entry = tree.get("entry")
-    if entry is None:
-        errors.append("missing entry tree")
-    else:
+    short_entry = tree.get("short_entry")
+    if entry is None and short_entry is None:
+        errors.append("missing entry tree (need 'entry' and/or 'short_entry')")
+    if entry is not None:
         _walk(entry, 1)
     if tree.get("exit") is not None:
         _walk(tree["exit"], 1)
+    if short_entry is not None:
+        _walk(short_entry, 1)
+    if tree.get("short_exit") is not None:
+        _walk(tree["short_exit"], 1)
     if leaf_count[0] > MAX_LEAVES:
         errors.append(f"more than {MAX_LEAVES} leaves")
     # sanity for MA crosses: fast < slow
@@ -293,7 +300,7 @@ def validate(tree: dict) -> list[str]:
                 _check_cross(c)
             if "child" in node:
                 _check_cross(node["child"])
-    for part in ("entry", "exit"):
+    for part in ("entry", "exit", "short_entry", "short_exit"):
         if isinstance(tree.get(part), dict):
             _check_cross(tree[part])
     return errors
@@ -313,7 +320,7 @@ def required_columns(tree: dict) -> set[str]:
         if "child" in node:
             _walk(node["child"])
 
-    for part in ("entry", "exit"):
+    for part in ("entry", "exit", "short_entry", "short_exit"):
         if tree.get(part):
             _walk(tree[part])
     return cols
@@ -343,21 +350,48 @@ def evaluate(df: pd.DataFrame, node: dict) -> pd.Series:
     return series.fillna(False).astype(bool)
 
 
-def signal_from_dsl(df: pd.DataFrame, dsl: dict) -> pd.Series:
-    """Position series (0/1, long-only) from a DSL tree.
+def _side_series(df: pd.DataFrame, entry_node: dict | None, exit_node: dict | None) -> pd.Series | None:
+    """State machine for ONE side (long or short): in-position from
+    entry-true until exit-true; without an exit, entry itself is the regime.
+    Returns None if entry_node is absent (that side isn't used by this tree)."""
+    if entry_node is None:
+        return None
+    entry = evaluate(df, entry_node)
+    if exit_node:
+        exit_ = evaluate(df, exit_node)
+        raw = np.where(entry, 1.0, np.where(exit_, 0.0, np.nan))
+        return pd.Series(raw, index=df.index).ffill().fillna(0.0)
+    return entry.astype(float)
 
-    With an exit tree: state machine — long from entry-true until exit-true.
-    Without: the entry condition IS the position regime.
+
+def signal_from_dsl(df: pd.DataFrame, dsl: dict) -> pd.Series:
+    """Position series from a DSL tree: 0/1 long-only (Bursa, and any crypto
+    tree that only sets entry/exit), or -1/0/1 when a short leg is present.
+
+    Long leg: dsl["entry"] / dsl["exit"] (unchanged contract).
+    Short leg (crypto perps, WS3): dsl["short_entry"] / dsl["short_exit"] —
+    only meaningful where settings.ALLOW_SHORT; ignored otherwise so a Bursa
+    idea can never accidentally short. If both legs would be in-position on
+    the same bar (a malformed tree), long takes priority — documented, not
+    silently arbitrary.
+
     Lookahead is handled downstream by _compute_performance's shift(1) guard.
     """
-    entry = evaluate(df, dsl["entry"])
-    if dsl.get("exit"):
-        exit_ = evaluate(df, dsl["exit"])
-        raw = np.where(entry, 1.0, np.where(exit_, 0.0, np.nan))
-        sig = pd.Series(raw, index=df.index).ffill().fillna(0.0)
-    else:
-        sig = entry.astype(float)
-    return sig
+    long_sig = _side_series(df, dsl.get("entry"), dsl.get("exit"))
+
+    from config.settings import ALLOW_SHORT
+    short_sig = None
+    if ALLOW_SHORT and dsl.get("short_entry"):
+        short_sig = _side_series(df, dsl.get("short_entry"), dsl.get("short_exit"))
+
+    if short_sig is None:
+        return long_sig if long_sig is not None else pd.Series(0.0, index=df.index)
+    if long_sig is None:
+        return -short_sig
+    return pd.Series(
+        np.where(long_sig > 0, 1.0, np.where(short_sig > 0, -1.0, 0.0)),
+        index=df.index,
+    )
 
 
 # ── Signature (semantic dedup) ────────────────────────────────────────────────
@@ -389,6 +423,14 @@ def canonical_signature(dsl: dict, ticker: str) -> str:
         "entry": _normalize(dsl.get("entry")),
         "exit": _normalize(dsl.get("exit")),
     }
+    # Only add short-leg keys when present, so a long-only tree (Bursa, or any
+    # crypto idea with no short leg) hashes IDENTICALLY to before this change —
+    # changing the payload shape unconditionally would silently break dedup
+    # continuity against signal_signature values already stored in the DB.
+    if dsl.get("short_entry") is not None:
+        payload["short_entry"] = _normalize(dsl.get("short_entry"))
+    if dsl.get("short_exit") is not None:
+        payload["short_exit"] = _normalize(dsl.get("short_exit"))
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()
@@ -426,10 +468,15 @@ def perturb_tree(tree: dict, rng: np.random.RandomState, scale: float = 0.2) -> 
             out["child"] = _perturb(out["child"])
         return out
 
-    return {
-        "entry": _perturb(tree["entry"]),
+    out = {
+        "entry": _perturb(tree["entry"]) if tree.get("entry") else None,
         "exit": _perturb(tree["exit"]) if tree.get("exit") else None,
     }
+    if tree.get("short_entry"):
+        out["short_entry"] = _perturb(tree["short_entry"])
+    if tree.get("short_exit"):
+        out["short_exit"] = _perturb(tree["short_exit"])
+    return out
 
 
 # ── Parser-facing catalog (embedded in the Haiku prompt) ─────────────────────

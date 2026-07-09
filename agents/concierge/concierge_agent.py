@@ -19,22 +19,31 @@ from agents.base_agent import BaseAgent, get_agent_daily_spend
 from config.settings import (
     CONCIERGE_MODEL, CONCIERGE_DAILY_BUDGET_USD, CONCIERGE_MAX_TOOL_ITERS,
     KLCI_STOCKS, KLCI_BY_SYMBOL, KLCI_SECTORS,
-    MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE,
+    MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE, ALLOW_SHORT, MAX_LEVERAGE,
 )
 from data.database import db_session
 
 # First token of the profile's example, e.g. "1155.KL" or "BTC/USDT"
 _EXAMPLE_TICKER = TICKER_EXAMPLE.split(" ")[0]
 
+_DIRECTION_DESC = (
+    "Submit a fully-specified LONG OR SHORT " if ALLOW_SHORT else "Submit a fully-specified long-only "
+)
+_NEVER_DESC = (
+    "Never for multi-leg spread/pairs trades, intraday, options, or leverage above the configured cap."
+    if ALLOW_SHORT else
+    "Never for short-selling/pairs/intraday/derivatives."
+)
+
 TOOLS = [
     {
         "name": "submit_strategy_idea",
-        "description": f"Submit a fully-specified long-only {MARKET_NAME} strategy into "
+        "description": f"{_DIRECTION_DESC}{MARKET_NAME} strategy into "
                        "the factor sandbox. It enters at the backtest stage and the "
                        "pipeline carries it through backtest -> red/blue -> paper "
                        "automatically. Use ONLY after you have a concrete factor_formula "
                        f"and a valid ticker like {_EXAMPLE_TICKER}. "
-                       "Never for short-selling/pairs/intraday/derivatives.",
+                       f"{_NEVER_DESC}",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -42,7 +51,14 @@ TOOLS = [
                 "hypothesis": {"type": "string", "description": "1-2 sentence economic rationale"},
                 "ticker": {"type": "string", "description": f"One or more tickers, comma-separated (e.g. {_EXAMPLE_TICKER})"},
                 "timeframe": {"type": "string", "description": "Bar/holding timeframe, e.g. 1d, 1wk"},
-                "factor_formula": {"type": "string", "description": "Concrete entry/exit rule in terms of price/volume/indicators"},
+                "factor_formula": {"type": "string", "description": (
+                    "Concrete entry/exit rule in terms of price/volume/indicators. "
+                    + ("State the direction explicitly — e.g. 'long when RSI<30' or "
+                       "'short when price breaks below sma(50)'; a strategy may include both a "
+                       "long rule and a short rule if it genuinely trades both directions."
+                       if ALLOW_SHORT else
+                       "Describes when to be long (this market is long-only).")
+                )},
             },
             "required": ["title", "hypothesis", "ticker", "factor_formula"],
         },
@@ -90,10 +106,24 @@ def _system_prompt() -> str:
     from agents.backtest_engineer import signal_dsl
     universe = "\n".join(
         f"  {s['symbol']} — {s['name']} ({s['sector']})" for s in KLCI_STOCKS)
+    direction_job = ("a concrete, long OR short, daily-or-slower" if ALLOW_SHORT
+                     else "a concrete, long-only, daily-or-slower")
+    direction_rules = (
+        f"- Long AND short are both supported (perpetuals, up to {MAX_LEVERAGE:.0f}x leverage — "
+        "paper-modeled, no live account). State the direction explicitly in factor_formula. "
+        "Multi-leg spread/pairs trades are still out of scope — one instrument's long/short "
+        "state at a time.\n"
+        "- No intraday/scalping/HFT — daily bars or slower. No options.\n"
+        "- If a strategy is leveraged, mention the leverage and that liquidation risk applies."
+        if ALLOW_SHORT else
+        "- Long-only ONLY. No short-selling, pairs, long/short, market-neutral,\n"
+        "  derivatives, margin, or leverage.\n"
+        "- No intraday/scalping/HFT — daily bars or slower."
+    )
     return f"""You are the Concierge for Mark's Research Centre — the {MARKET_NAME}
 quantitative research pipeline. A human chats with you to test strategy ideas.
 
-YOUR JOB: turn a natural-language idea into a concrete, long-only, daily-or-slower
+YOUR JOB: turn a natural-language idea into {direction_job}
 strategy and submit it via submit_strategy_idea. Then it runs the real pipeline
 (backtest -> red/blue debate -> paper trading) and you report progress when asked.
 
@@ -101,9 +131,7 @@ MARKET STRUCTURE YOU OPERATE IN:
 {MARKET_BRIEF}
 
 HARD RULES — never violate:
-- Long-only ONLY. No short-selling, pairs, long/short, market-neutral,
-  derivatives, margin, or leverage.
-- No intraday/scalping/HFT — daily bars or slower.
+{direction_rules}
 - Instruments from this market's universe only, ticker format like
   {_EXAMPLE_TICKER} (resolve names with resolve_tickers).
 - You may submit ideas and report status. You may NOT approve or trigger LIVE

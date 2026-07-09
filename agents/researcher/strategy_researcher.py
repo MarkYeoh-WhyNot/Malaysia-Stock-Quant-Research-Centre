@@ -17,6 +17,7 @@ from config.settings import (
     TICKER_REGEX, DEFAULT_SYMBOLS,
     UNAVAILABLE_DATA_KEYWORDS, EXOTIC_KEYWORDS,
     MARKET_MODE, MARKET_NAME, MARKET_BRIEF, TICKER_EXAMPLE,
+    ALLOW_SHORT,
 )
 from data.database import db_session
 
@@ -192,49 +193,59 @@ fundamentals). Score with deep scepticism and give low scores unless the edge is
 # prompts — they are never edited for dual-market support. In crypto mode the
 # process simply uses parallel prompts built from the crypto profile.
 if MARKET_MODE != "bursa":
-    SYSTEM = f"""YOU ARE A CRYPTO SPOT MARKET SPECIALIST (BINANCE).
+    SYSTEM = f"""YOU ARE A CRYPTO PERPETUALS MARKET SPECIALIST (BINANCE USDT-M).
 Every idea you generate MUST:
-1. Trade spot pairs quoted in USDT on the exchange (e.g. BTC/USDT)
-2. Use ONLY signals derivable from daily OHLCV price and volume data
-3. Be LONG-ONLY spot — no shorting, perpetuals, margin, leverage, or funding-rate plays
-4. Reference crypto market structure (BTC-beta, weekend liquidity, halving cycles, regime shifts)
+1. Trade perpetual futures quoted in USDT on the exchange (e.g. BTC/USDT)
+2. Use ONLY signals derivable from daily OHLCV price and volume data (plus the live
+   funding-rate/open-interest event snapshots this system already monitors — NOT a
+   historical funding/OI time series, which is not backtestable here)
+3. Be LONG OR SHORT (this system trades both directions on perps, up to the configured
+   leverage cap) — state the intended leverage and whether the thesis needs funding income,
+   funding cost tolerance, or neither
+4. Reference crypto market structure (BTC-beta, weekend liquidity, halving cycles, regime
+   shifts, funding dynamics, liquidation risk)
 
 NEVER generate ideas involving:
-- Perpetual futures, options, margin, or any derivative
-- On-chain data, funding rates, open interest, order books, or whale-wallet tracking
-  (NOT available in this system)
+- Options, or any multi-leg spread/pairs/arbitrage structure (the DSL expresses one
+  instrument's long/short state, not a basket spread)
+- On-chain data, a HISTORICAL funding-rate/open-interest time series, order books, or
+  whale-wallet tracking (NOT available for backtesting in this system)
 - Intraday execution, scalping, or HFT — daily bars only
 - Machine learning models requiring training infrastructure
 - News/social sentiment feeds
+- Leverage above the configured cap
 
 {MARKET_BRIEF}
 
-TRADABLE UNIVERSE ({{n}} liquid USDT spot pairs):
+TRADABLE UNIVERSE ({{n}} liquid USDT perpetuals):
 {{universe}}
 
-WHAT A GOOD CRYPTO SPOT STRATEGY LOOKS LIKE:
-- Trades a specific pair (e.g. BTC/USDT) or a small basket from the universe
+WHAT A GOOD CRYPTO PERP STRATEGY LOOKS LIKE:
+- Trades a specific pair (e.g. BTC/USDT) or a small basket from the universe, long or short
 - Entry from measurable daily-bar conditions (MA crossover, RSI level, breakout,
-  volume surge, relative strength vs BTC)
+  volume surge, relative strength vs BTC) — a short thesis needs the same rigor as a long
 - Exit via price target, stop-loss %, time stop, or reverse signal
 - Holding period of days to months (24/7 market, but signals are daily)
-- Costs acknowledged: ~0.10% taker per side + slippage; ~0.25-0.30% round trip
-- States how the edge differs from simple BTC buy-and-hold exposure
+- Costs acknowledged: ~0.10% taker per side + slippage + funding while held
+- States how the edge differs from simple BTC long/short exposure, and — if leveraged —
+  states the leverage and the resulting liquidation distance
 
 Every factor_formula MUST be computable from daily OHLCV alone.""".replace(
         "{n}", str(len(KLCI_STOCKS))).replace("{universe}", _UNIVERSE_FULL)
 
     GATE0_SYSTEM = f"""You are a skeptical quantitative researcher at a crypto fund whose job
 is to REJECT weak ideas. You are actively looking for reasons this strategy will NOT work in
-crypto spot markets. Be demanding — most ideas should fail this gate. Your default stance is
-rejection.
+crypto perpetual markets. Be demanding — most ideas should fail this gate. Your default stance
+is rejection.
 
-You know crypto intimately: most alt "alpha" is disguised BTC beta; edges fit on one
-halving-cycle regime die in the next; weekend books are thin and slippage assumptions break;
-±15% overnight moves are routine; exchange and stablecoin risk are real. This system is
-long-only spot on daily OHLCV — anything needing shorts, perps, funding, on-chain, or intraday
-data is automatically infeasible. Score with deep scepticism and give low scores unless the
-edge is compelling and decorrelated from simple BTC exposure."""
+You know crypto intimately: most alt "alpha" (long OR short) is disguised BTC beta; edges fit
+on one halving-cycle regime die in the next; weekend books are thin and slippage assumptions
+break; ±15% overnight moves are routine; exchange and stablecoin risk are real; funding is a
+real recurring cost/income that a carry thesis must survive, and leverage creates genuine
+liquidation risk that a backtest must account for. This system trades long/short perps on
+daily OHLCV — anything needing options, a historical funding/OI series, on-chain data,
+multi-leg spreads, or intraday data is automatically infeasible. Score with deep scepticism
+and give low scores unless the edge is compelling and decorrelated from simple BTC exposure."""
 
 
 class StrategyResearcher(BaseAgent):
@@ -699,8 +710,10 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
 
         Ticker format and data-availability keyword lists come from the market
         profile (Bursa: .KL / yfinance limits; crypto: /USDT pairs / no
-        on-chain-funding-orderbook data). Scoring structure is identical across
-        markets — long-only, daily-bar, available-data-only.
+        on-chain-funding-orderbook data). Scoring structure is mostly identical
+        across markets, with one branch: Bursa is long-only (WS3: crypto is
+        long/short via perps, ALLOW_SHORT=True) — multi-leg spread/pairs
+        structures stay out of scope on both markets (single-instrument DSL).
         """
         score = 0.0
         formula_lower = (factor_formula or "").lower()
@@ -711,9 +724,15 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
         if TICKER_REGEX.fullmatch(ticker.strip()):
             score += 0.3
 
-        # +0.2: long-only (no short/pairs language)
-        short_keywords = ["short", "pairs", "spread arbitrage", "sell short", "hedge"]
-        if not any(kw in blob for kw in short_keywords):
+        # +0.2: directionally supported (long-only on Bursa; long/short on
+        # crypto perps — WS3). Multi-leg spread/pairs structures are always
+        # out of scope (single-instrument DSL, not a basket spread).
+        spread_keywords = ["pairs", "spread arbitrage"]
+        if ALLOW_SHORT:
+            blocked_direction_keywords = spread_keywords
+        else:
+            blocked_direction_keywords = spread_keywords + ["short", "sell short", "hedge"]
+        if not any(kw in blob for kw in blocked_direction_keywords):
             score += 0.2
 
         # +0.2: data available from this market's backend

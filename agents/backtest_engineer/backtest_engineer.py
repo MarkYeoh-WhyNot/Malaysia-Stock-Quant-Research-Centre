@@ -10,6 +10,8 @@ from config.settings import (
     bursa_trade_cost, bursa_slippage_tier,
     MARKET_RULES_VERSION, FEE_MODEL_VERSION,
     BENCHMARK_SYMBOL,
+    DEFAULT_LEVERAGE, MAX_LEVERAGE, LIQUIDATION_BUFFER,
+    FUNDING_INTERVAL_HOURS, AVG_FUNDING_RATE_PER_INTERVAL,
 )
 from data.database import db_session
 
@@ -27,8 +29,10 @@ from data.market_data import extract_tickers, get_historical_data, BARS_PER_YEAR
 
 logger = logging.getLogger(__name__)
 
-SYSTEM = """You are a quantitative backtesting engineer specialising in Bursa Malaysia equities.
-Parse equity strategy descriptions into structured signal parameters for vectorised backtesting.
+from config.settings import MARKET_NAME as _MARKET_NAME_FOR_SYSTEM
+
+SYSTEM = f"""You are a quantitative backtesting engineer specialising in {_MARKET_NAME_FOR_SYSTEM}.
+Parse strategy descriptions into structured signal parameters for vectorised backtesting.
 Output only valid JSON."""
 
 
@@ -121,8 +125,23 @@ class BacktestEngineer(BaseAgent):
         them instead of extracting the idea's own parameters.
         """
         from agents.backtest_engineer import signal_dsl
+        from config.settings import ALLOW_SHORT, MARKET_NAME
 
-        prompt = f"""Translate this Bursa Malaysia equity strategy into a signal condition tree.
+        short_shape = ""
+        short_rule = "Long-only (Bursa short-selling restricted): the entry tree describes when to be LONG."
+        if ALLOW_SHORT:
+            short_shape = (
+                '  "short_entry": <condition tree or null — when to go SHORT, if the strategy '
+                'has a short thesis>,\n'
+                '  "short_exit": <condition tree or null — when to cover the short; null means '
+                'hold short while short_entry is true>,\n'
+            )
+            short_rule = ("Long AND short are both supported (perpetuals). A tree may set entry/exit "
+                         "(long leg), short_entry/short_exit (short leg), or both if the strategy "
+                         "genuinely trades both directions — most single-direction ideas need only one "
+                         "leg. If the strategy is a pure short thesis, entry/exit may be null.")
+
+        prompt = f"""Translate this {MARKET_NAME} strategy into a signal condition tree.
 
 Factor formula: {factor_formula}
 Strategy title: {title}
@@ -139,9 +158,9 @@ Return JSON, one of these three shapes:
 1. Representable as price/volume/dividend/CPO conditions:
 {{
   "representable": true,
-  "entry": <condition tree — when to be long>,
-  "exit": <condition tree or null — when to flatten; null means hold while entry condition is true>,
-  "notes": "one line: how the tree captures the strategy's actual thesis"
+  "entry": <condition tree or null — when to be LONG>,
+  "exit": <condition tree or null — when to flatten the long; null means hold while entry condition is true>,
+{short_shape}  "notes": "one line: how the tree captures the strategy's actual thesis"
 }}
 
 2. A fundamental screen across 5+ stocks (ROE/PB/PE/DY ranking or filtering):
@@ -155,7 +174,7 @@ Rules:
   required parameter, the strategy is underspecified — use shape 3 with reason "parameter X unspecified".
 - NEVER approximate an unrelated mechanism with a price proxy. If the thesis is about earnings
   surprises, analyst coverage, sentiment, or anything with no matching leaf, use shape 3.
-- Long-only (Bursa short-selling restricted): the entry tree describes when to be LONG."""
+- {short_rule}"""
         result = self.call_claude_json(
             SYSTEM,
             [{"role": "user", "content": prompt}],
@@ -176,6 +195,11 @@ Rules:
                     "reason": result.get("reason", "not representable (no reason given)")}
 
         tree = {"entry": result.get("entry"), "exit": result.get("exit")}
+        if ALLOW_SHORT:
+            if result.get("short_entry"):
+                tree["short_entry"] = result.get("short_entry")
+            if result.get("short_exit"):
+                tree["short_exit"] = result.get("short_exit")
         errors = signal_dsl.validate(tree)
         if errors:
             return {"representable": False,
@@ -184,7 +208,7 @@ Rules:
             "signal_type": "dsl",
             "representable": True,
             "dsl": tree,
-            "long_only": True,
+            "long_only": not ALLOW_SHORT,
             "notes": result.get("notes", ""),
         }
 
@@ -389,7 +413,8 @@ Rules:
             "fee_as_of": as_of,
         }
 
-    def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str) -> dict:
+    def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str,
+                             leverage: float | None = None) -> dict:
         """Compute performance with QC1 lookahead guard and QC3 realistic costs.
 
         QC1 — Lookahead bias guard:
@@ -397,10 +422,31 @@ Rules:
           Enforced by pd.Series.shift(1) — signal_shifted[t] = signal[t-1].
           signal_shifted[0] is forced to 0 (no position at start).
 
-        QC3 — Realistic Bursa transaction costs (see _cost_rates):
-          asymmetric buy/sell rates (stamp duty is buy-side only, capped),
-          slippage tiered by liquidity, deducted on every position change.
-          Returns both sharpe_gross (before costs) and sharpe_net (after costs).
+        QC3 — Realistic transaction costs (see _cost_rates):
+          asymmetric buy/sell rates where the market has them (Bursa stamp
+          duty is buy-side only, capped), slippage tiered by liquidity,
+          deducted on every position change. Returns both sharpe_gross
+          (before costs) and sharpe_net (after costs).
+
+        WS3 — signed positions, funding, leverage/liquidation (crypto only —
+        every term below is a documented no-op on Bursa, see the settings
+        each is sourced from):
+          `signals` may be -1/0/1 (short/flat/long); the existing gross-return
+          and delta-based turnover-cost math already handles the sign correctly
+          with no changes (short * negative bar return = correct short PnL;
+          a short's entry/exit is still a "sell"/"buy" cost event).
+          Funding: AVG_FUNDING_RATE_PER_INTERVAL is a disclosed MODELED AVERAGE
+          (no historical funding time series is wired into this system — see
+          UNAVAILABLE_DATA_KEYWORDS), applied per bar scaled by how many
+          funding settlements that bar spans. 0.0 on Bursa (no perp funding).
+          Leverage: `leverage` defaults to DEFAULT_LEVERAGE (1.0 — unleveraged
+          unless the caller explicitly requests more, capped at MAX_LEVERAGE).
+          Liquidation: at leverage > 1, any single bar whose leveraged loss
+          exceeds 1/leverage * (1 - LIQUIDATION_BUFFER) is capped at that
+          floor — a simplified per-bar liquidation model (this system has no
+          intraday data, so path-dependent intra-bar liquidation isn't
+          modelable; a single daily bar breaching the threshold is the
+          realistic granularity available).
         """
         close = df["close"]
         sig   = signals.fillna(0)
@@ -412,7 +458,9 @@ Rules:
 
         bar_returns    = close.pct_change().fillna(0)
 
-        # Gross returns (no costs): position held at T earns return from T→T+1
+        # Gross returns (no costs): position held at T earns return from T→T+1.
+        # Sign-correct for short positions (signal_shifted == -1) with no
+        # special-casing — a short earns the negative of the bar return.
         gross_bar     = signal_shifted * bar_returns
         gross_returns = gross_bar.values[1:]   # drop bar 0 (always 0 after shift)
 
@@ -422,13 +470,32 @@ Rules:
         buys           = np.clip(deltas, 0, None)
         sells          = np.clip(-deltas, 0, None)
         signal_changes = np.abs(deltas)
-        net_returns    = gross_returns - buys * rates["buy"] - sells * rates["sell"]
+        cost_adj_returns = gross_returns - buys * rates["buy"] - sells * rates["sell"]
+
+        # ── WS3: funding accrual (crypto only) ─────────────────────────────────
+        leverage = min(leverage if leverage else DEFAULT_LEVERAGE, MAX_LEVERAGE)
+        bar_days = 365.0 / BARS_PER_YEAR.get(interval, 252)
+        settlements_per_bar = (bar_days * 24.0 / FUNDING_INTERVAL_HOURS) if FUNDING_INTERVAL_HOURS else 0.0
+        funding_drag_bar = (signal_shifted.values[1:] * AVG_FUNDING_RATE_PER_INTERVAL
+                           * settlements_per_bar)
+        pre_leverage_returns = cost_adj_returns - funding_drag_bar
+
+        # ── WS3: leverage + bounded per-bar liquidation ────────────────────────
+        net_returns = pre_leverage_returns * leverage
+        if leverage > 1.0:
+            liq_floor = -(1.0 / leverage) * (1.0 - LIQUIDATION_BUFFER)
+            net_returns = np.where(net_returns < liq_floor, liq_floor, net_returns)
+        # PnL CONTRIBUTION sign (negative = funding cost/drag, positive = funding
+        # income) — funding_drag_bar is SUBTRACTED from returns above, so the
+        # contribution is its negative, not the raw subtracted amount.
+        funding_drag_pct = float(-np.sum(funding_drag_bar) * leverage)
 
         n = len(net_returns)
         _empty = {
             "sharpe": 0.0, "sharpe_gross": 0.0, "sharpe_net": 0.0,
             "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0,
             "total_trades": 0, "ann_return": 0.0,
+            "leverage_used": leverage, "funding_drag_pct": round(funding_drag_pct, 4),
         }
         if n < 20 or np.std(net_returns) < 1e-10:
             return _empty
@@ -464,6 +531,8 @@ Rules:
             "profit_factor": round(float(profit_factor), 3),
             "total_trades":  total_trades,
             "ann_return":    round(float(np.mean(net_returns)) * ann, 4),
+            "leverage_used": leverage,
+            "funding_drag_pct": round(funding_drag_pct, 4),
         }
 
     # ── QC2: Walk-forward IS / OOS validation ────────────────────────────────
@@ -2206,7 +2275,8 @@ Return JSON only:
                         excess_ann_return=?, robustness_score=?,
                         equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?,
                         capacity_pct_adv=?, days_to_enter=?, capacity_pass=?,
-                        production_eligible=?, universe_asof=?
+                        production_eligible=?, universe_asof=?,
+                        leverage_used=?, funding_drag_pct=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
@@ -2217,6 +2287,9 @@ Return JSON only:
                       round(days_to_enter, 3) if days_to_enter != float("inf") else None,
                       1 if capacity_pass else 0,
                       1 if production_eligible else 0, _window_start,
+                      # WS3: leverage/funding traceability — 1.0/0.0 on Bursa,
+                      # test_r carries the real values on crypto (see _compute_performance).
+                      test_r.get("leverage_used"), test_r.get("funding_drag_pct"),
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.

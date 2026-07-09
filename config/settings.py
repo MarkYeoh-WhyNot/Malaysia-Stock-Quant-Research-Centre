@@ -115,6 +115,17 @@ bursa_trade_cost    = _P.trade_cost
 slippage_tier       = _P.slippage_tier
 trade_cost          = _P.trade_cost
 size_units          = _P.size_units
+funding_cost        = _P.funding_cost
+
+# ── Long/short (WS3) — perpetuals-only; ALLOW_SHORT=False on every other
+# market. Everything downstream (DSL, backtester, feasibility, concierge,
+# paper trades) branches on this single flag rather than checking DATA_BACKEND.
+ALLOW_SHORT            = _P.ALLOW_SHORT
+MAX_LEVERAGE           = _P.MAX_LEVERAGE
+DEFAULT_LEVERAGE       = _P.DEFAULT_LEVERAGE
+LIQUIDATION_BUFFER     = _P.LIQUIDATION_BUFFER
+FUNDING_INTERVAL_HOURS = _P.FUNDING_INTERVAL_HOURS
+AVG_FUNDING_RATE_PER_INTERVAL = _P.AVG_FUNDING_RATE_PER_INTERVAL
 
 # ── Instruments / prompts / jobs (generic names, from profile) ───────────────
 TICKER_REGEX     = _P.TICKER_REGEX

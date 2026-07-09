@@ -1,17 +1,22 @@
 """
-EventClassifier — classifies market events for Bursa Malaysia trading signals.
+EventClassifier — classifies market events for trading signals.
 Uses Claude Haiku (fast/cheap) to analyse news and determine actionability.
+
+Market-aware: Bursa and crypto have entirely different event taxonomies (PEAD/
+OPR/CPO vs funding/OI/unlock), so the system prompt, JSON event-type enum,
+historical-edge table, and rule-based fallback keywords are all selected by
+MARKET_MODE below rather than hardcoded to one market.
 """
 import json
 import logging
 from datetime import datetime
 
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST
+from config.settings import MODEL_FAST, MARKET_MODE
 
 logger = logging.getLogger(__name__)
 
-HISTORICAL_EDGES = {
+BURSA_HISTORICAL_EDGES = {
     "earnings_beat": {
         "description": "PEAD drift on Bursa",
         "edge": "+4.2% avg over 30 days",
@@ -81,7 +86,67 @@ HISTORICAL_EDGES = {
     },
 }
 
-CLASSIFIER_SYSTEM = """You are an expert event classifier for Bursa Malaysia equity markets.
+CRYPTO_HISTORICAL_EDGES = {
+    "funding_spike": {
+        "description": "Crowded funding mean-reverts",
+        "edge": "extreme funding historically fades within 1-3 days",
+        "confidence_boost": 0.10,
+        "min_magnitude": "medium",
+    },
+    "oi_surge": {
+        "description": "OI buildup into a move raises liquidation-cascade risk",
+        "edge": "post-cascade snapbacks common within 1-2 days",
+        "confidence_boost": 0.08,
+        "min_magnitude": "medium",
+    },
+    "basis_dislocation": {
+        "description": "Perp/index basis converges",
+        "edge": "cash-and-carry convergence, typically hours-to-days",
+        "confidence_boost": 0.08,
+        "min_magnitude": "medium",
+    },
+    "btc_move": {
+        "description": "BTC beta drags the alt complex",
+        "edge": "alts follow BTC with a 0-2 day lag, amplified",
+        "confidence_boost": 0.10,
+    },
+    "eth_move": {
+        "description": "ETH beta drags smart-contract/L2 tokens",
+        "edge": "L2/DeFi tokens follow ETH with a 0-2 day lag",
+        "confidence_boost": 0.08,
+    },
+    "dxy_move": {
+        "description": "Dollar strength is a headwind for risk assets incl. crypto",
+        "edge": "inverse correlation, 1-day lag",
+        "confidence_boost": 0.05,
+    },
+    "yield_move": {
+        "description": "Rising US yields pressure risk-asset valuations",
+        "edge": "weak inverse correlation, 1-day lag",
+        "confidence_boost": 0.05,
+    },
+    "listing": {
+        "description": "Exchange listing announcement",
+        "edge": "+5-15% avg pop on major-exchange listing news",
+        "confidence_boost": 0.10,
+        "min_magnitude": "medium",
+    },
+    "unlock": {
+        "description": "Token unlock/vesting cliff sell pressure",
+        "edge": "-2-8% avg into a large unlock date",
+        "confidence_boost": 0.08,
+    },
+    "depeg": {
+        "description": "Stablecoin depeg — tail risk event",
+        "edge": "high-volatility, flight-to-quality across the complex",
+        "confidence_boost": 0.15,
+        "min_magnitude": "medium",
+    },
+}
+
+HISTORICAL_EDGES = CRYPTO_HISTORICAL_EDGES if MARKET_MODE == "crypto" else BURSA_HISTORICAL_EDGES
+
+BURSA_CLASSIFIER_SYSTEM = """You are an expert event classifier for Bursa Malaysia equity markets.
 Your job is to analyse market news and determine:
 1. What type of event this is
 2. Which stocks are affected and how
@@ -101,10 +166,47 @@ Be conservative — only flag as actionable when there is clear historical prece
 Macro/geopolitical news should almost never be actionable — flag as context only.
 Always return valid JSON. Do not include any explanation outside the JSON object."""
 
+CRYPTO_CLASSIFIER_SYSTEM = """You are an expert event classifier for liquid crypto (perp/spot) markets.
+Your job is to analyse market news and on-chain/exchange signals and determine:
+1. What type of event this is
+2. Which pairs are affected and how
+3. Whether there is a systematic trading edge
+4. How confident you are in the signal
+
+You know these facts about crypto markets:
+- Extreme perp funding (>0.05% per interval) historically fades within 1-3 days
+- BTC moves drag the alt complex with amplified beta and a 0-2 day lag
+- ETH moves drag smart-contract/DeFi/L2 tokens similarly
+- Large open-interest buildups into a price move raise liquidation-cascade risk
+- Exchange listing announcements produce a short-lived pop (+5-15%)
+- Token unlock/vesting cliffs create sell pressure into the unlock date
+- Stablecoin depegs are tail-risk events — flight to quality across the complex
+- DXY strength and rising US yields are mild headwinds for crypto as a risk asset
+- This is a 24/7 market — weekend moves on thin liquidity often retrace Monday
+
+Be conservative — only flag as actionable when there is clear historical precedent for edge.
+Pure macro/regulatory news should almost never be actionable — flag as context only.
+Always return valid JSON. Do not include any explanation outside the JSON object."""
+
+CLASSIFIER_SYSTEM = CRYPTO_CLASSIFIER_SYSTEM if MARKET_MODE == "crypto" else BURSA_CLASSIFIER_SYSTEM
+
+_BURSA_EVENT_TYPES = (
+    "earnings_beat|earnings_miss|dividend_declared|contract_win|bonus_issue|"
+    "opr_hike|opr_cut|opr_hold|china_pmi_strong|china_pmi_weak|fed_hike|fed_cut|"
+    "fed_hold|cpo_move|crude_oil_move|analyst_upgrade|analyst_downgrade|"
+    "macro_context|irrelevant"
+)
+_CRYPTO_EVENT_TYPES = (
+    "funding_spike|oi_surge|basis_dislocation|btc_move|eth_move|listing|unlock|"
+    "depeg|btc_dominance_shift|dxy_move|yield_move|regulatory|"
+    "analyst_upgrade|analyst_downgrade|macro_context|irrelevant"
+)
+_EVENT_TYPES = _CRYPTO_EVENT_TYPES if MARKET_MODE == "crypto" else _BURSA_EVENT_TYPES
+
 
 class EventClassifier(BaseAgent):
     name = "EventClassifier"
-    description = "Classifies market events for Bursa Malaysia trading signals"
+    description = "Classifies market events for trading signals (market-aware: Bursa or crypto)"
     default_model = MODEL_FAST
 
     def run(self, task: dict) -> dict:
@@ -115,10 +217,12 @@ class EventClassifier(BaseAgent):
         Takes raw event dict, returns classified dict with trading signal assessment.
         Falls back to rule-based classification on Claude failure.
         """
+        from config.settings import MARKET_NAME, TICKER_EXAMPLE
+
         ticker_hint = event_raw.get("ticker") or "None"
         body_snippet = (event_raw.get("body") or "")[:500]
 
-        prompt = f"""Classify this market event for Bursa Malaysia trading:
+        prompt = f"""Classify this market event for {MARKET_NAME} trading:
 
 Source: {event_raw.get('source', 'unknown')}
 Headline: {event_raw.get('headline', '')}
@@ -128,10 +232,10 @@ Published: {event_raw.get('published_at', '')}
 
 Return JSON:
 {{
-  "event_type": "<earnings_beat|earnings_miss|dividend_declared|contract_win|bonus_issue|opr_hike|opr_cut|opr_hold|china_pmi_strong|china_pmi_weak|fed_hike|fed_cut|fed_hold|cpo_move|crude_oil_move|analyst_upgrade|analyst_downgrade|macro_context|irrelevant>",
-  "ticker": "<primary affected stock e.g. 1155.KL, or null>",
-  "affected_tickers": ["<list of affected .KL tickers>"],
-  "company": "<company name or null>",
+  "event_type": "<{_EVENT_TYPES}>",
+  "ticker": "<primary affected instrument e.g. {TICKER_EXAMPLE}, or null>",
+  "affected_tickers": ["<list of affected instruments>"],
+  "company": "<company/project name or null>",
   "sentiment": "<positive|negative|neutral>",
   "magnitude": "<high|medium|low>",
   "is_actionable": <true|false>,
@@ -215,6 +319,11 @@ Return JSON:
         if event_type in ("bnm_opr", "fed_decision", "ecb_decision", "boe_decision", "boj_decision"):
             return "alert"
 
+        # Stablecoin depeg is a tail-risk event → always alert regardless of
+        # confidence, same reasoning as OPR decisions above.
+        if event_type == "depeg":
+            return "alert"
+
         if is_actionable and confidence >= 0.75:
             return "gate0_idea"
 
@@ -231,52 +340,10 @@ Return JSON:
         is_actionable = False
         confidence = 0.30
 
-        # Earnings
-        if any(w in headline_lower for w in ["earnings beat", "profit up", "net profit", "revenue up", "eps beat"]):
-            event_type = "earnings_beat"
-            sentiment = "positive"
-            is_actionable = True
-            confidence = 0.55
-        elif any(w in headline_lower for w in ["earnings miss", "profit down", "net loss", "revenue miss"]):
-            event_type = "earnings_miss"
-            sentiment = "negative"
-            is_actionable = True
-            confidence = 0.55
-
-        # Dividend
-        elif any(w in headline_lower for w in ["dividend", "distribution"]):
-            event_type = "dividend_declared"
-            sentiment = "positive"
-            is_actionable = True
-            confidence = 0.60
-
-        # Contract
-        elif any(w in headline_lower for w in ["contract", "letter of award", "awarded"]):
-            event_type = "contract_win"
-            sentiment = "positive"
-            is_actionable = True
-            confidence = 0.50
-
-        # OPR
-        elif any(w in headline_lower for w in ["opr", "overnight policy rate", "interest rate decision", "bnm"]):
-            event_type = "opr_hold"
-            sentiment = "neutral"
-            is_actionable = False
-            confidence = 0.70
-
-        # CPO
-        elif any(w in headline_lower for w in ["palm oil", "cpo"]):
-            event_type = "cpo_move"
-            sentiment = "positive" if any(w in headline_lower for w in ["rise", "up", "gain", "surge"]) else "negative"
-            is_actionable = True
-            confidence = 0.55
-
-        # Crude oil
-        elif any(w in headline_lower for w in ["crude oil", "brent", "oil price"]):
-            event_type = "crude_oil_move"
-            sentiment = "positive" if any(w in headline_lower for w in ["rise", "up", "gain", "surge"]) else "negative"
-            is_actionable = True
-            confidence = 0.50
+        if MARKET_MODE == "crypto":
+            event_type, sentiment, is_actionable, confidence = self._crypto_rule_fallback(headline_lower)
+        else:
+            event_type, sentiment, is_actionable, confidence = self._bursa_rule_fallback(headline_lower)
 
         # Pre-set event_type from commodity monitor
         if event_raw.get("event_type") and event_raw["event_type"] != "general":
@@ -308,3 +375,51 @@ Return JSON:
             "suggested_hypothesis": None,
             "classified_at": datetime.utcnow().isoformat(),
         }
+
+    @staticmethod
+    def _bursa_rule_fallback(headline_lower: str) -> tuple:
+        """Returns (event_type, sentiment, is_actionable, confidence)."""
+        up = any(w in headline_lower for w in ["rise", "up", "gain", "surge"])
+
+        if any(w in headline_lower for w in ["earnings beat", "profit up", "net profit", "revenue up", "eps beat"]):
+            return "earnings_beat", "positive", True, 0.55
+        if any(w in headline_lower for w in ["earnings miss", "profit down", "net loss", "revenue miss"]):
+            return "earnings_miss", "negative", True, 0.55
+        if any(w in headline_lower for w in ["dividend", "distribution"]):
+            return "dividend_declared", "positive", True, 0.60
+        if any(w in headline_lower for w in ["contract", "letter of award", "awarded"]):
+            return "contract_win", "positive", True, 0.50
+        if any(w in headline_lower for w in ["opr", "overnight policy rate", "interest rate decision", "bnm"]):
+            return "opr_hold", "neutral", False, 0.70
+        if any(w in headline_lower for w in ["palm oil", "cpo"]):
+            return "cpo_move", ("positive" if up else "negative"), True, 0.55
+        if any(w in headline_lower for w in ["crude oil", "brent", "oil price"]):
+            return "crude_oil_move", ("positive" if up else "negative"), True, 0.50
+        return "macro_context", "neutral", False, 0.30
+
+    @staticmethod
+    def _crypto_rule_fallback(headline_lower: str) -> tuple:
+        """Returns (event_type, sentiment, is_actionable, confidence)."""
+        up = any(w in headline_lower for w in ["rise", "up", "gain", "surge", "rally"])
+
+        if any(w in headline_lower for w in ["depeg", "de-peg", "loses peg"]):
+            return "depeg", "negative", True, 0.70
+        if any(w in headline_lower for w in ["funding rate", "funding spike", "crowded long", "crowded short"]):
+            return "funding_spike", "neutral", True, 0.55
+        if any(w in headline_lower for w in ["open interest", "oi surge", "liquidation", "liquidated"]):
+            return "oi_surge", "neutral", True, 0.55
+        if any(w in headline_lower for w in ["lists on", "listing", "gets listed", "will list"]):
+            return "listing", "positive", True, 0.55
+        if any(w in headline_lower for w in ["unlock", "vesting", "token release"]):
+            return "unlock", "negative", True, 0.55
+        if any(w in headline_lower for w in ["bitcoin", "btc"]) and any(w in headline_lower for w in ["surge", "crash", "plunge", "rally", "dump"]):
+            return "btc_move", ("positive" if up else "negative"), True, 0.55
+        if any(w in headline_lower for w in ["ethereum", "eth"]) and any(w in headline_lower for w in ["surge", "crash", "plunge", "rally", "dump"]):
+            return "eth_move", ("positive" if up else "negative"), True, 0.50
+        if any(w in headline_lower for w in ["dominance"]):
+            return "btc_dominance_shift", "neutral", True, 0.45
+        if any(w in headline_lower for w in ["sec", "regulation", "regulatory", "ban", "lawsuit"]):
+            return "regulatory", "negative", False, 0.40
+        if any(w in headline_lower for w in ["dollar index", "dxy"]):
+            return "dxy_move", ("negative" if up else "positive"), True, 0.40
+        return "macro_context", "neutral", False, 0.30

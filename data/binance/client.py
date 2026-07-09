@@ -48,7 +48,8 @@ _TIMEFRAME_MAP = {
 
 _PAIR_RE = re.compile(r"\b[A-Z0-9]{2,10}/USDT\b")
 
-_exchange = None  # lazy singleton — ccxt markets load is slow, do it once
+_exchange = None       # lazy singleton — ccxt markets load is slow, do it once
+_perp_exchange = None  # separate handle: futures/swap market (funding, OI)
 
 
 def _get_exchange():
@@ -59,6 +60,19 @@ def _get_exchange():
         cls = getattr(ccxt, exchange_id)
         _exchange = cls({"enableRateLimit": True})
     return _exchange
+
+
+def _get_perp_exchange():
+    """Separate ccxt handle configured for USDT-margined perpetuals (defaultType
+    'future'). Funding rate / open interest are futures-market concepts — the
+    spot handle above never sees them. Public endpoints only, no API key."""
+    global _perp_exchange
+    if _perp_exchange is None:
+        import ccxt
+        exchange_id = os.getenv("CRYPTO_EXCHANGE_ID", "binance")
+        cls = getattr(ccxt, exchange_id)
+        _perp_exchange = cls({"enableRateLimit": True, "options": {"defaultType": "future"}})
+    return _perp_exchange
 
 
 def extract_tickers(raw: str) -> list:
@@ -162,3 +176,48 @@ def fetch_live_prices(symbols: list | None = None) -> dict:
             "quote_volume_24h":  t.get("quoteVolume"),
         })
     return {"prices": prices, "errors": errors}
+
+
+def get_funding_rate(symbol: str) -> dict | None:
+    """Current funding rate for one perp (e.g. "BTC/USDT:USDT" or "BTC/USDT" —
+    ccxt resolves the perp contract for the pair on most exchanges). Returns
+    None on any failure (unsupported pair, geo-block, no perp market) — never
+    raises; callers treat None as "skip this symbol", same as fetch_live_prices.
+    """
+    ex = _get_perp_exchange()
+    try:
+        fr = ex.fetch_funding_rate(symbol)
+    except Exception as e:
+        logger.debug(f"binance client: fetch_funding_rate failed for {symbol}: {e}")
+        return None
+    rate = fr.get("fundingRate")
+    if rate is None:
+        return None
+    return {
+        "symbol": symbol,
+        "funding_rate": rate,
+        "funding_rate_pct": rate * 100.0,
+        "mark_price": fr.get("markPrice"),
+        "index_price": fr.get("indexPrice"),
+        "next_funding_time": fr.get("fundingDatetime"),
+    }
+
+
+def get_open_interest(symbol: str) -> dict | None:
+    """Current open interest (contracts + notional value) for one perp.
+    Returns None on any failure — same resilient contract as get_funding_rate."""
+    ex = _get_perp_exchange()
+    try:
+        oi = ex.fetch_open_interest(symbol)
+    except Exception as e:
+        logger.debug(f"binance client: fetch_open_interest failed for {symbol}: {e}")
+        return None
+    value = oi.get("openInterestAmount") or oi.get("openInterestValue") or oi.get("openInterest")
+    if value is None:
+        return None
+    return {
+        "symbol": symbol,
+        "open_interest": value,
+        "open_interest_value": oi.get("openInterestValue"),
+        "timestamp": oi.get("datetime"),
+    }

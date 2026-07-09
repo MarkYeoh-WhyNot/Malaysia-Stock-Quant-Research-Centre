@@ -11,13 +11,17 @@ from datetime import datetime, timezone
 
 import requests
 
+from config.settings import MARKET_MODE
 from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 
-BRAVE_QUERIES = [
+# Native RSS is blocked on this VPS (see module docstring) — Brave Search
+# substitutes for it. Queries are market-specific so crypto and Bursa each
+# get their own relevant news, not a shared/wrong feed.
+BURSA_QUERIES = [
     "Malaysia stock market news today",
     "Bursa Malaysia announcement today",
     "palm oil CPO price today",
@@ -25,6 +29,17 @@ BRAVE_QUERIES = [
     "KLCI market today",
     "Petronas Malaysia news today",
 ]
+
+CRYPTO_QUERIES = [
+    "bitcoin ethereum news today",
+    "crypto market news today",
+    "CoinDesk bitcoin today",
+    "cryptocurrency regulation news today",
+    "altcoin news today",
+    "crypto exchange news today",
+]
+
+BRAVE_QUERIES = CRYPTO_QUERIES if MARKET_MODE == "crypto" else BURSA_QUERIES
 
 
 def _make_event_id(url: str, title: str) -> str:

@@ -26,7 +26,7 @@ def run_crypto(code: str) -> str:
         return r.stdout
 
 
-def test_sandbox_accepts_usdt_rejects_kl_and_perps():
+def test_sandbox_accepts_usdt_rejects_kl_and_bad_perps():
     out = run_crypto("""
 import json
 from data.database import init_db
@@ -36,16 +36,43 @@ ok = submit_sandbox_idea({"title": "CRX btc ma", "hypothesis": "50-day MA cross 
                           "ticker": "BTC/USDT", "factor_formula": "close crosses above sma(50)"})
 kl = submit_sandbox_idea({"title": "CRX kl", "hypothesis": "momentum",
                           "ticker": "1155.KL", "factor_formula": "close above sma(50) uptrend"})
-perp = submit_sandbox_idea({"title": "CRX perp", "hypothesis": "long perpetual futures basis",
-                            "ticker": "ETH/USDT", "factor_formula": "funding rate positive for days"})
+# WS3: a clean short thesis on a perp is now ACCEPTED (long/short is the point).
+short_ok = submit_sandbox_idea({"title": "CRX eth short", "hypothesis": "short ETH on breakdown below sma(50)",
+                                "ticker": "ETH/USDT", "factor_formula": "close crosses below sma(50)"})
+# a multi-leg spread/pairs structure is still hard-blocked (BLOCKED_MODES) —
+# unlike the funding-rate case below, this IS an outright rejection.
+spread_bad = submit_sandbox_idea({"title": "CRX spread", "hypothesis": "spread trade between two majors",
+                                  "ticker": "SOL/USDT", "factor_formula": "close above sma(50)"})
 print(json.dumps({"ok": ok["ok"], "status": ok.get("status"),
                   "kl_ok": kl["ok"], "kl_err": kl.get("error", "")[:40],
-                  "perp_ok": perp["ok"]}))
+                  "short_ok": short_ok["ok"], "spread_bad": spread_bad["ok"]}))
 """)
     r = json.loads(out.strip().splitlines()[-1])
     assert r["ok"] is True and r["status"] == "pending"
     assert r["kl_ok"] is False and "No valid ticker" in r["kl_err"]
-    assert r["perp_ok"] is False
+    assert r["short_ok"] is True
+    assert r["spread_bad"] is False
+
+
+def test_funding_rate_formula_docked_not_hard_blocked_at_sandbox():
+    """A formula needing a HISTORICAL funding-rate series (not backtestable —
+    no such DSL leaf/data column exists) is docked by the deterministic
+    feasibility score but not hard-blocked at the shallow sandbox pre-check;
+    real enforcement is at DSL-parse time (signal_dsl: unrepresentable ->
+    REJECTED, never silently genericized). This test documents that gap
+    explicitly rather than asserting an outcome the code doesn't produce."""
+    out = run_crypto("""
+import json
+from agents.researcher.strategy_researcher import StrategyResearcher
+clean = StrategyResearcher._compute_feasibility(
+    {"hypothesis": "50-day MA cross on Bitcoin"}, "BTC/USDT", "close crosses above sma(50)")
+funding = StrategyResearcher._compute_feasibility(
+    {"hypothesis": "long perpetual futures basis"}, "SOL/USDT", "funding rate positive for days")
+print(json.dumps({"clean": clean, "funding": funding}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert r["funding"] < r["clean"]  # docked relative to a clean formula
+    assert r["funding"] >= 0.6         # NOT hard-blocked at this stage (documented gap)
 
 
 def test_data_quality_does_not_flag_crypto_weekends():
@@ -87,11 +114,13 @@ feas_onchain = StrategyResearcher._compute_feasibility(
     "on-chain flow indicator positive")
 print(json.dumps({
     "feas": feas, "feas_onchain": feas_onchain,
-    "sys_crypto": "CRYPTO SPOT" in SYSTEM and "BTC/USDT" in SYSTEM,
+    # WS3: SYSTEM now frames crypto as a perpetuals (long/short) specialist,
+    # not spot-only.
+    "sys_crypto": "CRYPTO PERPETUALS" in SYSTEM and "BTC/USDT" in SYSTEM,
     "sys_no_bursa": "BURSA MALAYSIA SPECIALIST" not in SYSTEM,
     "gate0_crypto": "crypto" in GATE0_SYSTEM.lower(),
     "red_crypto": "BTC-beta" in RED_SYSTEM,
-    "judge_crypto": "perpetuals" in JUDGE_SYSTEM,
+    "judge_crypto": "leverage" in JUDGE_SYSTEM and "funding" in JUDGE_SYSTEM.lower(),
 }))
 """)
     r = json.loads(out.strip().splitlines()[-1])
@@ -114,16 +143,22 @@ submit_desc = next(t for t in TOOLS if t["name"] == "submit_strategy_idea")["des
 print(json.dumps({
     "btc": res["matches"]["bitcoin"],
     "defi_has_uni": "UNI/USDT" in res["matches"]["DeFi"],
-    "prompt_crypto": "BTC/USDT" in prompt and "CRYPTO SPOT MARKET" in prompt,
+    # WS3: the concierge prompt now frames crypto as a perpetual long/short
+    # market (MARKET_BRIEF text changed from "CRYPTO SPOT MARKET" to
+    # "CRYPTO PERPETUAL MARKET").
+    "prompt_crypto": "BTC/USDT" in prompt and "CRYPTO PERPETUAL MARKET" in prompt,
     "prompt_no_klci": "1155.KL" not in prompt,
+    "prompt_allows_short": "Long AND short are both supported" in prompt,
     "tools_crypto": "BTC/USDT" in submit_desc,
+    "tools_allow_short": "LONG OR SHORT" in submit_desc,
     "guardrail": "human-only decision" in prompt,
 }))
 """)
     r = json.loads(out.strip().splitlines()[-1])
     assert r["btc"] == ["BTC/USDT"]
     assert r["defi_has_uni"] is True
-    assert all(r[k] for k in ("prompt_crypto", "prompt_no_klci", "tools_crypto", "guardrail"))
+    assert all(r[k] for k in ("prompt_crypto", "prompt_no_klci", "prompt_allows_short",
+                              "tools_crypto", "tools_allow_short", "guardrail"))
 
 
 def test_fractional_fill_simulation_in_crypto_mode():

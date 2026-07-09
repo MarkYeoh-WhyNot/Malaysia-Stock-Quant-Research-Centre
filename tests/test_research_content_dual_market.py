@@ -146,10 +146,15 @@ from knowledge.ingestion.alpha_seeds import is_market_feasible, SYSTEM
 from config import settings
 usdt_ok, _ = is_market_feasible({"ticker": "BTC/USDT", "title": "", "hypothesis": "", "factor_formula": ""})
 kl_bad, kl_reason = is_market_feasible({"ticker": "1155.KL", "title": "", "hypothesis": "", "factor_formula": ""})
-perp_bad, perp_reason = is_market_feasible({"ticker": "BTC/USDT", "title": "perpetual leverage strategy",
-                                            "hypothesis": "", "factor_formula": ""})
+# WS3: perpetual/leverage strategies are now the whole point of crypto mode
+# (long/short via perps) — no longer blocked. A multi-leg spread IS still
+# blocked (the DSL expresses one instrument's long/short state, not a basket).
+perp_ok, perp_reason = is_market_feasible({"ticker": "BTC/USDT", "title": "perpetual leverage strategy",
+                                           "hypothesis": "", "factor_formula": ""})
+spread_bad, spread_reason = is_market_feasible({"ticker": "BTC/USDT", "title": "spread trade strategy",
+                                                 "hypothesis": "", "factor_formula": ""})
 print(json.dumps({
-    "usdt_ok": usdt_ok, "kl_bad": kl_bad, "perp_bad": perp_bad,
+    "usdt_ok": usdt_ok, "kl_bad": kl_bad, "perp_ok": perp_ok, "spread_bad": spread_bad,
     "system_no_bursa": "bursa" not in SYSTEM.lower(),
     "kb_hunt_enabled": "kb_hunt" in settings.ENABLED_JOBS,
     "alpha_seeds_enabled": "alpha_seeds" in settings.ENABLED_JOBS,
@@ -158,7 +163,8 @@ print(json.dumps({
     r = __import__("json").loads(out.strip().splitlines()[-1])
     assert r["usdt_ok"] is True
     assert r["kl_bad"] is False
-    assert r["perp_bad"] is False
+    assert r["perp_ok"] is True
+    assert r["spread_bad"] is False
     assert r["system_no_bursa"] is True
     assert r["kb_hunt_enabled"] is True
     assert r["alpha_seeds_enabled"] is True
