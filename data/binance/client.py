@@ -203,6 +203,42 @@ def get_funding_rate(symbol: str) -> dict | None:
     }
 
 
+def fetch_live_funding(symbols: list | None = None) -> dict:
+    """Current funding rate for a set of perps in ONE bulk request — the
+    funding-rate analog of fetch_live_prices(). Display-only, never persisted,
+    never fed to the pipeline. Resilient: never raises.
+
+    Returns {"funding": {symbol: {funding_rate_pct, next_funding_time}, ...},
+             "errors": [str, ...]}.
+
+    ccxt returns bulk funding keyed by the exchange's full contract symbol
+    (e.g. "BTC/USDT:USDT"), not the plain pair — normalise back to the plain
+    "BTC/USDT" symbol so callers can look up by the same key fetch_live_prices
+    uses.
+    """
+    from config.settings import DEFAULT_SYMBOLS
+    symbols = list(symbols) if symbols else list(DEFAULT_SYMBOLS)
+    ex = _get_perp_exchange()
+
+    try:
+        rates = ex.fetch_funding_rates(symbols)
+    except Exception as e:
+        logger.warning(f"binance client: fetch_funding_rates failed: {e}")
+        return {"funding": {}, "errors": [f"live funding fetch failed: {e}"]}
+
+    funding: dict = {}
+    for _, r in rates.items():
+        plain_symbol = (r.get("symbol") or "").split(":")[0]
+        rate = r.get("fundingRate")
+        if not plain_symbol or rate is None:
+            continue
+        funding[plain_symbol] = {
+            "funding_rate_pct": rate * 100.0,
+            "next_funding_time": r.get("fundingDatetime"),
+        }
+    return {"funding": funding, "errors": []}
+
+
 def get_open_interest(symbol: str) -> dict | None:
     """Current open interest (contracts + notional value) for one perp.
     Returns None on any failure — same resilient contract as get_funding_rate."""

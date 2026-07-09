@@ -465,7 +465,7 @@ svg text{font-family:var(--font-mono)}
 
   <div class="sidebar-section">Trading</div>
   <a onclick="nav('paper-trades',this)"><span class="ico">📈</span>Paper Trades</a>
-  <a id="nav-live-prices" style="display:none" onclick="nav('live-prices',this)"><span class="ico">💹</span>Live Prices</a>
+  <a id="nav-live-prices" style="display:none" onclick="nav('live-prices',this)"><span class="ico">💹</span>Live Metrics</a>
 
   <div class="sidebar-section">Knowledge</div>
   <a onclick="nav('kb',this)"><span class="ico">📚</span>KB Explorer</a>
@@ -1217,11 +1217,11 @@ svg text{font-family:var(--font-mono)}
   </div>
 </div>
 
-<!-- ── Live Prices (crypto only) ───────────────────────────────────────────── -->
+<!-- ── Live Metrics (crypto only) ──────────────────────────────────────────── -->
 <div id="page-live-prices" class="page">
   <div class="panel">
     <div class="panel-head">
-      <span class="panel-title">Live Prices — <span id="lp-market">Crypto</span></span>
+      <span class="panel-title">Live Metrics — <span id="lp-market">Crypto</span></span>
       <div style="display:flex;gap:10px;align-items:center">
         <span id="lp-status" style="font-size:12px;color:var(--muted)">—</span>
         <button class="btn btn-sm" onclick="loadLivePrices()">↻</button>
@@ -1237,10 +1237,11 @@ svg text{font-family:var(--font-mono)}
             <th style="text-align:right">24h High</th>
             <th style="text-align:right">24h Low</th>
             <th onclick="sortLivePrices('quote_volume_24h')" style="cursor:pointer;text-align:right">24h Volume</th>
+            <th onclick="sortLivePrices('funding_rate_pct')" style="cursor:pointer;text-align:right" data-tip="Perp funding rate this interval — positive means longs pay shorts">Funding</th>
           </tr>
         </thead>
         <tbody id="lp-body">
-          <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>
+          <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1578,7 +1579,7 @@ document.addEventListener('DOMContentLoaded', () => {
     s.textContent = IS_CRYPTO ? '\u21c4 Bursa' : '\u21c4 Crypto';
     s.href = IS_CRYPTO ? '/' : '/crypto/';
   }
-  // Live Prices is crypto-only (Bursa quotes are delayed) \u2014 reveal the nav item
+  // Live Metrics is crypto-only (Bursa quotes are delayed) \u2014 reveal the nav item
   // only on the crypto dashboard.
   if (IS_CRYPTO) {
     const lp = document.getElementById('nav-live-prices');
@@ -3420,7 +3421,7 @@ async function ingestKBURL() {
   }
 }
 
-// ── Live Prices (crypto only) ─────────────────────────────────────────────────
+// ── Live Metrics (crypto only) ────────────────────────────────────────────────
 
 let _priceAutoRefresh = null;
 let _lpSort = { key: 'quote_volume_24h', dir: -1 };
@@ -3450,13 +3451,16 @@ function _renderLivePrices() {
   });
   const body = document.getElementById('lp-body');
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">No prices available</td></tr>';
+    body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">No prices available</td></tr>';
     return;
   }
   body.innerHTML = rows.map(r => {
     const ch = r.change_pct_24h;
     const chColor = ch == null ? 'var(--muted)' : ch >= 0 ? '#10b981' : '#ef4444';
     const chTxt = ch == null ? '—' : (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%';
+    const fr = r.funding_rate_pct;
+    const frColor = fr == null ? 'var(--muted)' : fr >= 0 ? '#10b981' : '#ef4444';
+    const frTxt = fr == null ? '—' : (fr >= 0 ? '+' : '') + fr.toFixed(4) + '%';
     return `<tr>
       <td><b>${r.symbol}</b> <span style="color:var(--muted)">${r.name || ''}</span></td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${_lpFmtPrice(r.last)}</td>
@@ -3464,6 +3468,7 @@ function _renderLivePrices() {
       <td style="text-align:right;color:var(--muted);font-variant-numeric:tabular-nums">${_lpFmtPrice(r.high_24h)}</td>
       <td style="text-align:right;color:var(--muted);font-variant-numeric:tabular-nums">${_lpFmtPrice(r.low_24h)}</td>
       <td style="text-align:right;font-variant-numeric:tabular-nums">${_lpFmtVol(r.quote_volume_24h)}</td>
+      <td style="text-align:right;color:${frColor};font-variant-numeric:tabular-nums">${frTxt}</td>
     </tr>`;
   }).join('');
 }
@@ -3480,12 +3485,12 @@ async function loadLivePrices() {
   try {
     const r = await fetch(API + '/prices').then(x => x.json());
     if (!r.supported) {
-      body.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">Live prices are available on the crypto dashboard only.</td></tr>';
+      body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px">Live metrics are available on the crypto dashboard only.</td></tr>';
       if (status) status.textContent = '';
       return;
     }
     if (r.errors && r.errors.length && !(r.prices || []).length) {
-      body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:20px">${r.errors[0]}</td></tr>`;
+      body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444;padding:20px">${r.errors[0]}</td></tr>`;
       if (status) status.textContent = 'error';
       return;
     }
@@ -3496,7 +3501,7 @@ async function loadLivePrices() {
       status.innerHTML = `<span style="color:#10b981">●</span> live · ${_lpRows.length} pairs · ${t}`;
     }
   } catch (e) {
-    if (body) body.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#ef4444;padding:20px">Failed to load prices: ${e}</td></tr>`;
+    if (body) body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444;padding:20px">Failed to load prices: ${e}</td></tr>`;
     if (status) status.textContent = 'error';
   }
 }

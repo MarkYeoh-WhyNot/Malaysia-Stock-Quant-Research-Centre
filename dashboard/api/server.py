@@ -122,21 +122,28 @@ async def prices():
     if cached is not None and (now - _PRICE_CACHE["ts"]) < _PRICE_TTL_SECS:
         return cached
 
-    from data.binance.client import fetch_live_prices
-    result = await _in_thread(lambda: fetch_live_prices(DEFAULT_SYMBOLS))
+    from data.binance.client import fetch_live_prices, fetch_live_funding
+    result, funding_result = await _in_thread(
+        lambda: (fetch_live_prices(DEFAULT_SYMBOLS), fetch_live_funding(DEFAULT_SYMBOLS)))
+    funding_by_symbol = funding_result["funding"]
 
-    # Enrich each row with the universe's display name / sector for the table.
+    # Enrich each row with the universe's display name / sector, plus the
+    # live funding rate where available (funding is a perp-only concept — a
+    # symbol simply won't have an entry if the fetch failed for it).
     for row in result["prices"]:
         meta = KLCI_BY_SYMBOL.get(row["symbol"], {})
         row["name"] = meta.get("name", row["symbol"])
         row["sector"] = meta.get("sector", "")
+        fr = funding_by_symbol.get(row["symbol"])
+        row["funding_rate_pct"] = fr["funding_rate_pct"] if fr else None
+        row["next_funding_time"] = fr["next_funding_time"] if fr else None
 
     payload = {
         "market": MARKET,
         "supported": True,
         "as_of": datetime.utcnow().isoformat(),
         "prices": result["prices"],
-        "errors": result["errors"],
+        "errors": result["errors"] + funding_result["errors"],
     }
     _PRICE_CACHE["ts"] = now
     _PRICE_CACHE["data"] = payload

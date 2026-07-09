@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import pytest
 
 import data.binance.client as bc
 
@@ -134,3 +135,46 @@ def test_fetch_live_prices_defaults_to_active_universe():
     # in default (bursa) test process DEFAULT_SYMBOLS is the KLCI list; the point
     # is simply that a symbol list was passed to fetch_tickers, not None
     assert ex.fetch_tickers.call_args.args[0]  # non-empty list
+
+
+# ── fetch_live_funding (Live Metrics funding column) ────────────────────────
+
+_FAKE_FUNDING_RATES = {
+    # ccxt keys bulk funding by the full contract symbol, not the plain pair
+    "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "fundingRate": 0.0001,
+                      "fundingDatetime": "2026-07-09T08:00:00.000Z"},
+    "ETH/USDT:USDT": {"symbol": "ETH/USDT:USDT", "fundingRate": -0.00006,
+                      "fundingDatetime": "2026-07-09T08:00:00.000Z"},
+}
+
+
+def test_fetch_live_funding_normalises_contract_symbol_to_plain_pair():
+    ex = MagicMock()
+    ex.fetch_funding_rates = MagicMock(return_value=_FAKE_FUNDING_RATES)
+    with patch.object(bc, "_get_perp_exchange", return_value=ex):
+        r = bc.fetch_live_funding(["BTC/USDT", "ETH/USDT"])
+    assert r["errors"] == []
+    assert set(r["funding"].keys()) == {"BTC/USDT", "ETH/USDT"}
+    assert r["funding"]["BTC/USDT"]["funding_rate_pct"] == pytest.approx(0.01)
+    assert r["funding"]["ETH/USDT"]["funding_rate_pct"] == pytest.approx(-0.006)
+    assert r["funding"]["BTC/USDT"]["next_funding_time"] == "2026-07-09T08:00:00.000Z"
+
+
+def test_fetch_live_funding_skips_entries_missing_rate():
+    ex = MagicMock()
+    ex.fetch_funding_rates = MagicMock(return_value={
+        "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "fundingRate": 0.0001},
+        "ETH/USDT:USDT": {"symbol": "ETH/USDT:USDT", "fundingRate": None},
+    })
+    with patch.object(bc, "_get_perp_exchange", return_value=ex):
+        r = bc.fetch_live_funding(["BTC/USDT", "ETH/USDT"])
+    assert list(r["funding"].keys()) == ["BTC/USDT"]
+
+
+def test_fetch_live_funding_total_failure_is_graceful():
+    ex = MagicMock()
+    ex.fetch_funding_rates = MagicMock(side_effect=RuntimeError("geo blocked"))
+    with patch.object(bc, "_get_perp_exchange", return_value=ex):
+        r = bc.fetch_live_funding(["BTC/USDT"])
+    assert r["funding"] == {}
+    assert len(r["errors"]) == 1 and "geo blocked" in r["errors"][0]
