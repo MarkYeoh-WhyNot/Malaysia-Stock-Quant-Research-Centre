@@ -14,6 +14,7 @@ inline sandbox skipped this.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import datetime
 
@@ -37,8 +38,9 @@ _CAPABILITY_NOTE = (
     "this system is long-only and trades daily bars (no short-selling, pairs, "
     "or intraday)")
 _INFEASIBLE_HINT = (
-    "intraday, multi-leg structure, or unavailable-data reliance (e.g. "
-    "historical funding/OI series)" if ALLOW_SHORT else
+    "sub-15m granularity, multi-leg structure, or unavailable-data reliance "
+    "(e.g. historical open-interest or on-chain series — historical FUNDING "
+    "is available)" if ALLOW_SHORT else
     "short-selling, intraday, or unavailable-data reliance")
 
 
@@ -80,14 +82,36 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
                 "error": f"Timeframe '{timeframe}' is not supported on {MARKET_NAME} — "
                          f"allowed: {', '.join(ALLOWED_TIMEFRAMES)}."}
 
-    found_tickers = TICKER_REGEX.findall(raw_ticker)
-    if not found_tickers:
-        return {"ok": False,
-                "error": f"No valid ticker in '{raw_ticker[:60]}' — {MARKET_NAME} "
-                         f"instruments look like {TICKER_EXAMPLE}."}
-    seen: set = set()
-    ticker = ",".join(t for t in found_tickers if not (t in seen or seen.add(t)))
-    primary = found_tickers[0]
+    # ── Cross-sectional basket submissions ────────────────────────────────
+    # brief carries xs={"factor":{"name","params"},"top_n","bottom_n",
+    # "rebalance_bars"}; the spec travels to the engine as "xs:"+JSON in
+    # factor_formula, ticker is the whole universe — the single-ticker regex
+    # and single-name feasibility checks below don't apply to a basket.
+    xs = brief.get("xs")
+    if xs:
+        from agents.backtest_engineer.factors import validate_factor
+        factor = xs.get("factor") or {}
+        try:
+            validate_factor(factor.get("name", ""), factor.get("params") or {})
+        except ValueError as exc:
+            return {"ok": False, "error": f"Cross-sectional factor invalid: {exc}"}
+        spec = {"signal_type": "cross_sectional", "factor": factor,
+                "top_n": int(xs.get("top_n", 4)),
+                "bottom_n": int(xs.get("bottom_n", 0)),
+                "rebalance_bars": int(xs.get("rebalance_bars", 7)),
+                "interval": timeframe}
+        factor_formula = "xs:" + json.dumps(spec, sort_keys=True)
+        ticker = "UNIVERSE"
+        primary = ticker
+    else:
+        found_tickers = TICKER_REGEX.findall(raw_ticker)
+        if not found_tickers:
+            return {"ok": False,
+                    "error": f"No valid ticker in '{raw_ticker[:60]}' — {MARKET_NAME} "
+                             f"instruments look like {TICKER_EXAMPLE}."}
+        seen: set = set()
+        ticker = ",".join(t for t in found_tickers if not (t in seen or seen.add(t)))
+        primary = found_tickers[0]
 
     # Hard block on structurally infeasible modes for the active market profile.
     blocked = _blocked_mode(f"{title} {hypothesis} {factor_formula}")
@@ -96,13 +120,18 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
                 "error": f"'{blocked}' is not supported — {_CAPABILITY_NOTE}."}
 
     # Deterministic feasibility pre-check — fail cheap before a backtest.
-    feasibility = StrategyResearcher._compute_feasibility(
-        {"hypothesis": hypothesis}, primary, factor_formula)
-    if feasibility < MIN_FEASIBILITY:
-        return {"ok": False, "feasibility": feasibility,
-                "error": f"Idea is not feasible on {MARKET_NAME} (feasibility "
-                         f"{feasibility:.2f} < {MIN_FEASIBILITY:.2f}) — likely "
-                         f"{_INFEASIBLE_HINT}."}
+    # (Skipped for cross-sectional baskets: the scorer is single-name shaped —
+    # the xs engine has its own upfront factor/universe validation instead.)
+    if xs:
+        feasibility = 0.8
+    else:
+        feasibility = StrategyResearcher._compute_feasibility(
+            {"hypothesis": hypothesis}, primary, factor_formula)
+        if feasibility < MIN_FEASIBILITY:
+            return {"ok": False, "feasibility": feasibility,
+                    "error": f"Idea is not feasible on {MARKET_NAME} (feasibility "
+                             f"{feasibility:.2f} < {MIN_FEASIBILITY:.2f}) — likely "
+                             f"{_INFEASIBLE_HINT}."}
 
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40]
     slug = f"{source}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{slug}"

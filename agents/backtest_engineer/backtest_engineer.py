@@ -42,6 +42,36 @@ from config.settings import PROGRESS_FILE as _PROGRESS_FILE_PATH
 _PROGRESS_FILE = str(_PROGRESS_FILE_PATH)
 
 
+def _funding_bar_sum(funding: pd.DataFrame, bar_index: pd.DatetimeIndex) -> pd.Series:
+    """Resample 8h funding settlements onto a bar index with NO smearing.
+
+    Bar labeled T (bar-open convention, Binance klines) covers the holding
+    window [T, next_open). Each settlement timestamp S is assigned to bar
+    `searchsorted(S, side="right") - 1` — the bar whose window contains it —
+    and rates are SUMMED per bar (1d → 3 settlements summed; 1h/15m → a
+    settlement lands in exactly one bar; 1wk → 21 summed). Settlement
+    timestamps carry millisecond jitter (e.g. 16:00:00.001) which searchsorted
+    handles naturally. Settlements before the first bar are dropped.
+
+    Lookahead: none — the engine charges this on the LAGGED position
+    (signal_shifted), i.e. rates realized during a window the position was
+    already held through; the rate never forms the signal (the DSL's
+    `funding_rate` column is a separate, backward-looking ffill series).
+    """
+    out = pd.Series(0.0, index=bar_index)
+    if funding is None or funding.empty or "funding_rate" not in funding:
+        return out
+    ts = funding.index
+    pos = bar_index.searchsorted(ts, side="right") - 1
+    valid = pos >= 0
+    if not valid.any():
+        return out
+    sums = pd.Series(funding["funding_rate"].values[valid]).groupby(
+        pos[valid]).sum()
+    out.iloc[sums.index] = sums.values
+    return out
+
+
 class BacktestEngineer(BaseAgent):
     name = "BacktestEngineer"
     description = "Vectorised KLSE equity backtesting, Gate 2/3 evaluation (Stage 2-3)"
@@ -84,6 +114,15 @@ class BacktestEngineer(BaseAgent):
             return de.fetch_prices(symbol, interval, days, use_cache=True)
         except Exception:
             return get_historical_data(symbol, interval=interval, days=days)
+
+    def _fetch_funding_history(self, symbol: str, days: int = 1825) -> pd.DataFrame:
+        """Cached historical funding settlements (empty on Bursa/yahoo backend)."""
+        try:
+            from agents.data_engineer.data_engineer import DataEngineer
+            return DataEngineer().fetch_funding(symbol, days=days, use_cache=True)
+        except Exception:
+            from data.market_data import get_funding_rate_history
+            return get_funding_rate_history(symbol, days=days)
 
     def _equal_weight_klci_returns(self, interval: str = "1d", days: int = 1825) -> pd.Series:
         """Daily equal-weight KLCI buy-and-hold return series (Phase 3.2 benchmark).
@@ -224,7 +263,8 @@ Rules:
         rs    = gain / loss.replace(0, 1e-9)
         return 100 - (100 / (1 + rs))
 
-    def _compute_signals(self, df: pd.DataFrame, params: dict) -> pd.Series:
+    def _compute_signals(self, df: pd.DataFrame, params: dict,
+                         symbol: str = "") -> pd.Series:
         close  = df["close"]
         stype  = params.get("signal_type", "momentum")
         # KLSE equities: long-only by default (short-selling is restricted to
@@ -245,6 +285,14 @@ Rules:
                 if frame is df:
                     frame = df.copy()
                 frame["dividends"] = 0.0  # no dividend data cached — leaf never fires
+            if "funding_rate" in needed and "funding_rate" not in df.columns:
+                if frame is df:
+                    frame = df.copy()
+                # Last SETTLED rate ffill'd to each bar (backward-looking; the
+                # engine's shift(1) adds the trade delay). Without a symbol —
+                # or on the yahoo backend — the series is empty → NaN column →
+                # the leaf never fires and deterministic verify rejects it.
+                frame["funding_rate"] = self._fetch_funding_column(symbol, df.index)
             return signal_dsl.signal_from_dsl(frame, params["dsl"])
 
         if stype in ("sma_crossover", "ema_crossover"):
@@ -379,6 +427,25 @@ Rules:
             logger.warning(f"CPO series fetch failed: {e}")
             return pd.Series(np.nan, index=index)
 
+    def _fetch_funding_column(self, symbol: str,
+                              index: pd.DatetimeIndex) -> pd.Series:
+        """Last settled funding rate ffill'd to each bar (for funding_* leaves).
+
+        Backward-looking by construction (a bar sees only the most recent
+        SETTLED rate); the engine's shift(1) then adds the trade delay. NaN
+        series when no symbol/history — the leaf never fires and the
+        deterministic verify gate rejects, instead of silently degrading."""
+        if not symbol:
+            return pd.Series(np.nan, index=index)
+        try:
+            fund = self._fetch_funding_history(symbol)
+            if fund is None or fund.empty or "funding_rate" not in fund:
+                return pd.Series(np.nan, index=index)
+            return fund["funding_rate"].reindex(index, method="ffill")
+        except Exception as e:
+            logger.warning(f"funding column fetch failed for {symbol}: {e}")
+            return pd.Series(np.nan, index=index)
+
     # ── Performance metrics ───────────────────────────────────────────────────
 
     def _cost_rates(self, df: pd.DataFrame, interval: str = "1d") -> dict:
@@ -440,10 +507,12 @@ Rules:
           and delta-based turnover-cost math already handles the sign correctly
           with no changes (short * negative bar return = correct short PnL;
           a short's entry/exit is still a "sell"/"buy" cost event).
-          Funding: AVG_FUNDING_RATE_PER_INTERVAL is a disclosed MODELED AVERAGE
-          (no historical funding time series is wired into this system — see
-          UNAVAILABLE_DATA_KEYWORDS), applied per bar scaled by how many
-          funding settlements that bar spans. 0.0 on Bursa (no perp funding).
+          Funding: when the caller attached a `funding_bar_sum` column to df
+          (real historical settlements resampled per bar — see
+          _funding_bar_sum), the drag uses the REAL per-bar series. Otherwise
+          it falls back to AVG_FUNDING_RATE_PER_INTERVAL, a disclosed MODELED
+          AVERAGE, scaled by how many settlements the bar spans. 0.0 on Bursa
+          (no perp funding).
           Leverage: `leverage` defaults to DEFAULT_LEVERAGE (1.0 — unleveraged
           unless the caller explicitly requests more, capped at MAX_LEVERAGE).
           Liquidation: at leverage > 1, any single bar whose leveraged loss
@@ -481,8 +550,17 @@ Rules:
         leverage = min(leverage if leverage else DEFAULT_LEVERAGE, MAX_LEVERAGE)
         bar_days = 365.0 / BARS_PER_YEAR.get(interval, 252)
         settlements_per_bar = (bar_days * 24.0 / FUNDING_INTERVAL_HOURS) if FUNDING_INTERVAL_HOURS else 0.0
-        funding_drag_bar = (signal_shifted.values[1:] * AVG_FUNDING_RATE_PER_INTERVAL
-                           * settlements_per_bar)
+        if "funding_bar_sum" in df.columns and FUNDING_INTERVAL_HOURS:
+            # REAL settlements realized inside each bar's holding window,
+            # charged on the lagged position — no lookahead (the rate is paid
+            # during the window, never used to form the signal). Guarded on
+            # FUNDING_INTERVAL_HOURS: funding cannot exist on Bursa even if a
+            # stray column appears.
+            funding_drag_bar = (signal_shifted.values[1:]
+                                * df["funding_bar_sum"].values[1:])
+        else:
+            funding_drag_bar = (signal_shifted.values[1:] * AVG_FUNDING_RATE_PER_INTERVAL
+                               * settlements_per_bar)
         pre_leverage_returns = cost_adj_returns - funding_drag_bar
 
         # ── WS3: leverage + bounded per-bar liquidation ────────────────────────
@@ -938,49 +1016,74 @@ Rules:
 
     # ── Cross-sectional validation ────────────────────────────────────────────
 
-    def cross_sectional_test(self, factor_formula: str, idea_id: int) -> dict:
-        """Test whether a factor generalises across the full KLCI universe.
+    def cross_sectional_test(self, factor_formula: str, idea_id: int,
+                             factor: dict | None = None,
+                             interval: str = "1d", days: int = 730) -> dict:
+        """Test whether a factor generalises across the full universe.
 
-        For each of the 30 KLCI stocks:
-          - Fetches 2yr daily prices
-          - Computes the factor signal using the same parsed params as the single-stock backtest
-          - Records per-stock Information Coefficient (IC): Spearman(signal, fwd_return)
+        Two modes:
+          * ``factor`` supplied ({"name":..., "params":{...}} from the factor
+            registry) → per-name CONTINUOUS scores (proper Spearman rank IC)
+            at the requested ``interval``. This is the cross-sectional
+            strategy path.
+          * no ``factor`` → LEGACY path, byte-stable: the idea's parsed
+            binary/ternary entry signal on daily bars (the stage2 veto that
+            checks a single-name idea also works across the universe).
 
-        Also computes cross-sectional IC at each trading date:
-          IC(t) = Spearman across stocks of {signal_t, return_t+1}
-          Mean IC and IC t-stat = mean / (std / sqrt(T)) measure factor breadth.
+        Cross-sectional IC at each date: Spearman across names of
+        {score_t, return_t+1}; mean IC + Newey-West t-stat measure breadth.
+        Quintile portfolio: long top ~20% by score, equal weight (plus a
+        top-minus-bottom spread when a factor is supplied and shorts are
+        allowed — informational).
 
-        Quintile Sharpe: at each date go long top-quintile (6 stocks) by signal,
-        equal-weight portfolio.
-
-        Returns a dict with mean_ic, ic_tstat, stocks_positive_ic, best_stocks,
-        worst_stocks, factor_is_real, and saves IC columns to the latest
-        backtest_runs row for this idea.
+        Gate thresholds come from GATE_CONFIG (xs_min_mean_ic /
+        xs_min_ic_tstat / xs_min_positive_names — defaults equal the values
+        previously hardcoded here; crypto overrides positive-names to 12/20).
         """
         with db_session() as conn:
             row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
         if not row:
             return {"error": f"Idea {idea_id} not found", "factor_is_real": False}
 
-        formula = factor_formula or row["factor_formula"] or ""
-        params  = self._parse_factor(formula, row["title"], row["hypothesis"] or "")
-        if not params or "error" in params:
-            params = {"signal_type": "momentum", "momentum_period": 20, "long_only": True}
+        params = None
+        if factor is None:
+            formula = factor_formula or row["factor_formula"] or ""
+            params  = self._parse_factor(formula, row["title"], row["hypothesis"] or "")
+            if not params or "error" in params:
+                params = {"signal_type": "momentum", "momentum_period": 20, "long_only": True}
+        else:
+            from agents.backtest_engineer import factors as factor_registry
+            interval = interval or "1d"
+            days = _FETCH_DAYS.get(interval, days)
 
-        self.log_daemon("INFO", f"CrossSect [{idea_id}]: fetching 2yr data for {len(DEFAULT_SYMBOLS)} KLCI stocks")
+        self.log_daemon(
+            "INFO", f"CrossSect [{idea_id}]: {interval} data for "
+                    f"{len(DEFAULT_SYMBOLS)} names "
+                    f"({'factor ' + factor['name'] if factor else 'legacy signal'})")
 
-        # ── Build signal + forward-return panels ─────────────────────────────
+        # ── Build score + forward-return panels ──────────────────────────────
         signal_series: dict[str, pd.Series] = {}
         return_series: dict[str, pd.Series] = {}
 
         for symbol in DEFAULT_SYMBOLS:
             try:
-                df = self._fetch_prices(symbol, "1d", days=730)
+                df = self._fetch_prices(symbol, interval if factor else "1d",
+                                        days=days)
                 if df.empty or len(df) < 60:
                     continue
-                sig     = self._compute_signals(df, params)
-                fwd_ret = df["close"].pct_change().shift(-1)   # next-bar return
-                valid   = sig.notna() & fwd_ret.notna() & (sig != 0)
+                if factor is not None:
+                    for _col in factor_registry.required_columns(factor["name"]):
+                        if _col == "funding_rate" and _col not in df.columns:
+                            df[_col] = self._fetch_funding_column(symbol, df.index)
+                    sig = factor_registry.compute_factor(
+                        factor["name"], df, factor.get("params"))
+                    fwd_ret = df["close"].pct_change().shift(-1)
+                    # continuous scores: 0 is a legitimate value — keep it
+                    valid = sig.notna() & fwd_ret.notna()
+                else:
+                    sig     = self._compute_signals(df, params)
+                    fwd_ret = df["close"].pct_change().shift(-1)   # next-bar return
+                    valid   = sig.notna() & fwd_ret.notna() & (sig != 0)
                 if valid.sum() < 20:
                     continue
                 signal_series[symbol] = sig[valid]
@@ -1019,6 +1122,9 @@ Rules:
         # ── Cross-sectional IC series (IC at each trading date) ───────────────
         ic_series: list[float] = []
         portfolio_rets: list[float] = []
+        spread_rets: list[float] = []   # top-minus-bottom (factor mode, shorts allowed)
+        from config.settings import ALLOW_SHORT as _allow_short
+        _spread_ok = factor is not None and _allow_short
 
         for date in sig_panel.index:
             sig_row = sig_panel.loc[date].dropna()
@@ -1039,6 +1145,9 @@ Rules:
             top_idx = np.argsort(sv)[-n_q:]
             if len(top_idx) > 0:
                 portfolio_rets.append(float(np.mean(rv[top_idx])))
+            if _spread_ok:
+                bot_idx = np.argsort(sv)[:n_q]
+                spread_rets.append(float(np.mean(rv[top_idx]) - np.mean(rv[bot_idx])))
 
         if not ic_series:
             return {
@@ -1081,19 +1190,25 @@ Rules:
         ]
 
         # ── Quintile portfolio Sharpe ─────────────────────────────────────────
+        _ann_xs = BARS_PER_YEAR.get(interval if factor else "1d", 252)
         quintile_sharpe = 0.0
         if len(portfolio_rets) > 20:
             pr  = np.array(portfolio_rets)
             std = float(np.std(pr, ddof=1))
-            # Cross-sectional IC deliberately stays a DAILY test even for
-            # sub-daily ideas; annualize by the market's daily bar count.
-            quintile_sharpe = round(float(np.mean(pr) / std * np.sqrt(BARS_PER_YEAR.get("1d", 252))), 3) if std > 1e-10 else 0.0
+            quintile_sharpe = round(float(np.mean(pr) / std * np.sqrt(_ann_xs)), 3) if std > 1e-10 else 0.0
+        spread_sharpe = 0.0
+        if len(spread_rets) > 20:
+            sr_ = np.array(spread_rets)
+            std = float(np.std(sr_, ddof=1))
+            spread_sharpe = round(float(np.mean(sr_) / std * np.sqrt(_ann_xs)), 3) if std > 1e-10 else 0.0
 
-        # ── Gate: factor is real? ─────────────────────────────────────────────
+        # ── Gate: factor is real? (thresholds from GATE_CONFIG — defaults are
+        # the previously hardcoded North Star values; crypto overrides the
+        # positive-names count proportional to its universe) ──────────────────
         factor_is_real = (
-            mean_ic > 0.05
-            and ic_tstat > 1.5
-            and stocks_positive_ic > 15
+            mean_ic > GATE_CONFIG.xs_min_mean_ic
+            and ic_tstat > GATE_CONFIG.xs_min_ic_tstat
+            and stocks_positive_ic > GATE_CONFIG.xs_min_positive_names
         )
 
         result = {
@@ -1104,6 +1219,7 @@ Rules:
             "stocks_tested":      n_stocks,
             "stocks_positive_ic": stocks_positive_ic,
             "quintile_sharpe":    quintile_sharpe,
+            "spread_sharpe":      spread_sharpe,   # top-minus-bottom (0.0 when n/a)
             "best_stocks":        best_stocks,
             "worst_stocks":       worst_stocks,
             "factor_is_real":     factor_is_real,
@@ -1135,6 +1251,342 @@ Rules:
             f"q_sharpe={quintile_sharpe:.2f}",
         )
         return result
+
+    # ── Cross-sectional basket backtest ───────────────────────────────────────
+
+    def _run_cross_sectional_backtest(self, idea_id: int, row: dict,
+                                      params: dict) -> dict:
+        """Gated long-top/short-bottom basket backtest across the universe.
+
+        params contract (idea params JSON / sandbox / researcher):
+          {"signal_type": "cross_sectional",
+           "factor": {"name": <FACTORS key>, "params": {...}},
+           "top_n": 3-5, "bottom_n": 0-5,     # bottom_n forced 0 if not ALLOW_SHORT
+           "rebalance_bars": int,             # e.g. 7 = weekly on 1d bars
+           "interval": "1d"}
+
+        Method: per-name CONTINUOUS factor scores (factors.py registry) ranked
+        cross-sectionally at each rebalance bar; weights take effect the NEXT
+        bar (same shift(1) no-lookahead convention as the single-name engine);
+        equal-weight legs; per-name per-side costs from the profile cost model
+        on turnover; REAL per-bar funding drag per leg (crypto). The resulting
+        NAV runs through the standard gate stack at FULL stage3 thresholds
+        (deliberately NOT the relaxed fundamental-screen thresholds) plus the
+        IC gate (cross_sectional_test in factor mode), the equal-weight
+        benchmark gate, and the deflated-Sharpe multiple-testing hurdle.
+
+        A PASS advances the idea to stage3 but it is PARKED there — basket
+        paper-trading doesn't exist yet (single-name executor); the daemon's
+        promotion guards key off run_type='cross_sectional'. Honest, disclosed.
+        """
+        from agents.backtest_engineer import factors as factor_registry
+        from config.settings import ALLOW_SHORT as _allow_short
+
+        factor = params.get("factor") or {}
+        fname = factor.get("name", "")
+        try:
+            fparams = factor_registry.validate_factor(fname, factor.get("params") or {})
+        except ValueError as exc:
+            return self._reject_idea(idea_id, row, "xs_factor",
+                                     f"cross-sectional factor invalid: {exc}",
+                                     reason_category="unrepresentable")
+
+        interval = params.get("interval") or row["timeframe"] or "1d"
+        rebalance_bars = max(1, int(params.get("rebalance_bars", 7)))
+        top_n = max(1, int(params.get("top_n", 4)))
+        bottom_n = int(params.get("bottom_n", 0))
+        if not _allow_short:
+            bottom_n = 0   # Bursa: long-only basket, structurally
+        days = _FETCH_DAYS.get(interval, 1825)
+        needs_funding = "funding_rate" in factor_registry.required_columns(fname)
+
+        self.log_daemon(
+            "INFO", f"XSect backtest [{idea_id}]: factor={fname}{fparams} "
+                    f"top{top_n}/bottom{bottom_n} rebal={rebalance_bars} bars "
+                    f"{interval} across {len(DEFAULT_SYMBOLS)} names")
+        self._log_progress(idea_id, 15, f"Building {len(DEFAULT_SYMBOLS)}-name factor panel")
+
+        # ── Panel build ───────────────────────────────────────────────────────
+        closes: dict[str, pd.Series] = {}
+        scores: dict[str, pd.Series] = {}
+        fundmap: dict[str, pd.Series] = {}
+        side_rate: dict[str, float] = {}
+        coverage_notes: list[str] = []
+        for symbol in DEFAULT_SYMBOLS:
+            try:
+                df = self._fetch_prices(symbol, interval, days=days)
+                if df.empty or len(df) < 100:
+                    coverage_notes.append(f"{symbol}: {0 if df.empty else len(df)} bars — excluded")
+                    continue
+                if needs_funding and "funding_rate" not in df.columns:
+                    df["funding_rate"] = self._fetch_funding_column(symbol, df.index)
+                scores[symbol] = factor_registry.compute_factor(fname, df, fparams)
+                closes[symbol] = df["close"]
+                if FUNDING_INTERVAL_HOURS:
+                    _f = self._fetch_funding_history(symbol)
+                    fundmap[symbol] = _funding_bar_sum(_f, df.index)
+                _r = self._cost_rates(df, interval)
+                side_rate[symbol] = (_r["buy"] + _r["sell"]) / 2.0
+            except Exception as exc:
+                coverage_notes.append(f"{symbol}: {exc}")
+
+        if len(scores) < max(5, top_n + bottom_n):
+            return self._reject_idea(
+                idea_id, row, "xs_universe",
+                f"only {len(scores)} names usable for the basket "
+                f"(need ≥{max(5, top_n + bottom_n)})",
+                reason_category="data")
+
+        close_p = pd.DataFrame(closes).sort_index()
+        score_p = pd.DataFrame(scores).reindex(close_p.index)
+        ret_p = close_p.pct_change().fillna(0.0)
+        fund_p = (pd.DataFrame(fundmap).reindex(close_p.index).fillna(0.0)
+                  if fundmap else pd.DataFrame(0.0, index=close_p.index,
+                                               columns=close_p.columns))
+        n_bars = len(close_p)
+        if n_bars < 252:
+            return self._reject_idea(idea_id, row, "xs_history",
+                                     f"only {n_bars} common bars (need ≥252)",
+                                     reason_category="data")
+
+        # ── Rebalance loop: ranks at bar close → weights from the NEXT bar ────
+        weights = pd.DataFrame(0.0, index=close_p.index, columns=close_p.columns)
+        current = pd.Series(0.0, index=close_p.columns)
+        n_rebalances = 0
+        for i in range(0, n_bars, rebalance_bars):
+            sv = score_p.iloc[i].dropna()
+            if len(sv) >= max(5, top_n + bottom_n):
+                new_w = pd.Series(0.0, index=close_p.columns)
+                ranked = sv.sort_values()
+                new_w[ranked.index[-top_n:]] = 1.0 / top_n
+                if bottom_n > 0:
+                    new_w[ranked.index[:bottom_n]] = -1.0 / bottom_n
+                if not new_w.equals(current):
+                    n_rebalances += 1
+                current = new_w
+            weights.iloc[i] = current
+        weights = weights.replace(0.0, np.nan).ffill().fillna(0.0)
+        # one-bar execution delay — weights decided at bar i apply to i+1
+        w_held = weights.shift(1).fillna(0.0)
+
+        # ── Portfolio returns: PnL − turnover costs − funding per leg ─────────
+        gross = (w_held * ret_p).sum(axis=1)
+        turnover = (weights - weights.shift(1)).abs().fillna(0.0)
+        rate_vec = pd.Series(side_rate).reindex(close_p.columns).fillna(
+            float(np.mean(list(side_rate.values()))))
+        costs = (turnover * rate_vec).sum(axis=1)
+        funding = (w_held * fund_p).sum(axis=1)   # long pays +funding, short receives
+        port_ret = gross - costs - funding
+        nav = (1.0 + port_ret).cumprod()
+
+        port_df = pd.DataFrame({"close": nav,
+                                "open": nav, "high": nav, "low": nav,
+                                "volume": 1.0,
+                                # zero column DISABLES the modeled-constant
+                                # fallback in _compute_performance — funding is
+                                # already embedded in the NAV per leg above.
+                                "funding_bar_sum": 0.0},
+                               index=close_p.index)
+
+        # ── Standard gate scaffolding on the NAV ──────────────────────────────
+        self._log_progress(idea_id, 55, "Gating basket NAV")
+        train_df, val_df, test_df = self._split(port_df)
+        one = lambda d: pd.Series(1.0, index=d.index)
+        train_r = self._compute_performance(train_df, one(train_df), interval)
+        val_r   = self._compute_performance(val_df,   one(val_df),   interval)
+        test_r  = self._compute_performance(test_df,  one(test_df),  interval)
+        test_sharpe_net   = test_r["sharpe_net"]
+        test_sharpe_gross = test_r["sharpe_gross"]
+        train_val_gap = abs(train_r["sharpe"] - val_r["sharpe"])
+        _ann = BARS_PER_YEAR.get(interval, 252)
+        _max_tvg = self._train_val_gap_tolerance(
+            train_r["sharpe"], val_r["sharpe"], len(train_df), len(val_df),
+            _ann, GATE_CONFIG.stage3_max_train_val_gap)
+
+        # IS/OOS walk-forward on the NAV (70/30 row split)
+        _n70 = int(n_bars * 0.70)
+        _is, _oos = port_ret.iloc[:_n70], port_ret.iloc[_n70:]
+        _sh = lambda r: (float(np.mean(r) / np.std(r) * np.sqrt(_ann))
+                         if len(r) > 20 and np.std(r) > 1e-12 else 0.0)
+        sharpe_is, sharpe_oos = _sh(_is.values), _sh(_oos.values)
+        oos_deg = (sharpe_is - sharpe_oos) / abs(sharpe_is) if abs(sharpe_is) > 1e-9 else 0.0
+
+        # Regime stress: vol-tercile buckets of the NAV's own returns
+        _rv = port_ret.rolling(60).std()
+        _q1, _q2 = _rv.quantile(0.33), _rv.quantile(0.66)
+        regimes = {"sharpe_low_vol": _sh(port_ret[_rv <= _q1].values),
+                   "sharpe_mid_vol": _sh(port_ret[(_rv > _q1) & (_rv <= _q2)].values),
+                   "sharpe_high_vol": _sh(port_ret[_rv > _q2].values)}
+        regimes_positive = sum(1 for v in regimes.values() if v > 0)
+
+        # IC gate — the factor itself must be real across the universe
+        ic = self.cross_sectional_test(row["factor_formula"] or fname, idea_id,
+                                       factor={"name": fname, "params": fparams},
+                                       interval=interval)
+        ic_pass = bool(ic.get("factor_is_real"))
+
+        # Benchmark gate — beat the do-nothing equal-weight universe
+        _ew = self._equal_weight_klci_returns(interval)
+        _ew = _ew.reindex(close_p.index).fillna(0.0)
+        _yrs = max(n_bars / _ann, 1e-9)
+        strat_ann = float(nav.iloc[-1] ** (1.0 / _yrs) - 1.0)
+        ew_ann = float((1.0 + _ew).prod() ** (1.0 / _yrs) - 1.0)
+        benchmark_pass = ((not GATE_CONFIG.benchmark_gate_enabled)
+                          or strat_ann - ew_ann >= GATE_CONFIG.benchmark_min_excess_ann)
+
+        # Deflated-Sharpe multiple-testing hurdle (same machinery as DSL path)
+        with db_session() as conn:
+            n_trials = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs"
+            ).fetchone()["n"] + 1
+            try:
+                _sw = conn.execute(
+                    "SELECT COALESCE(SUM(n_configs),0) AS n FROM optimizer_runs "
+                    "WHERE idea_id=? AND status='done'", (idea_id,)).fetchone()["n"]
+                n_trials += int(_sw or 0)
+            except Exception:
+                pass
+        deflated_hurdle = float(np.sqrt(2.0 * np.log(max(n_trials, 2)) / n_bars)
+                                * np.sqrt(_ann))
+        deflation_pass = test_sharpe_net >= deflated_hurdle
+
+        hp_class = "MEDIUM_TERM"
+        sharpe_threshold = self._SHARPE_THRESHOLDS.get(hp_class, GATE_CONFIG.stage3_min_sharpe)
+        dd_threshold = GATE_CONFIG.stage3_max_drawdown
+        min_rebals = self._MIN_TRADES.get(hp_class, 30)
+        trade_count_pass = n_rebalances >= min_rebals
+        gate2_pass = (train_r["sharpe_net"] >= sharpe_threshold
+                      and val_r["sharpe_net"] >= sharpe_threshold
+                      and train_r["max_dd"] <= dd_threshold
+                      and val_r["max_dd"] <= dd_threshold
+                      and train_val_gap <= _max_tvg)
+        gate3_pass = (gate2_pass and test_sharpe_net >= sharpe_threshold
+                      and test_r["max_dd"] <= dd_threshold)
+        cost_pass = test_sharpe_net >= 0.4
+        oos_pass = sharpe_oos >= 0.30 and oos_deg <= 0.50
+        regime_pass = regimes_positive >= 2
+        overall_pass = (gate3_pass and trade_count_pass and cost_pass and oos_pass
+                        and regime_pass and deflation_pass and benchmark_pass
+                        and ic_pass)
+
+        verdict = "PASS" if overall_pass else "REJECTED"
+        verdict_reason = " | ".join(filter(None, [
+            "" if gate2_pass else "Gate2 (train/val Sharpe/DD/gap)",
+            "" if gate3_pass else f"Gate3: test net {test_sharpe_net:.2f} < {sharpe_threshold}",
+            "" if trade_count_pass else f"rebalances {n_rebalances} < {min_rebals}",
+            "" if cost_pass else f"net after costs {test_sharpe_net:.2f} < 0.40",
+            "" if oos_pass else f"OOS {sharpe_oos:.2f} (deg {oos_deg:.2f})",
+            "" if regime_pass else f"regimes {regimes_positive}/3",
+            "" if deflation_pass else f"deflation: {test_sharpe_net:.2f} < {deflated_hurdle:.2f} ({n_trials} trials)",
+            "" if benchmark_pass else f"benchmark: {strat_ann:.1%} vs EW {ew_ann:.1%}",
+            "" if ic_pass else f"IC gate: mean_ic={ic.get('mean_ic')} t={ic.get('ic_tstat')} pos={ic.get('stocks_positive_ic')}",
+        ]))
+
+        result_data = {
+            "factor": {"name": fname, "params": fparams},
+            "top_n": top_n, "bottom_n": bottom_n,
+            "rebalance_bars": rebalance_bars, "interval": interval,
+            "names_used": sorted(scores.keys()),
+            "coverage_notes": coverage_notes[:10],
+            "n_rebalances": n_rebalances,
+            "avg_turnover_cost_bar": round(float(costs.mean()), 6),
+            "avg_funding_bar": round(float(funding.mean()), 6),
+            "strat_ann_return": round(strat_ann, 4),
+            "ew_ann_return": round(ew_ann, 4),
+            "ic": {k: ic.get(k) for k in ("mean_ic", "ic_tstat",
+                                           "stocks_positive_ic", "spread_sharpe",
+                                           "quintile_sharpe")},
+            "n_trials": n_trials, "deflated_hurdle": round(deflated_hurdle, 3),
+            "universe_asof": "2026-07-09",
+            "survivorship_note": ("universe is the CURRENT 20 majors — results "
+                                  "carry survivorship bias"),
+            "parked": bool(overall_pass),
+        }
+
+        with db_session() as conn:
+            conn.execute("""
+                INSERT INTO backtest_runs
+                  (idea_id, run_type, pair, timeframe, factor_formula,
+                   train_sharpe, val_sharpe, test_sharpe,
+                   train_dd, val_dd, test_dd,
+                   train_val_gap, total_trades, win_rate, profit_factor,
+                   params, result_data, passed, needs_review, verification_note,
+                   holding_period_class, trade_count, trades,
+                   sharpe_gross, sharpe_net, net_sharpe, gross_sharpe,
+                   sharpe_is, sharpe_oos, oos_sharpe, oos_degradation,
+                   sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
+                   regimes_positive, sanity_flags, max_dd,
+                   verdict, verdict_reason)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                idea_id, "cross_sectional",
+                row["ticker"] or "UNIVERSE", interval, row["factor_formula"] or fname,
+                train_r["sharpe_net"], val_r["sharpe_net"], test_sharpe_net,
+                train_r["max_dd"], val_r["max_dd"], test_r["max_dd"],
+                round(train_val_gap, 3), n_rebalances,
+                test_r["win_rate"], test_r["profit_factor"],
+                json.dumps(params), json.dumps(result_data),
+                1 if overall_pass else 0, 0, None,
+                hp_class, n_rebalances, n_rebalances,
+                test_sharpe_gross, test_sharpe_net, test_sharpe_net, test_sharpe_gross,
+                sharpe_is, sharpe_oos, sharpe_oos, round(oos_deg, 3),
+                regimes["sharpe_low_vol"], regimes["sharpe_mid_vol"],
+                regimes["sharpe_high_vol"], regimes_positive, None, test_r["max_dd"],
+                verdict, verdict_reason or None,
+            ))
+            _stamp_versions(conn)
+            if overall_pass:
+                conn.execute(
+                    "UPDATE alpha_ideas SET backtest_sharpe=?, backtest_dd=?, "
+                    "stage='stage3', status='active', updated_at=datetime('now') "
+                    "WHERE id=? AND stage='stage2'",
+                    (test_sharpe_net, test_r["max_dd"], idea_id))
+                conn.execute(
+                    "INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes) "
+                    "VALUES (?, 'stage3', 'parked', 'BacktestEngineer', ?)",
+                    (idea_id, "PASSED all gates — PARKED at stage3: awaiting basket "
+                              "paper-trading support (single-name executor cannot "
+                              "run a cross-sectional book)"))
+            else:
+                conn.execute(
+                    "UPDATE alpha_ideas SET status='rejected', rejection_reason=?, "
+                    "updated_at=datetime('now') WHERE id=?",
+                    (verdict_reason[:500], idea_id))
+            conn.execute(
+                "INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes) "
+                "VALUES (?, 'stage2', ?, 'BacktestEngineer', ?)",
+                (idea_id, "advanced" if overall_pass else "rejected",
+                 f"XSect {fname} top{top_n}/bot{bottom_n} net={test_sharpe_net:.2f} "
+                 f"IC={ic.get('mean_ic')} hurdle={deflated_hurdle:.2f}"))
+            conn.execute(
+                "INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale) "
+                "VALUES (?, 'gate2_3_xs', ?, 'BacktestEngineer', ?)",
+                (idea_id, "approve" if overall_pass else "reject",
+                 (verdict_reason or "all gates passed")[:500]))
+
+        self._clear_progress(idea_id)
+        self.log_daemon(
+            "INFO" if overall_pass else "WARN",
+            f"XSect [{idea_id}] {verdict} {fname} net={test_sharpe_net:.2f} "
+            f"IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} IC={ic.get('mean_ic')} "
+            f"rebals={n_rebalances} hurdle={deflated_hurdle:.2f}")
+
+        return {"idea_id": idea_id, "run_type": "cross_sectional",
+                "gate3_pass": overall_pass, "overall_pass": overall_pass,
+                "verdict": verdict, "verdict_reason": verdict_reason,
+                "test_sharpe_net": test_sharpe_net,
+                "sharpe_is": sharpe_is, "sharpe_oos": sharpe_oos,
+                "train_val_gap": round(train_val_gap, 3),
+                "n_rebalances": n_rebalances,
+                "deflated_hurdle": round(deflated_hurdle, 3), "n_trials": n_trials,
+                "ic": result_data["ic"], "benchmark_pass": benchmark_pass,
+                "strat_ann_return": strat_ann, "ew_ann_return": ew_ann,
+                "parked": bool(overall_pass),
+                "gates": {"gate2_pass": gate2_pass, "gate3_pass": gate3_pass,
+                          "trade_count_pass": trade_count_pass, "cost_pass": cost_pass,
+                          "oos_pass": oos_pass, "regime_pass": regime_pass,
+                          "deflation_pass": deflation_pass,
+                          "benchmark_pass": benchmark_pass, "ic_pass": ic_pass}}
 
     # ── Per-strategy exit profiles ────────────────────────────────────────────
 
@@ -1772,6 +2224,23 @@ Return JSON only:
                 "idea_id": idea_id,
             }
 
+        # ── Cross-sectional route (BEFORE the primary-ticker reduction: a
+        # basket idea spans the whole universe, collapsing it to ticker #1
+        # would silently turn it into a single-name test). Convention: the
+        # structured spec travels in factor_formula as "xs:" + JSON (written
+        # by the sandbox/researcher), since alpha_ideas has no params column.
+        _ff = (row["factor_formula"] or "").strip()
+        if _ff.startswith("xs:"):
+            try:
+                _xs_params = json.loads(_ff[3:])
+                assert _xs_params.get("signal_type") == "cross_sectional"
+            except Exception:
+                return self._reject_idea(
+                    idea_id, row, "xs_spec",
+                    "malformed cross-sectional spec (xs: prefix but invalid JSON)",
+                    reason_category="unrepresentable")
+            return self._run_cross_sectional_backtest(idea_id, row, _xs_params)
+
         # Extract primary .KL ticker — handles sector descriptions and comma-separated lists
         symbol   = extract_tickers(row["ticker"] or "1155.KL")[0]
         interval = row["timeframe"] or "1d"
@@ -1905,6 +2374,41 @@ Return JSON only:
             msg = f"Insufficient history ({len(df)} bars) — need minimum 252 bars"
             self.log_daemon("WARN", f"[{idea_id}] {msg}")
             return {"error": msg, "idea_id": idea_id, "symbol": symbol}
+
+        # ── Real funding drag (crypto): attach per-bar settlements BEFORE the
+        # split so train/val/test, walk-forward, regimes and robustness draws
+        # all inherit correct alignment for free. Pre-history bars get the
+        # modeled constant; the run is labeled "historical" only when the real
+        # series covers ≥90% of the window (disclosed in result_data).
+        funding_source = "none" if not FUNDING_INTERVAL_HOURS else "modeled"
+        if FUNDING_INTERVAL_HOURS:
+            try:
+                _fund = self._fetch_funding_history(symbol)
+                if _fund is not None and not _fund.empty:
+                    _fseries = _funding_bar_sum(_fund, df.index)
+                    _first_settle = _fund.index[0]
+                    _covered = df.index >= _first_settle
+                    _coverage = float(_covered.mean())
+                    _bar_days = 365.0 / BARS_PER_YEAR.get(interval, 252)
+                    _spb = _bar_days * 24.0 / FUNDING_INTERVAL_HOURS
+                    # bars before funding history began: modeled constant
+                    _fseries[~_covered] = AVG_FUNDING_RATE_PER_INTERVAL * _spb
+                    df["funding_bar_sum"] = _fseries
+                    funding_source = ("historical" if _coverage >= 0.90
+                                      else f"mixed({_coverage:.0%} historical)")
+            except Exception as _f_exc:
+                self.log_daemon("WARN", f"[{idea_id}] funding history unavailable, "
+                                        f"using modeled constant: {_f_exc}")
+
+        # funding_* DSL leaves: attach the backward-looking signal column ONCE
+        # so splits, walk-forward, regimes and robustness draws all see it
+        # without re-fetching (distinct from funding_bar_sum, which is the
+        # drag realized INSIDE each bar's holding window).
+        if params.get("signal_type") == "dsl":
+            from agents.backtest_engineer import signal_dsl as _sdsl
+            if ("funding_rate" in _sdsl.required_columns(params["dsl"])
+                    and "funding_rate" not in df.columns):
+                df["funding_rate"] = self._fetch_funding_column(symbol, df.index)
 
         # ── Liquidity floor: reject names too thin to trade realistically ─────
         _liq = self._cost_rates(df, interval)
@@ -2378,7 +2882,8 @@ Return JSON only:
                     train_r["max_dd"], val_r["max_dd"], test_r["max_dd"],
                     round(train_val_gap, 3), test_r["total_trades"],
                     test_r["win_rate"], test_r["profit_factor"],
-                    json.dumps(params), json.dumps(results),
+                    json.dumps(params),
+                    json.dumps({**results, "funding_source": funding_source}),
                     1 if overall_pass else 0,
                     needs_review, full_note or None,
                     hp_class, actual_trades, actual_trades,
@@ -2574,6 +3079,7 @@ Return JSON only:
             "regimes":             reg,
             "train_val_gap":       round(train_val_gap, 3),
             "train_val_gap_tol":   round(_max_tvg, 3),
+            "funding_source":      funding_source,
             "params":              params,
             "bars_total":          len(df),
             "factor_formula":      row["factor_formula"] or "",

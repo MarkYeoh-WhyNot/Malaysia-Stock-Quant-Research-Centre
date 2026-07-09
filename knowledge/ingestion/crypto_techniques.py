@@ -40,7 +40,10 @@ CRYPTO_TECHNIQUE_LIBRARY: dict[str, dict] = {
         "strategy_types": ["carry", "market_neutral", "event"],
         "holding_periods": ["short_term", "medium_term"],
         "signal_types": ["funding", "basis", "price"],
-        "implemented": False,
+        # Historical funding is now a first-class backtest input:
+        # funding_level / funding_zscore DSL leaves + real per-bar funding
+        # drag in the engine (funding-history integration, 2026-07-10).
+        "implemented": True,
         "complexity": "medium",
         "overfitting_risk": "low",
     },

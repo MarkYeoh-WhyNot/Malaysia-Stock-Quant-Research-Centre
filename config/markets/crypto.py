@@ -80,13 +80,13 @@ DEFAULT_LEVERAGE    = 1.0    # backtester default when an idea specifies no leve
 LIQUIDATION_BUFFER   = 0.20   # treat a position as liquidated at 80% of the theoretical distance-to-liquidation
 FUNDING_INTERVAL_HOURS = 8    # Binance USDT-M standard funding interval
 
-# No historical funding-rate time series is wired into the backtester (see
-# UNAVAILABLE_DATA_KEYWORDS above) — a real per-bar funding number isn't
-# available for backtesting. AVG_FUNDING_RATE_PER_INTERVAL is a disclosed,
-# conservative MODELED AVERAGE (long-run typical funding on majors) applied
-# uniformly per interval so backtests are net of a realistic funding drag
-# instead of silently ignoring it. This is NOT real historical funding —
-# every backtest_runs row using it is labeled accordingly.
+# REAL historical funding IS wired in (data/binance/client.py
+# get_funding_rate_history → DataEngineer.fetch_funding → per-bar
+# funding_bar_sum in the backtester). AVG_FUNDING_RATE_PER_INTERVAL is the
+# documented FALLBACK: bars before a perp's listing date, failed fetches, and
+# runs on pairs with <90% funding coverage use it (each run's funding_source
+# field discloses historical vs modeled). It is a conservative long-run
+# average, not a real number — treat "modeled" runs accordingly.
 AVG_FUNDING_RATE_PER_INTERVAL = 0.0001   # 0.01% per 8h interval (~11% annualized on a
                                           # permanently-held long — a conservative long-run estimate)
 
@@ -183,7 +183,9 @@ INSTRUMENT_TYPE  = "spot"            # fee_schedules resolution key — perp tak
 # sub-daily paper marking sees fresh data.
 ALLOWED_TIMEFRAMES = ["15m", "1h", "4h", "1d", "1wk"]
 FETCH_DAYS_BY_INTERVAL = {"15m": 400, "1h": 1095, "4h": 1825, "1d": 1825, "1wk": 1825}
-CACHE_STALENESS_HOURS_BY_INTERVAL = {"15m": 0.25, "1h": 1.0, "4h": 4.0, "1d": 12.0, "1wk": 12.0}
+CACHE_STALENESS_HOURS_BY_INTERVAL = {"15m": 0.25, "1h": 1.0, "4h": 4.0, "1d": 12.0, "1wk": 12.0,
+                                     # funding settles every 8h — refetch after each settlement
+                                     "8h_funding": 8.0}
 
 # Feasibility dock: only truly-unsupported granularities/styles. "hourly" and
 # "15 minute" are NOT docked here — sub-daily bars are first-class in crypto.
@@ -200,15 +202,15 @@ BLOCKED_MODES = [
     "scalp", "hft", "tick data", "1 minute", "5 minute", "1m bar", "5m bar",
 ]
 
-# Feasibility scoring keyword lists (data we do NOT have in v1). Funding rate
-# and open interest have a LIVE snapshot (event monitor, WS2) but no
-# historical time series merged into the backtester yet — a strategy whose
-# entry/exit logic needs funding/OI as a per-bar historical input still can't
-# be honestly backtested, so they stay listed here until that data-plumbing
-# lands as its own follow-up.
+# Feasibility scoring keyword lists (data we do NOT have). Historical FUNDING
+# is now a first-class backtest input (get_funding_rate_history → per-bar
+# column + funding_* DSL leaves), so "funding rate" is NOT listed anymore.
+# Open interest stays: Binance caps OI history at ~30 days — a live snapshot
+# exists (event monitor) but no backtestable series; revisit only with a
+# third-party archive.
 UNAVAILABLE_DATA_KEYWORDS = [
     "options", "level 2", "order book", "tick data", "dark pool",
-    "on-chain", "onchain", "funding rate", "open interest",
+    "on-chain", "onchain", "open interest",
     "liquidation data", "whale wallet",
 ]
 EXOTIC_KEYWORDS = [
@@ -255,9 +257,11 @@ CRYPTO PERPETUAL MARKET STRUCTURE (BINANCE USDT-M) — MUST KNOW:
   clustering is severe. Sharpe norms differ from equities.
 - No fundamentals: no earnings/dividends/book value. "Value" framings need a
   crypto-native metric, and on-chain data is NOT wired into this system in v1.
-- Data limits: funding rate and open interest have a LIVE snapshot (for event
-  monitoring) but no historical time series in the backtester yet — a strategy
-  that needs funding/OI as a per-bar historical input is NOT backtestable here.
+- Data limits: HISTORICAL FUNDING RATES are wired into the backtester (real
+  per-bar settlements from the perp's listing date; funding_level /
+  funding_zscore signal conditions are first-class). Open interest has only a
+  LIVE snapshot (Binance caps OI history at ~30 days) — a strategy that needs
+  OI or on-chain data as a per-bar historical input is NOT backtestable here.
 """.format(max_leverage=3.0, funding_hours=8, liq_buffer=0.20)
 
 RED_TEAM_ATTACKS = """You MUST specifically attack:
@@ -277,8 +281,10 @@ RED_TEAM_ATTACKS = """You MUST specifically attack:
   where slippage or liquidation assumptions break?
 - Tail risk: what does a routine -15% overnight move do to the drawdown math,
   and to a leveraged position's liquidation distance?
-- Data feasibility: does it secretly need on-chain, or a HISTORICAL funding/OI
-  time series, that this system does not have wired into the backtester?
+- Data feasibility: does it secretly need on-chain data or a HISTORICAL
+  open-interest series (neither is wired in — historical FUNDING is)? For a
+  funding-based thesis, attack the coverage window instead: funding history
+  starts at the perp's listing date (much shorter for newer alts).
 - Stablecoin/exchange risk: does the thesis survive a USDT wobble or an
   exchange halt on either the long or short leg?"""
 
@@ -293,16 +299,18 @@ BLUE_DEFENSE_NOTES = """When defending, always address crypto-specific mechanics
   thin books.
 - If regime dependency is raised: show performance across at least two market
   regimes (not just one bull or one bear leg).
-- If data feasibility is raised: confirm the signal uses only OHLCV bars (15m
-  or slower; live, not historical, funding/OI where relevant) available here."""
+- If data feasibility is raised: confirm the signal uses only data wired into
+  the backtester — OHLCV bars (15m or slower) and historical funding rates;
+  open interest and on-chain remain live-only/unavailable."""
 
 JUDGE_REJECT_RULE = ("Apply crypto-specific judgment: reject any strategy that relies on "
                      "tick-level/HFT execution or sub-15m bars, multi-instrument spread/pairs/"
                      "arbitrage structures (the DSL expresses one instrument's long/short state, "
-                     "not a basket spread), options, or a HISTORICAL funding-rate/open-interest/"
-                     "on-chain/order-book time series this system does not have. Reject any "
-                     "leverage request above the configured cap. A strategy's backtest must "
-                     "be net of funding accrual, not spot-price PnL alone.")
+                     "not a basket spread), options, or a HISTORICAL open-interest/on-chain/"
+                     "order-book time series this system does not have (historical FUNDING "
+                     "rates ARE available and backtestable). Reject any leverage request "
+                     "above the configured cap. A strategy's backtest must be net of funding "
+                     "accrual, not spot-price PnL alone.")
 
 # Concentration risk: the sector analog whose over-weight the risk monitor flags.
 CONCENTRATION_SECTOR = "Smart Contract"
@@ -448,15 +456,16 @@ RESEARCH_QUERY_PERSONA = (
 )
 
 ALPHA_SEED_SYSTEM = (
-    "You are a senior quant researcher specialising in cryptocurrency spot markets. "
-    "You are comfortable with both discretionary and quantitative approaches including "
-    "GARCH/ARIMA time series models, factor models, Hidden Markov regime detection, "
-    "cointegration, Kalman filters, Monte Carlo simulation, Bayesian inference, machine "
-    "learning applied to financial data, and statistical arbitrage. When extracting alpha "
-    "from statistical modelling papers, translate the quantitative techniques into "
-    "concrete, implementable long-only spot strategies — this system has no on-chain, "
-    "funding-rate, or order-book data in v1, so extracted signals must be expressible "
-    "from daily OHLCV alone."
+    "You are a senior quant researcher specialising in cryptocurrency perpetual-futures "
+    "markets. You are comfortable with both discretionary and quantitative approaches "
+    "including GARCH/ARIMA time series models, factor models, Hidden Markov regime "
+    "detection, cointegration, Kalman filters, Monte Carlo simulation, Bayesian inference, "
+    "machine learning applied to financial data, and statistical arbitrage. When "
+    "extracting alpha from papers, translate the quantitative techniques into concrete, "
+    "implementable long/short perp strategies. Available backtest inputs: OHLCV bars "
+    "(15m and slower) and HISTORICAL FUNDING RATES (funding-carry/contrarian theses are "
+    "first-class). NOT available: on-chain, order-book, and historical open-interest "
+    "data — signals must not depend on those."
 )
 
 DATA_SOURCES_EXAMPLE = ["Binance OHLCV", "Exchange announcements"]
@@ -514,6 +523,7 @@ GATE_OVERRIDES: dict = {
     "stage4a_max_drawdown": 0.30,
     "max_single_name_pct":  0.30,   # BTC/ETH legitimately dominate a book
     "max_sector_pct":       0.50,   # "Smart Contract" analog covers half the universe
+    "xs_min_positive_names": 12,    # 60% of the 20-pair universe (Bursa: 15/30)
 }
 
 
@@ -535,7 +545,7 @@ DIRECTION_DOC = {
         "stricter, not looser."
     ),
     "success_metrics": [
-        {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ liquid pairs"},
+        {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 12+ of the 20 pairs"},
         {"rank": 2, "metric": "First idea completes a 30-day paper trade with Sharpe >= 1.0 after funding + fees"},
         {"rank": 3, "metric": "First strategy paper-proven long AND short across a regime shift"},
         {"rank": 4, "metric": "KB reaches 50 quality crypto-quant docs across all 9 research angles"},

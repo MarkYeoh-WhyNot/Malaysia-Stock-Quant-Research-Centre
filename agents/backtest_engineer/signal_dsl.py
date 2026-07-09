@@ -146,6 +146,32 @@ def _leaf_zscore(df, node):
     return z > float(node["above"])
 
 
+def _leaf_funding_level(df, node):
+    """Perp funding rate vs an absolute per-8h threshold (crypto only).
+
+    df["funding_rate"] is the LAST SETTLED rate ffill'd to each bar
+    (backward-looking; the engine's shift(1) adds the trade delay on top).
+    'above' 0.0005 → crowded longs (classic short-entry context);
+    'below' -0.0003 → crowded shorts / washed-out (long-entry context)."""
+    fr = df["funding_rate"]
+    if "below" in node:
+        return fr < float(node["below"])
+    return fr > float(node["above"])
+
+
+def _leaf_funding_zscore(df, node):
+    """Rolling z-score of the funding rate — 'how extreme is funding now vs
+    its own recent history' (period counted in BARS of the idea's timeframe)."""
+    fr = df["funding_rate"]
+    period = int(node["period"])
+    mean = fr.rolling(period).mean()
+    std = fr.rolling(period).std().replace(0, np.nan)
+    z = (fr - mean) / std
+    if "below" in node:
+        return z < float(node["below"])
+    return z > float(node["above"])
+
+
 LEAVES = {
     "rsi": {
         "compute": _leaf_rsi,
@@ -220,6 +246,23 @@ LEAVES = {
         # Mean-reversion classic: entry z < -T, short_entry z > +T.
         "compute": _leaf_zscore,
         "columns": ["close"],
+        "params": {"period": ("int", 10, 200)},
+        "one_of": [("below", ("float", -4.0, 0.0)), ("above", ("float", 0.0, 4.0))],
+    },
+    "funding_level": {
+        # Perp funding vs absolute per-8h threshold (crypto only — the
+        # funding_rate column is merged from REAL historical settlements).
+        # Typical extremes: ±0.0005 (0.05%/8h). Crowded longs pay positive.
+        "compute": _leaf_funding_level,
+        "columns": ["funding_rate"],
+        "params": {},
+        "one_of": [("below", ("float", -0.005, 0.0)), ("above", ("float", 0.0, 0.005))],
+    },
+    "funding_zscore": {
+        # How extreme is funding now vs its own rolling history (in bars).
+        # Contrarian classic: short_entry z > +2 (crowded longs), entry z < -2.
+        "compute": _leaf_funding_zscore,
+        "columns": ["funding_rate"],
         "params": {"period": ("int", 10, 200)},
         "one_of": [("below", ("float", -4.0, 0.0)), ("above", ("float", 0.0, 4.0))],
     },

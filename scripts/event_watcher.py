@@ -211,8 +211,9 @@ FACTOR_FORMULA_TEMPLATES = {
 
 # Perp long/short template variants (WS3): only the crypto profile has
 # ALLOW_SHORT=True, so Bursa's dict above stays byte-identical. The event is
-# the trigger — entry/exit stay in price/indicator terms the signal DSL can
-# parse (historical funding/OI series are not backtestable inputs).
+# the trigger — entry/exit stay in terms the signal DSL can parse (price,
+# indicators, and — since the funding-history integration — funding_level/
+# funding_zscore conditions; OI is still live-only).
 from config.settings import ALLOW_SHORT  # noqa: E402
 
 if ALLOW_SHORT:

@@ -510,11 +510,19 @@ class ResearchDaemon:
         On reject: idea is archived.
         """
         with db_session() as conn:
+            # Cross-sectional passes are PARKED at stage3 (basket paper-trading
+            # doesn't exist — single-name executor). Excluding them here keeps
+            # red-blue's advance verdict from promoting a basket into a paper
+            # loop that cannot trade it.
             pending = conn.execute(
                 "SELECT id, title FROM alpha_ideas "
                 "WHERE stage='stage3' AND status='active' "
                 "AND id NOT IN ("
                 "  SELECT idea_id FROM gate_decisions WHERE gate='gate3_rb'"
+                ") "
+                "AND id NOT IN ("
+                "  SELECT idea_id FROM backtest_runs "
+                "  WHERE run_type='cross_sectional' AND passed=1"
                 ") LIMIT 2"
             ).fetchall()
 
@@ -539,13 +547,19 @@ class ResearchDaemon:
         Case B: no backtest run at all (shouldn't normally happen) → run backtest.
         """
         with db_session() as conn:
-            # Case A: approved by red-blue but not yet promoted
+            # Case A: approved by red-blue but not yet promoted. Cross-sectional
+            # passes are excluded — they are deliberately PARKED at stage3
+            # (awaiting basket paper-trading support), not "stuck".
             stuck = conn.execute(
                 "SELECT id, title FROM alpha_ideas "
                 "WHERE stage='stage3' AND status='active' "
                 "AND id IN ("
                 "  SELECT idea_id FROM gate_decisions "
                 "  WHERE gate='gate3_rb' AND decision='approve'"
+                ") "
+                "AND id NOT IN ("
+                "  SELECT idea_id FROM backtest_runs "
+                "  WHERE run_type='cross_sectional' AND passed=1"
                 ") LIMIT 5"
             ).fetchall()
 

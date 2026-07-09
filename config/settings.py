@@ -257,6 +257,13 @@ class GateConfig:
     robustness_min_fraction: float      = 0.6
     robustness_sharpe_ratio: float      = 0.5
     robustness_draws: int               = 8
+    # Cross-sectional (IC) gate — North Star metric #1. Defaults are the
+    # values previously HARDCODED in cross_sectional_test (backtest_engineer)
+    # so Bursa behavior is identical; crypto overrides xs_min_positive_names
+    # proportionally to its 20-pair universe.
+    xs_min_mean_ic: float               = 0.05
+    xs_min_ic_tstat: float              = 1.5
+    xs_min_positive_names: int          = 15   # of the 30-name KLCI universe
 
 # Profile-specific threshold overrides (e.g. crypto's wider drawdown norms).
 # Bursa's overrides are {} — defaults ARE the Bursa values.

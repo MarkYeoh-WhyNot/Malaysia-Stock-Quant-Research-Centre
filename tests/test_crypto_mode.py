@@ -129,25 +129,29 @@ print(json.dumps({"arsenal": "TECHNIQUE ARSENAL" in p,
     assert r["detail_ok"] is True
 
 
-def test_funding_rate_formula_docked_not_hard_blocked_at_sandbox():
-    """A formula needing a HISTORICAL funding-rate series (not backtestable —
-    no such DSL leaf/data column exists) is docked by the deterministic
-    feasibility score but not hard-blocked at the shallow sandbox pre-check;
-    real enforcement is at DSL-parse time (signal_dsl: unrepresentable ->
-    REJECTED, never silently genericized). This test documents that gap
-    explicitly rather than asserting an outcome the code doesn't produce."""
+def test_funding_feasible_oi_still_docked():
+    """Funding-history integration (2026-07-10): HISTORICAL funding is now a
+    first-class backtest input (funding_level/funding_zscore leaves + real
+    per-bar drag), so a funding-rate formula is NO LONGER docked by the
+    feasibility scorer. Open interest remains unavailable (Binance caps OI
+    history at ~30d) and must still be docked."""
     out = run_crypto("""
 import json
 from agents.researcher.strategy_researcher import StrategyResearcher
 clean = StrategyResearcher._compute_feasibility(
     {"hypothesis": "50-day MA cross on Bitcoin"}, "BTC/USDT", "close crosses above sma(50)")
 funding = StrategyResearcher._compute_feasibility(
-    {"hypothesis": "long perpetual futures basis"}, "SOL/USDT", "funding rate positive for days")
-print(json.dumps({"clean": clean, "funding": funding}))
+    {"hypothesis": "contrarian entry when funding is extreme"}, "SOL/USDT",
+    "funding rate positive for days")
+oi = StrategyResearcher._compute_feasibility(
+    {"hypothesis": "open interest surge"}, "SOL/USDT",
+    "open interest rises 20 percent in a day")
+print(json.dumps({"clean": clean, "funding": funding, "oi": oi}))
 """)
     r = json.loads(out.strip().splitlines()[-1])
-    assert r["funding"] < r["clean"]  # docked relative to a clean formula
-    assert r["funding"] >= 0.6         # NOT hard-blocked at this stage (documented gap)
+    assert r["funding"] == r["clean"], (
+        f"funding formulas must no longer be docked: {r}")
+    assert r["oi"] < r["clean"], f"OI must still be docked: {r}"
 
 
 def test_data_quality_does_not_flag_crypto_weekends():

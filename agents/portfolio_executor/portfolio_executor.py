@@ -105,17 +105,52 @@ class PortfolioExecutor(BaseAgent):
                 cash += (r["exit_price"] or 0) * (r["units"] or 0) - r["exit_cost"]
         return cash
 
+    def _current_funding_rate(self, symbol: str) -> float:
+        """Best-available per-8h funding rate for accrual (crypto only).
+
+        Resolution order — real before modeled, cheap before networked:
+          1. cached historical series (last settlement, if the parquet is
+             fresh within ~2 settlement periods);
+          2. live snapshot from the exchange;
+          3. the modeled AVG_FUNDING_RATE_PER_INTERVAL constant (last resort,
+             same fallback the backtester uses).
+        """
+        try:
+            from agents.data_engineer.data_engineer import DataEngineer
+            de = DataEngineer()
+            path = de._cache_path(symbol, "8h_funding")
+            if path.exists() and not de._is_stale(path, max_age_hours=16.0):
+                cached = de._load_cache(path)
+                if not cached.empty and "funding_rate" in cached:
+                    return float(cached["funding_rate"].iloc[-1])
+        except Exception:
+            pass
+        try:
+            from data.binance.client import get_funding_rate
+            live = get_funding_rate(symbol)
+            if live and live.get("funding_rate") is not None:
+                return float(live["funding_rate"])
+        except Exception:
+            pass
+        return AVG_FUNDING_RATE_PER_INTERVAL
+
     def _accrue_funding(self, trade_id: int, units: float, price: float,
-                        hours: float = 24.0) -> None:
+                        hours: float = 24.0, symbol: str = "") -> None:
         """Accrue `hours` worth of funding to a trade's running funding_paid
         (WS3, crypto only — a no-op call site elsewhere since
         FUNDING_INTERVAL_HOURS is None on Bursa). Daily ideas keep the
         historical fixed 24h/cycle; sub-daily ideas pass their elapsed time so
-        marking every bar doesn't multiply the funding drag."""
+        marking every bar doesn't multiply the funding drag.
+
+        Uses the REAL current funding rate when a symbol is provided
+        (cached-series → live → modeled constant), so paper accrual tracks
+        actual market funding instead of the disclosed average."""
         position = 1.0 if units > 0 else -1.0
         notional = abs(units) * price
         settlements = hours / FUNDING_INTERVAL_HOURS
-        day_funding = funding_cost(position, AVG_FUNDING_RATE_PER_INTERVAL, notional) * settlements
+        rate = (self._current_funding_rate(symbol) if symbol
+                else AVG_FUNDING_RATE_PER_INTERVAL)
+        day_funding = funding_cost(position, rate, notional) * settlements
         with db_session() as conn:
             conn.execute(
                 "UPDATE paper_trades SET funding_paid = COALESCE(funding_paid,0) + ? WHERE id=?",
@@ -319,7 +354,8 @@ class PortfolioExecutor(BaseAgent):
         if df is None or df.empty:
             return {"error": f"No price data for {ticker}"}
 
-        signals = BacktestEngineer()._compute_signals(df, params)
+        # symbol threading lets funding_* leaves resolve their real-rate column
+        signals = BacktestEngineer()._compute_signals(df, params, symbol=ticker)
         current_signal = int(signals.iloc[-1]) if len(signals) else 0
 
         action = "hold"
@@ -346,7 +382,8 @@ class PortfolioExecutor(BaseAgent):
             # sub-daily ideas accrue one bar's worth per mark.
             hours = 24.0 if bars_per_day(interval) <= 1.0 else 24.0 / bars_per_day(interval)
             self._accrue_funding(still_open["id"], still_open["units"],
-                                 still_open["entry_price"], hours=hours)
+                                 still_open["entry_price"], hours=hours,
+                                 symbol=ticker)
 
         mtm = self.mark_to_market(idea_id, interval)
         return {"idea_id": idea_id, "ticker": ticker, "signal": current_signal,

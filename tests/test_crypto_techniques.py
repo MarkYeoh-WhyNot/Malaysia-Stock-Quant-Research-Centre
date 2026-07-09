@@ -33,7 +33,9 @@ def test_crypto_has_native_techniques():
 def test_methodology_gates_marked_implemented():
     assert CRYPTO["cross_sectional_ic"]["implemented"] is True
     assert CRYPTO["deflated_sharpe"]["implemented"] is True
-    assert CRYPTO["funding_rate_carry"]["implemented"] is False
+    # Funding-history integration (2026-07-10): funding_level/funding_zscore
+    # DSL leaves + real per-bar funding drag → carry is now backtestable.
+    assert CRYPTO["funding_rate_carry"]["implemented"] is True
 
 
 def test_bursa_library_still_intact():

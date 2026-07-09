@@ -133,6 +133,50 @@ def get_historical_data(symbol: str, interval: str = "1d",
     return df
 
 
+def get_funding_rate_history(symbol: str, days: int = 1825) -> pd.DataFrame:
+    """Historical perp funding settlements for one pair, paginated.
+
+    Binance keeps the FULL funding history (unlike open interest, capped at
+    ~30 days) — ~3 settlements/day → 5yr ≈ 5,475 rows ≈ 6 pages. History
+    starts at each perp's listing date (ARB ~2023, OP ~2022, ...), so callers
+    must handle series shorter than `days` honestly.
+
+    Returns a DataFrame with one column `funding_rate` (per-8h decimal, e.g.
+    0.0001 = 0.01%) on a naive UTC DatetimeIndex at settlement timestamps —
+    same index conventions as OHLCV. Empty DataFrame on any failure (this
+    client never raises).
+    """
+    ex = _get_perp_exchange()
+    since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    all_rows: list = []
+    limit = 1000  # binance max per fundingRate call
+
+    try:
+        while True:
+            batch = ex.fetch_funding_rate_history(symbol, since=since, limit=limit)
+            if not batch:
+                break
+            all_rows.extend(batch)
+            if len(batch) < limit:
+                break
+            since = batch[-1]["timestamp"] + 1
+            time.sleep(getattr(ex, "rateLimit", 200) / 1000.0)
+    except Exception as e:
+        logger.warning(f"binance client: funding history fetch failed for {symbol}: {e}")
+        return pd.DataFrame()
+
+    if not all_rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        {"time": [r["timestamp"] for r in all_rows],
+         "funding_rate": [float(r.get("fundingRate") or 0.0) for r in all_rows]})
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df = df.drop_duplicates(subset="time").set_index("time").sort_index()
+    df.index.name = "time"
+    return df
+
+
 def fetch_live_prices(symbols: list | None = None) -> dict:
     """Live spot quotes for a set of pairs in ONE bulk request.
 

@@ -340,6 +340,12 @@ def init_db(db_path: Path = DB_PATH):
             "excess_ann_return REAL",
             "ic_tstat_iid REAL",
             "robustness_score REAL",
+            # Cross-sectional IC stats (cross_sectional_test persistence —
+            # these existed only on long-lived DBs before; fresh DBs need them)
+            "mean_ic REAL",
+            "ic_tstat REAL",
+            "stocks_positive_ic INTEGER",
+            "best_stocks TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")

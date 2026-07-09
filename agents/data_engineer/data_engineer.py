@@ -101,6 +101,39 @@ class DataEngineer(BaseAgent):
         self.log_daemon("INFO", f"Cached {len(df)} bars for {symbol} {interval}")
         return df
 
+    def fetch_funding(self, symbol: str, days: int = 1825,
+                      use_cache: bool = True) -> pd.DataFrame:
+        """Historical perp funding settlements (crypto backend only).
+
+        Mirrors fetch_prices: parquet-cached under `{safe}_8h_funding.parquet`,
+        staleness 8h (one settlement period). On the yahoo backend the facade
+        stub returns an empty frame, so Bursa callers degrade to empty — no
+        market branching needed here. History starts at the perp's listing
+        date, so the returned span may be shorter than `days` (callers must
+        treat coverage honestly, not assume 5 years).
+        """
+        from data.market_data import get_funding_rate_history
+
+        candidates = extract_tickers(symbol)
+        symbol = candidates[0] if candidates else symbol
+
+        path = self._cache_path(symbol, "8h_funding")
+        if use_cache and not self._is_stale(path, interval="8h_funding"):
+            df = self._load_cache(path)
+            if not df.empty:
+                self.log_daemon("INFO", f"Cache hit: {symbol} funding ({len(df)} settlements)")
+                return df
+
+        self.log_daemon("INFO", f"Fetching {symbol} funding history {days}d")
+        df = get_funding_rate_history(symbol, days=days)
+        if df.empty:
+            self.log_daemon("WARN", f"No funding history returned for {symbol}")
+            return df
+
+        self._save_cache(df, path)
+        self.log_daemon("INFO", f"Cached {len(df)} funding settlements for {symbol}")
+        return df
+
     # ── Feature engineering ────────────────────────────────────────────────────
 
     @staticmethod
