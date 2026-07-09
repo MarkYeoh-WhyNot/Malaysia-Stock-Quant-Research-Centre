@@ -567,7 +567,7 @@ svg text{font-family:var(--font-mono)}
     </div>
   </div>
 
-  <!-- Bursa Constraints -->
+  <!-- Market Constraints (content from the market-aware /api/system/direction) -->
   <div class="dir-section">
     <div class="dir-card" id="dir-card-constraints">
       <div class="dir-card-head" onclick="dirToggle('constraints')">
@@ -887,7 +887,7 @@ svg text{font-family:var(--font-mono)}
 
     <!-- 3. METRIC CARDS -->
     <div id="btl-metric-cards" class="stat-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
-      <div class="stat-card" data-tip="Sharpe after 0.90% round-trip Bursa cost: brokerage + stamp duty + slippage × 2">
+      <div class="stat-card" id="btl-sn-card" data-tip="Sharpe after 0.90% round-trip Bursa cost: brokerage + stamp duty + slippage × 2">
         <div class="val" id="btl-sn">—</div><div class="lbl">Net Sharpe</div></div>
       <div class="stat-card" data-tip="Gross Sharpe before transaction costs — compare to Net to see cost drag">
         <div class="val" id="btl-sg">—</div><div class="lbl">Gross Sharpe</div></div>
@@ -1266,7 +1266,7 @@ svg text{font-family:var(--font-mono)}
       <div class="form-row">
         <div class="form-group" style="flex:1">
           <label>Search Query</label>
-          <input type="text" id="kb-q" placeholder="e.g. momentum Bursa Malaysia EPF flow…" style="width:100%" onkeydown="if(event.key==='Enter')searchKB()">
+          <input type="text" id="kb-q" placeholder="e.g. momentum Bursa Malaysia EPF flow…" style="width:100%" onkeydown="if(event.key==='Enter')searchKB()"><!-- crypto placeholder set via IS_CRYPTO -->
         </div>
         <div class="form-group">
           <label>Domain</label>
@@ -1669,6 +1669,13 @@ document.addEventListener('DOMContentLoaded', () => {
     ].map(p => `<button class="${p[2]}" onclick="filterEvents('${p[0]}',this)">${p[1]}</button>`).join('');
     const calStrip = document.getElementById('calendar-strip-panel');
     if (calStrip) calStrip.style.display = 'none';
+
+    // Small copy leaks elsewhere: KB search placeholder, net-Sharpe cost tip
+    const kbQ = document.getElementById('kb-q');
+    if (kbQ) kbQ.placeholder = 'e.g. funding rate carry BTC momentum regime…';
+    const snCard = document.getElementById('btl-sn-card');
+    if (snCard) snCard.setAttribute('data-tip',
+      'Sharpe after round-trip taker fees + tiered slippage on both legs');
   }
 });
 let _allMCLogs = [];
@@ -1834,7 +1841,7 @@ const _GATE_INFO = {
   gate0:      ['Gate 0 — Alpha screening',
                'Initial scoring on novelty, logic, feasibility, data quality, and overfitting risk. All five dimensions must meet minimum thresholds to advance to Stage 1 research.'],
   gate1:      ['Gate 1 — Research score',
-               'Deep research gate: scoring academic evidence, Bursa-specific factors, and strategy feasibility. Requires research_score ≥ 6.5 to advance to Stage 2 backtesting.'],
+               `Deep research gate: scoring academic evidence, ${IS_CRYPTO ? 'crypto' : 'Bursa'}-specific factors, and strategy feasibility. Requires research_score ≥ 6.5 to advance to Stage 2 backtesting.`],
   gate2_3:    ['Gate 2/3 — Backtest review',
                'Quantitative backtest evaluation covering net Sharpe, OOS degradation, transaction costs, trade count, and regime robustness.'],
   gate3:      ['Gate 3 — Backtest review',
@@ -1842,7 +1849,7 @@ const _GATE_INFO = {
   gate2_data: ['Gate 2 — Data pre-check',
                'Pre-check whether the factor formula can be backtested with Yahoo Finance OHLCV data. Blocked if formula requires fundamental data unavailable from the price feed.'],
   stage1:     ['Stage 1 — Deep research',
-               'Deep research: scoring academic evidence, Bursa-specific factors, and strategy feasibility. Requires research_score ≥ 6.5.'],
+               `Deep research: scoring academic evidence, ${IS_CRYPTO ? 'crypto' : 'Bursa'}-specific factors, and strategy feasibility. Requires research_score ≥ 6.5.`],
 };
 
 const _DECISION_INFO = {
