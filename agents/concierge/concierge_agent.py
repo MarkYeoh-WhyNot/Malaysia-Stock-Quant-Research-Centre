@@ -59,8 +59,12 @@ TOOLS = [
                     "timeframe/pair for a strategy family rather than test one "
                     "fixed configuration — queues a ~300-config parameter sweep "
                     "(runs async; results arrive via Telegram and the dashboard). "
-                    "The sweep's trial count honestly raises the winner's "
-                    "multiple-testing hurdle.")},
+                    "IMPORTANT: even with optimize=true, factor_formula must be "
+                    "ONE representative configuration (a single lookback and "
+                    "threshold, e.g. 'enter long when z-score(20) < -2') — the "
+                    "sweep varies the numeric parameters automatically. Do NOT "
+                    "enumerate parameter lists in the formula. The sweep's trial "
+                    "count honestly raises the winner's multiple-testing hurdle.")},
                 "factor_formula": {"type": "string", "description": (
                     "Concrete entry/exit rule in terms of price/volume/indicators. "
                     + ("State the direction explicitly — e.g. 'long when RSI<30' or "
@@ -194,9 +198,12 @@ HARD RULES — never violate:
 - When the user wants to DISCOVER where a strategy family works best (best
   parameters, timeframe, or pair) rather than test one fixed setup, submit with
   optimize=true — a ~300-config parameter sweep runs asynchronously and the
-  trial count honestly raises the winner's multiple-testing hurdle. Tell them
-  results arrive later via Telegram/dashboard, and that "no configuration
-  survived" is a legitimate outcome.
+  trial count honestly raises the winner's multiple-testing hurdle. Even then,
+  write factor_formula as ONE representative configuration (single lookback,
+  single threshold) — the sweep varies the numbers itself; enumerating
+  parameter lists makes the formula unparseable. Tell them results arrive
+  later via Telegram/dashboard, and that "no configuration survived" is a
+  legitimate outcome.
 
 Write factor_formula in terms the backtester can parse — prefer these conditions:
 {signal_dsl.leaf_catalog_text()}
