@@ -8,23 +8,25 @@
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
   --bg:#0a0e1a;--bg2:#111827;--bg3:#1a2035;--bg4:#0d1526;
-  --border:#1e2d4a;--text:#e2e8f0;--muted:#64748b;--muted2:#94a3b8;
-  --cyan:#06b6d4;--green:#10b981;--yellow:#f59e0b;--red:#ef4444;
-  --purple:#8b5cf6;--blue:#3b82f6;--orange:#f97316;--pink:#ec4899;
+  --border:#24365a;--text:#e8eef7;--muted:#94a3b8;--muted2:#cbd5e1;--muted3:#64748b;
+  --cyan:#22d3ee;--green:#34d399;--yellow:#fbbf24;--red:#f87171;
+  --purple:#a78bfa;--blue:#60a5fa;--orange:#fb923c;--pink:#f472b6;
+  --font-sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  --font-mono:ui-monospace,'SF Mono','Cascadia Code',Menlo,Consolas,'Courier New',monospace;
 }
-body{background:var(--bg);color:var(--text);font-family:'Courier New',monospace;font-size:13px;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:15px;line-height:1.5;overflow:hidden}
 a{color:inherit;text-decoration:none}
 
 /* ── Layout ── */
 header{display:flex;align-items:center;gap:12px;padding:0 20px;height:44px;background:var(--bg2);border-bottom:1px solid var(--border);flex-shrink:0}
-header h1{font-size:14px;color:var(--cyan);letter-spacing:2px;font-weight:bold}
-.live-badge{background:var(--green);color:#000;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:bold}
+header h1{font-size:16px;color:var(--cyan);letter-spacing:2px;font-weight:bold}
+.live-badge{background:var(--green);color:#000;padding:1px 7px;border-radius:3px;font-size:11px;font-weight:bold}
 .layout{display:grid;grid-template-columns:192px 1fr;height:calc(100vh - 44px)}
 
 /* ── Sidebar ── */
 .sidebar{background:var(--bg2);border-right:1px solid var(--border);overflow-y:auto;padding:8px 0}
-.sidebar-section{padding:10px 16px 3px;color:var(--muted);font-size:9px;letter-spacing:1.5px;text-transform:uppercase}
-.sidebar a{display:flex;align-items:center;gap:8px;padding:6px 14px;color:var(--muted2);border-radius:4px;margin:1px 6px;transition:all .12s;cursor:pointer;font-size:12px}
+.sidebar-section{padding:10px 16px 3px;color:var(--muted);font-size:11px;letter-spacing:1.5px;text-transform:uppercase}
+.sidebar a{display:flex;align-items:center;gap:8px;padding:6px 14px;color:var(--muted2);border-radius:4px;margin:1px 6px;transition:all .12s;cursor:pointer;font-size:14px}
 .sidebar a:hover{background:var(--bg3);color:var(--text)}
 .sidebar a.active{background:var(--bg3);color:var(--cyan);border-left:2px solid var(--cyan);padding-left:12px}
 .sidebar a .ico{width:14px;text-align:center;flex-shrink:0}
@@ -32,32 +34,32 @@ header h1{font-size:14px;color:var(--cyan);letter-spacing:2px;font-weight:bold}
 /* ── Main ── */
 .main{overflow-y:auto;padding:18px 20px;background:var(--bg)}
 .page{display:none}.page.active{display:block}
-h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px}
+h2{font-size:15px;color:var(--muted2);text-transform:uppercase;letter-spacing:1px;margin-bottom:16px}
 
 /* ── Cards ── */
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
 .stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:14px}
-.stat-card .val{font-size:26px;font-weight:bold;color:var(--cyan);line-height:1.1}
-.stat-card .lbl{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
-.stat-card .sub{color:var(--muted2);font-size:10px;margin-top:3px}
+.stat-card .val{font-size:30px;font-weight:bold;color:var(--cyan);line-height:1.1;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.stat-card .lbl{color:var(--muted2);font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-top:4px}
+.stat-card .sub{color:var(--muted2);font-size:12px;margin-top:3px}
 
 /* ── Panels ── */
 .panel{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:14px;margin-bottom:14px}
 .panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.panel-title{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted)}
+.panel-title{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted2)}
 .row{display:flex;gap:12px;margin-bottom:14px}
 .col{flex:1;min-width:0}
 
 /* ── Tables ── */
 table{width:100%;border-collapse:collapse}
-th{text-align:left;padding:7px 10px;color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
-td{padding:7px 10px;border-bottom:1px solid var(--bg4);font-size:11px;vertical-align:middle}
+th{text-align:left;padding:8px 10px;color:var(--muted2);font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:8px 10px;border-bottom:1px solid var(--bg4);font-size:13px;vertical-align:middle;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 tr:hover td{background:var(--bg3)}
 .tbl-wrap{max-height:420px;overflow-y:auto}
 .tbl-wrap-lg{max-height:560px;overflow-y:auto}
 
 /* ── Badges ── */
-.badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:bold;white-space:nowrap}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:bold;white-space:nowrap}
 .badge.pass,.badge.active,.badge.advanced{background:#064e3b;color:var(--green)}
 .badge.fail,.badge.rejected{background:#450a0a;color:var(--red)}
 .badge.pending{background:#2d2a0f;color:var(--yellow)}
@@ -66,7 +68,7 @@ tr:hover td{background:var(--bg3)}
 .badge.closed{background:#1a2a1a;color:var(--muted2)}
 
 /* ── Buttons ── */
-btn,.btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:11px;font-family:inherit;transition:all .12s}
+btn,.btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:5px 12px;border-radius:4px;cursor:pointer;font-size:13px;font-family:inherit;transition:all .12s}
 .btn:hover{border-color:var(--cyan);color:var(--cyan)}
 .btn-green{border-color:var(--green);color:var(--green)}
 .btn-green:hover{background:#064e3b}
@@ -74,31 +76,32 @@ btn,.btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);
 .btn-red:hover{background:#450a0a}
 .btn-cyan{border-color:var(--cyan);color:var(--cyan)}
 .btn-cyan:hover{background:#0c3a44}
-.btn-sm{padding:2px 8px;font-size:10px}
+.btn-sm{padding:2px 8px;font-size:11px}
 .btn-amber{border-color:#d97706;color:#d97706}.btn-amber:hover{background:#451a03}
 .btn-amber.active{background:#451a03;border-color:#f59e0b;color:#f59e0b}
 
 /* ── KB Review Mode ── */
 .kb-review-row td:first-child{border-left:3px solid var(--red)}
 .kb-review-row:hover td{background:#2a1515}
-.domain-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:9px;font-weight:bold;background:#1e2d4a;color:var(--blue);cursor:pointer;white-space:nowrap;border:1px solid transparent;transition:border-color .12s}
+.domain-pill{display:inline-flex;align-items:center;gap:3px;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:bold;background:#1e2d4a;color:var(--blue);cursor:pointer;white-space:nowrap;border:1px solid transparent;transition:border-color .12s}
 .domain-pill:hover{border-color:var(--blue)}
-.domain-select{font-size:9px;padding:1px 4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer}
-.kb-del-btn{padding:1px 7px;font-size:9px;border-radius:10px;background:#450a0a;border:1px solid var(--red);color:var(--red);cursor:pointer;white-space:nowrap;transition:background .12s}
+.domain-select{font-size:11px;padding:1px 4px;background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:4px;cursor:pointer}
+.kb-del-btn{padding:1px 7px;font-size:11px;border-radius:10px;background:#450a0a;border:1px solid var(--red);color:var(--red);cursor:pointer;white-space:nowrap;transition:background .12s}
 .kb-del-btn:hover{background:#7f1d1d}
 
 /* ── Forms ── */
 .form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;align-items:flex-end}
 .form-group{display:flex;flex-direction:column;gap:4px}
-.form-group label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
-select,input,textarea{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:12px;font-family:inherit;outline:none;transition:border-color .12s}
+.form-group label{font-size:12px;color:var(--muted2);text-transform:uppercase;letter-spacing:.5px}
+select,input,textarea{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:4px;font-size:14px;font-family:inherit;outline:none;transition:border-color .12s}
+textarea{font-family:var(--font-mono)}
 select:focus,input:focus,textarea:focus{border-color:var(--cyan)}
 textarea{resize:vertical;min-height:80px;width:100%}
 
 /* ── Logs ── */
-.log-stream{overflow-y:auto;font-size:11px;font-family:monospace}
+.log-stream{overflow-y:auto;font-size:13px;font-family:var(--font-mono)}
 .log-line{display:flex;gap:8px;padding:3px 0;border-bottom:1px solid #0d1526}
-.log-time{color:var(--muted);width:50px;flex-shrink:0}
+.log-time{color:var(--muted3);width:56px;flex-shrink:0}
 .log-lvl{width:40px;flex-shrink:0;font-weight:bold}
 .log-src{color:var(--purple);width:90px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .log-msg{color:var(--muted2);overflow:hidden}
@@ -113,12 +116,12 @@ textarea{resize:vertical;min-height:80px;width:100%}
 .flow{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
 .flow-stage{background:var(--bg3);border:1px solid var(--border);border-radius:5px;padding:10px 14px;min-width:80px;text-align:center}
 .flow-stage .fn{font-size:20px;font-weight:bold}
-.flow-stage .fl{font-size:9px;color:var(--muted);text-transform:uppercase;margin-top:2px}
-.flow-arrow{color:var(--muted);font-size:14px}
+.flow-stage .fl{font-size:11px;color:var(--muted2);text-transform:uppercase;margin-top:2px}
+.flow-arrow{color:var(--muted);font-size:16px}
 
 /* ── SVG Charts ── */
 .chart-wrap{background:var(--bg3);border-radius:4px;padding:8px;overflow:hidden}
-svg text{font-family:'Courier New',monospace}
+svg text{font-family:var(--font-mono)}
 
 /* ── Pipeline stage colors ── */
 .c-gate0{color:var(--blue)}.c-stage1{color:var(--cyan)}.c-stage2{color:var(--purple)}
@@ -133,12 +136,12 @@ svg text{font-family:'Courier New',monospace}
 .modal-close:hover{color:var(--red)}
 .kv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-bottom:12px}
 .kv{background:var(--bg3);border-radius:4px;padding:8px}
-.kv .k{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
+.kv .k{font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:3px}
 .kv .v{font-size:12px;color:var(--text);word-break:break-word}
 
 /* ── Technique Arsenal ── */
 .arsenal-filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
-.arsenal-filter-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted2);padding:3px 10px;border-radius:12px;font-size:10px;cursor:pointer;font-family:inherit;transition:all .12s}
+.arsenal-filter-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted2);padding:3px 10px;border-radius:12px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .12s}
 .arsenal-filter-btn:hover,.arsenal-filter-btn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(6,182,212,.08)}
 .technique-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
 .technique-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:14px;position:relative;transition:border-color .15s}
@@ -147,61 +150,61 @@ svg text{font-family:'Courier New',monospace}
 .technique-card.pending{border-left:3px solid var(--muted)}
 .tc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
 .tc-name{font-size:12px;font-weight:bold;color:var(--text);line-height:1.3}
-.tc-key{font-size:9px;color:var(--muted);font-family:monospace;margin-top:2px}
+.tc-key{font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px}
 .tc-badges{display:flex;gap:4px;flex-wrap:wrap;flex-shrink:0}
-.tc-badge{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:bold;white-space:nowrap}
+.tc-badge{font-size:11px;padding:1px 6px;border-radius:3px;font-weight:bold;white-space:nowrap}
 .tc-badge.impl{background:#064e3b;color:var(--green)}
 .tc-badge.pending{background:var(--bg3);color:var(--muted)}
 .tc-badge.low{background:#052e16;color:#4ade80}
 .tc-badge.medium{background:#2d2a0f;color:var(--yellow)}
 .tc-badge.high{background:#450a0a;color:var(--red)}
-.tc-applicability{font-size:10px;color:var(--cyan);margin-bottom:8px;font-style:italic;line-height:1.4}
-.tc-ic-bench{font-size:10px;color:var(--purple);margin-bottom:8px}
-.tc-use-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.tc-applicability{font-size:12px;color:var(--cyan);margin-bottom:8px;font-style:italic;line-height:1.4}
+.tc-ic-bench{font-size:12px;color:var(--purple);margin-bottom:8px}
+.tc-use-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
 .tc-use-list{list-style:none;padding:0;margin:0 0 6px}
-.tc-use-list li{font-size:10px;color:var(--muted2);padding:1px 0;padding-left:12px;position:relative;line-height:1.4}
+.tc-use-list li{font-size:12px;color:var(--muted2);padding:1px 0;padding-left:12px;position:relative;line-height:1.4}
 .tc-use-list li::before{content:"▸";position:absolute;left:0;color:var(--cyan)}
 .tc-avoid-list li::before{color:var(--red)}
-.tc-expand-btn{font-size:9px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:0;margin-top:4px}
+.tc-expand-btn{font-size:11px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:0;margin-top:4px}
 .tc-expand-btn:hover{color:var(--text)}
 .tc-avoid-section{display:none;margin-top:6px}
 .tc-avoid-section.open{display:block}
 .arsenal-stat-row{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .arsenal-stat{background:var(--bg2);border:1px solid var(--border);border-radius:5px;padding:10px 16px;text-align:center;min-width:100px}
 .arsenal-stat .val{font-size:22px;font-weight:bold}
-.arsenal-stat .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;margin-top:2px}
+.arsenal-stat .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;margin-top:2px}
 .arsenal-progress{background:var(--bg3);border-radius:3px;height:5px;margin:6px 0}
 .arsenal-progress-fill{height:5px;border-radius:3px;background:var(--green);transition:width .5s}
 /* ── Strategy Profile Panel (expandable) ── */
-.tc-profile-toggle{font-size:9px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:2px 0;margin-top:8px;display:block;width:100%;text-align:left;border-top:1px solid var(--border);padding-top:8px}
+.tc-profile-toggle{font-size:11px;color:var(--muted);cursor:pointer;background:none;border:none;font-family:inherit;padding:2px 0;margin-top:8px;display:block;width:100%;text-align:left;border-top:1px solid var(--border);padding-top:8px}
 .tc-profile-toggle:hover{color:var(--cyan)}
 .tc-profile-panel{display:none;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
 .tc-profile-panel.open{display:block}
 .tc-profile-section{margin-bottom:10px}
-.tc-profile-label{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
-.tc-profile-text{font-size:10px;color:var(--muted2);line-height:1.5}
+.tc-profile-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:3px}
+.tc-profile-text{font-size:12px;color:var(--muted2);line-height:1.5}
 .tc-profile-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}
-.tc-exit-badge{font-size:9px;padding:2px 7px;border-radius:3px;font-weight:bold;display:inline-block;margin:2px 2px 4px 0}
+.tc-exit-badge{font-size:11px;padding:2px 7px;border-radius:3px;font-weight:bold;display:inline-block;margin:2px 2px 4px 0}
 .tc-exit-badge.signal{background:#064e3b;color:#4ade80}
 .tc-exit-badge.event{background:#1e3a5f;color:#60a5fa}
 .tc-exit-badge.signal_or_time{background:#44330a;color:#fbbf24}
 .tc-exit-badge.time_fallback{background:#1a1a2e;color:var(--muted2)}
 .tc-exit-badge.deferred{background:var(--bg3);color:var(--muted)}
 .tc-risk-badges{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
-.tc-risk-badge{font-size:9px;padding:2px 6px;border-radius:3px;background:var(--bg3);color:var(--muted2);border:1px solid var(--border)}
+.tc-risk-badge{font-size:11px;padding:2px 6px;border-radius:3px;background:var(--bg3);color:var(--muted2);border:1px solid var(--border)}
 .tc-risk-badge.stop{border-color:#ef4444;color:#ef4444}
 .tc-risk-badge.target{border-color:#4ade80;color:#4ade80}
 .tc-risk-badge.hold{border-color:var(--cyan);color:var(--cyan)}
-.tc-use-when{font-size:10px;color:#4ade80;line-height:1.5}
-.tc-avoid-when{font-size:10px;color:#ef4444;line-height:1.5}
-.tc-ic-bench-full{font-size:10px;color:var(--purple);font-style:italic;line-height:1.4;margin-top:4px}
+.tc-use-when{font-size:12px;color:#4ade80;line-height:1.5}
+.tc-avoid-when{font-size:12px;color:#ef4444;line-height:1.5}
+.tc-ic-bench-full{font-size:12px;color:var(--purple);font-style:italic;line-height:1.4;margin-top:4px}
 
 /* ── System Direction ── */
 .dir-section{margin-bottom:14px}
 .dir-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 .dir-card-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;cursor:pointer;user-select:none;transition:background .12s}
 .dir-card-head:hover{background:var(--bg3)}
-.dir-card-title{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);display:flex;align-items:center;gap:8px}
+.dir-card-title{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);display:flex;align-items:center;gap:8px}
 .dir-card-title .ico{font-size:14px}
 .dir-card-chevron{color:var(--muted);font-size:12px;transition:transform .2s}
 .dir-card.open .dir-card-chevron{transform:rotate(180deg)}
@@ -210,14 +213,14 @@ svg text{font-family:'Courier New',monospace}
 .dir-angle-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px}
 .dir-angle-item{background:var(--bg3);border-radius:5px;padding:10px 12px;border:1px solid var(--border)}
 .dir-angle-name{font-size:11px;font-weight:bold;color:var(--text);margin-bottom:3px}
-.dir-angle-desc{font-size:10px;color:var(--muted2);margin-bottom:8px;line-height:1.4}
+.dir-angle-desc{font-size:12px;color:var(--muted2);margin-bottom:8px;line-height:1.4}
 .dir-angle-bar-wrap{background:var(--bg4);border-radius:2px;height:4px;margin-bottom:4px}
 .dir-angle-bar{height:4px;border-radius:2px;transition:width .5s}
 .dir-angle-bar.ready{background:var(--green)}.dir-angle-bar.partial{background:var(--yellow)}.dir-angle-bar.empty{background:var(--red)}
-.dir-angle-stat{font-size:9px;color:var(--muted);display:flex;justify-content:space-between}
+.dir-angle-stat{font-size:11px;color:var(--muted);display:flex;justify-content:space-between}
 .dir-issue-row{display:flex;gap:8px;padding:5px 0;border-bottom:1px solid var(--bg4);font-size:11px;align-items:flex-start}
 .dir-issue-row:last-child{border-bottom:none}
-.dir-issue-status{flex-shrink:0;width:56px;font-size:9px;font-weight:bold;padding:2px 6px;border-radius:3px;text-align:center}
+.dir-issue-status{flex-shrink:0;width:56px;font-size:11px;font-weight:bold;padding:2px 6px;border-radius:3px;text-align:center}
 .dir-issue-status.fixed{background:#064e3b;color:var(--green)}
 .dir-issue-status.active{background:#450a0a;color:var(--red)}
 .dir-issue-status.pending{background:#2d2a0f;color:var(--yellow)}
@@ -227,9 +230,9 @@ svg text{font-family:'Courier New',monospace}
 .dir-constraint-list li::before{content:"▸";color:var(--red);flex-shrink:0}
 .dir-threshold-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
 .dir-threshold-item{background:var(--bg3);border-radius:4px;padding:8px 10px}
-.dir-threshold-label{font-size:9px;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.dir-threshold-label{font-size:11px;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
 .dir-threshold-value{font-size:14px;font-weight:bold;color:var(--cyan)}
-.dir-threshold-note{font-size:9px;color:var(--muted2);margin-top:2px}
+.dir-threshold-note{font-size:11px;color:var(--muted2);margin-top:2px}
 .dir-state-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:14px}
 .dir-progress-bar-wrap{background:var(--bg3);border-radius:3px;height:5px;margin:4px 0}
 .dir-progress-bar{height:5px;border-radius:3px;background:var(--cyan);transition:width .5s}
@@ -251,8 +254,8 @@ svg text{font-family:'Courier New',monospace}
 .dept-name{font-size:12px;font-weight:600;margin-bottom:10px;color:var(--text)}
 .dept-kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
 .dept-kpi-value{font-size:14px;font-weight:700;color:var(--dept-color,#888);line-height:1.2}
-.dept-kpi-label{font-size:9px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.4px}
-.dept-last-action{font-size:10px;color:var(--muted);border-top:1px solid var(--border);padding-top:8px;margin-top:6px}
+.dept-kpi-label{font-size:11px;color:var(--muted);margin-top:2px;text-transform:uppercase;letter-spacing:.4px}
+.dept-last-action{font-size:12px;color:var(--muted);border-top:1px solid var(--border);padding-top:8px;margin-top:6px}
 .dept-last-action-ago{color:var(--dept-color,#888);font-weight:600;margin-right:5px}
 .dept-work-view{background:var(--bg2);border-radius:8px;padding:16px;margin-top:14px;border:1px solid var(--border)}
 .dept-work-view.hidden{display:none}
@@ -291,16 +294,16 @@ svg text{font-family:'Courier New',monospace}
 .stage-active-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse-dot 1s ease-in-out infinite;margin-left:6px;vertical-align:middle}
 .heartbeat-icon{display:inline-block;animation:heartbeat 1.5s ease-in-out infinite;color:var(--green)}
 .heartbeat-icon.stale{color:var(--red)}
-.heartbeat-label{font-size:10px;color:var(--muted);margin-left:4px}
+.heartbeat-label{font-size:12px;color:var(--muted);margin-left:4px}
 .heartbeat-label.stale{color:var(--red)}
 
 /* ── Progress bar (backtest) ── */
 .bt-progress-wrap{margin-top:5px;background:var(--bg3);border-radius:3px;height:4px;overflow:hidden}
 .bt-progress-fill{height:4px;border-radius:3px;background:var(--purple);transition:width .4s ease}
-.bt-progress-msg{font-size:9px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bt-progress-msg{font-size:11px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ── Activity summary bar ── */
-.activity-summary{font-size:10px;color:var(--muted2);padding:4px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px;min-height:18px}
+.activity-summary{font-size:12px;color:var(--muted2);padding:4px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px;min-height:18px}
 
 /* ── Tabs ── */
 .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:14px}
@@ -317,24 +320,24 @@ svg text{font-family:'Courier New',monospace}
 .agent-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;min-width:200px;flex-shrink:0;position:relative;transition:border-color .15s}
 .agent-card:hover{border-color:var(--cyan)}
 .agent-card.pipeline-active{border-color:#1d4730}
-.agent-badge{position:absolute;top:10px;right:10px;background:var(--purple);color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:bold;line-height:1}
+.agent-badge{position:absolute;top:10px;right:10px;background:var(--purple);color:#fff;border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:bold;line-height:1}
 .agent-badge.zero{background:var(--bg3);color:var(--muted)}
 .agent-icon{width:36px;height:36px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:bold;letter-spacing:-.5px;margin-bottom:8px;flex-shrink:0}
 .agent-name{font-size:12px;font-weight:bold;color:var(--text);margin-bottom:2px}
-.agent-subtitle{font-size:9px;color:var(--muted);margin-bottom:8px;line-height:1.4}
-.agent-status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:9px;font-weight:bold;letter-spacing:.5px;margin-bottom:6px}
+.agent-subtitle{font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.4}
+.agent-status-pill{display:inline-block;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:.5px;margin-bottom:6px}
 .agent-status-pill.ACTIVE{background:#064e3b;color:var(--green)}
 .agent-status-pill.IDLE{background:#1a2035;color:var(--muted)}
 .agent-task{font-size:11px;color:var(--muted2);font-style:italic;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px}
-.agent-working-on{font-size:10px;color:var(--cyan);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px;opacity:.85}
-.agent-last-updated{font-size:9px;color:var(--muted);margin-top:4px}
+.agent-working-on{font-size:12px;color:var(--cyan);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:172px;opacity:.85}
+.agent-last-updated{font-size:11px;color:var(--muted);margin-top:4px}
 /* Custom tooltip for agent cards */
 .agent-card[data-tooltip]{cursor:default}
 .agent-card[data-tooltip]:hover::after{
   content:attr(data-tooltip);
   position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
   background:#0f172a;border:1px solid var(--border);border-radius:6px;
-  color:var(--text);font-size:10px;line-height:1.5;padding:6px 10px;
+  color:var(--text);font-size:12px;line-height:1.5;padding:6px 10px;
   white-space:normal;max-width:240px;min-width:160px;
   box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:200;pointer-events:none
 }
@@ -401,7 +404,7 @@ svg text{font-family:'Courier New',monospace}
 #tt.show{opacity:1!important}
 #tt.wide{max-width:320px}
 #tt .tt-title{color:var(--cyan);font-weight:bold;margin-bottom:4px;
-  font-size:9px;text-transform:uppercase;letter-spacing:.8px}
+  font-size:11px;text-transform:uppercase;letter-spacing:.8px}
 #tt .tt-body{color:var(--muted2)}
 
 /* ── [data-tip] CSS tooltip ── */
@@ -409,7 +412,7 @@ svg text{font-family:'Courier New',monospace}
 [data-tip]::after{
   content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:50%;
   transform:translateX(-50%);background:#1e2d4a;color:#e2e8f0;padding:5px 9px;
-  border-radius:4px;font-size:10px;white-space:normal;max-width:240px;text-align:left;
+  border-radius:4px;font-size:12px;white-space:normal;max-width:240px;text-align:left;
   pointer-events:none;opacity:0;transition:opacity .15s;border:1px solid #334;z-index:200;
   line-height:1.45;font-weight:normal;letter-spacing:0
 }
@@ -431,8 +434,8 @@ svg text{font-family:'Courier New',monospace}
   <h1>🐋 MARK'S RESEARCH CENTRE</h1>
   <span style="color:var(--muted);font-size:11px">MISSION CONTROL</span>
   <span class="live-badge">LIVE</span>
-  <span id="market-badge" style="font-size:10px;font-weight:bold;padding:2px 8px;border-radius:3px;margin-left:6px"></span>
-  <a id="market-switch" style="font-size:10px;color:var(--muted);cursor:pointer;margin-left:4px;text-decoration:underline"></a>
+  <span id="market-badge" style="font-size:12px;font-weight:bold;padding:2px 8px;border-radius:3px;margin-left:6px"></span>
+  <a id="market-switch" style="font-size:12px;color:var(--muted);cursor:pointer;margin-left:4px;text-decoration:underline"></a>
   <span id="heartbeat-wrap" style="display:inline-flex;align-items:center;gap:4px;margin-left:10px">
     <span class="heartbeat-icon" id="heartbeat-icon">♥</span>
     <span class="heartbeat-label" id="heartbeat-label">Daemon…</span>
@@ -479,7 +482,7 @@ svg text{font-family:'Courier New',monospace}
 <div id="page-arsenal" class="page">
   <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
     <h2 style="margin-bottom:0">Quantitative Technique Arsenal</h2>
-    <span style="font-size:10px;color:var(--muted)">When to use which model on Bursa Malaysia</span>
+    <span style="font-size:12px;color:var(--muted)">When to use which model on Bursa Malaysia</span>
   </div>
 
   <!-- Summary stats -->
@@ -490,18 +493,18 @@ svg text{font-family:'Courier New',monospace}
     <div class="arsenal-stat" style="flex:1;min-width:160px">
       <div class="lbl" style="text-align:left;margin-bottom:4px">Implementation Progress</div>
       <div class="arsenal-progress"><div class="arsenal-progress-fill" id="arsenal-progress-fill" style="width:0%"></div></div>
-      <div id="arsenal-progress-label" style="font-size:9px;color:var(--muted)"></div>
+      <div id="arsenal-progress-label" style="font-size:11px;color:var(--muted)"></div>
     </div>
   </div>
 
   <!-- Filters -->
   <div class="arsenal-filter-bar">
-    <span style="font-size:10px;color:var(--muted);margin-right:4px">Status:</span>
+    <span style="font-size:12px;color:var(--muted);margin-right:4px">Status:</span>
     <button class="arsenal-filter-btn active" onclick="arsenalFilter('all',this)">All</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilter('implemented',this)">✅ Implemented</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilter('pending',this)">🔲 Planned</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilter('deferred',this)">⏸ Deferred</button>
-    <span style="margin-left:8px;font-size:10px;color:var(--muted)">Angle:</span>
+    <span style="margin-left:8px;font-size:12px;color:var(--muted)">Angle:</span>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('price_action',this)">price_action</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('statistical_modelling',this)">statistical_modelling</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('event_driven',this)">event_driven</button>
@@ -509,7 +512,7 @@ svg text{font-family:'Courier New',monospace}
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('macro',this)">macro</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('institutional',this)">institutional</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterAngle('fundamental',this)">fundamental</button>
-    <span style="margin-left:8px;font-size:10px;color:var(--muted)">Exit:</span>
+    <span style="margin-left:8px;font-size:12px;color:var(--muted)">Exit:</span>
     <button class="arsenal-filter-btn" onclick="arsenalFilterExit('signal',this)">Signal Exit</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterExit('signal_or_time',this)">Signal+Time</button>
     <button class="arsenal-filter-btn" onclick="arsenalFilterExit('time_fallback',this)">Time Fallback</button>
@@ -526,7 +529,7 @@ svg text{font-family:'Courier New',monospace}
 <div id="page-direction" class="page">
   <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
     <h2 style="margin-bottom:0">Mark's Research Centre System Direction</h2>
-    <span id="dir-updated" style="font-size:10px;color:var(--muted)"></span>
+    <span id="dir-updated" style="font-size:12px;color:var(--muted)"></span>
   </div>
   <p style="font-size:11px;color:var(--muted2);margin-bottom:16px;line-height:1.6" id="dir-purpose">Loading…</p>
 
@@ -553,12 +556,12 @@ svg text{font-family:'Courier New',monospace}
     <div class="dir-card open" id="dir-card-angles">
       <div class="dir-card-head" onclick="dirToggle('angles')">
         <span class="dir-card-title"><span class="ico">🔬</span>The 9 Research Angles
-          <span id="dir-angles-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:9px;color:var(--muted2)"></span>
+          <span id="dir-angles-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:11px;color:var(--muted2)"></span>
         </span>
         <span class="dir-card-chevron">▾</span>
       </div>
       <div class="dir-card-body">
-        <p style="font-size:10px;color:var(--muted);margin-bottom:12px">Each angle needs ≥ 5 KB docs before idea generation can begin. Bar shows progress toward that target.</p>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:12px">Each angle needs ≥ 5 KB docs before idea generation can begin. Bar shows progress toward that target.</p>
         <div class="dir-angle-grid" id="dir-angles-grid">Loading…</div>
       </div>
     </div>
@@ -597,7 +600,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="dir-card open" id="dir-card-issues">
       <div class="dir-card-head" onclick="dirToggle('issues')">
         <span class="dir-card-title"><span class="ico">🐛</span>Known Issues Log
-          <span id="dir-issues-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:9px;color:var(--muted2)"></span>
+          <span id="dir-issues-badge" style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:11px;color:var(--muted2)"></span>
         </span>
         <span class="dir-card-chevron">▾</span>
       </div>
@@ -652,7 +655,7 @@ svg text{font-family:'Courier New',monospace}
       <div class="panel">
         <div class="panel-head">
           <span class="panel-title">Research Daemon Log Stream</span>
-          <select id="mc-log-filter" onchange="renderMCLogs()" style="font-size:10px;padding:2px 6px">
+          <select id="mc-log-filter" onchange="renderMCLogs()" style="font-size:12px;padding:2px 6px">
             <option>ALL</option><option>INFO</option><option>WARN</option><option>ERROR</option>
           </select>
         </div>
@@ -739,7 +742,7 @@ svg text{font-family:'Courier New',monospace}
         <div class="panel-head"><span class="panel-title">Status Distribution</span></div>
         <div id="chart-donut-wrap" style="display:flex;align-items:center;gap:20px;padding:8px 4px">
           <canvas id="chart-donut" width="160" height="160" style="flex-shrink:0"></canvas>
-          <div id="chart-donut-legend" style="font-size:10px;line-height:1.8;flex:1;min-width:0"></div>
+          <div id="chart-donut-legend" style="font-size:12px;line-height:1.8;flex:1;min-width:0"></div>
         </div>
       </div>
     </div>
@@ -766,7 +769,7 @@ svg text{font-family:'Courier New',monospace}
   <div id="gq-gate0" class="tab-content active">
     <div class="panel">
       <div class="panel-head"><span class="panel-title">Awaiting Gate 0 Scoring</span>
-        <span style="font-size:10px;color:var(--muted)">Auto-scored by daemon every 60s</span>
+        <span style="font-size:12px;color:var(--muted)">Auto-scored by daemon every 60s</span>
       </div>
       <div class="tbl-wrap"><table>
         <thead><tr><th>ID</th><th>Title</th><th>Pair</th><th>TF</th><th>Novelty</th><th>Logic</th><th>Created</th><th>Actions</th></tr></thead>
@@ -907,7 +910,7 @@ svg text{font-family:'Courier New',monospace}
             <div style="flex:7;background:var(--blue);opacity:.6"></div>
             <div style="flex:3;background:var(--purple);opacity:.6"></div>
           </div>
-          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:10px;color:#fff;font-weight:bold;gap:8px">
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;font-weight:bold;gap:8px">
             <span>IS 70%</span><span style="opacity:.5">|</span><span>OOS 30%</span>
           </div>
         </div>
@@ -946,17 +949,17 @@ svg text{font-family:'Courier New',monospace}
             <div style="background:var(--bg3);padding:12px;border-radius:4px">
               <div id="btl-r-low"  class="val" style="font-size:20px">—</div>
               <div class="lbl">Low Vol</div>
-              <div style="color:var(--muted);font-size:10px">σ &lt; 33rd pct</div>
+              <div style="color:var(--muted);font-size:12px">σ &lt; 33rd pct</div>
             </div>
             <div style="background:var(--bg3);padding:12px;border-radius:4px">
               <div id="btl-r-mid"  class="val" style="font-size:20px">—</div>
               <div class="lbl">Mid Vol</div>
-              <div style="color:var(--muted);font-size:10px">33–67th pct</div>
+              <div style="color:var(--muted);font-size:12px">33–67th pct</div>
             </div>
             <div style="background:var(--bg3);padding:12px;border-radius:4px">
               <div id="btl-r-high" class="val" style="font-size:20px">—</div>
               <div class="lbl">High Vol</div>
-              <div style="color:var(--muted);font-size:10px">σ &gt; 67th pct</div>
+              <div style="color:var(--muted);font-size:12px">σ &gt; 67th pct</div>
             </div>
           </div>
           <div style="text-align:center;margin-top:10px;font-size:11px;color:var(--muted2)">
@@ -1056,7 +1059,7 @@ svg text{font-family:'Courier New',monospace}
         <button class="btn btn-cyan" onclick="runSandbox()" id="sb-run-btn" style="width:100%">
           🧪 Run Backtest
         </button>
-        <div style="margin-top:8px;font-size:10px;color:var(--muted)">
+        <div style="margin-top:8px;font-size:12px;color:var(--muted)">
           Saves idea to DB, fetches 5yr Yahoo Finance .KL data, runs train/val/test split.
         </div>
       </div>
@@ -1097,7 +1100,7 @@ svg text{font-family:'Courier New',monospace}
       <div class="panel" style="display:flex;flex-direction:column;height:70vh">
         <div class="panel-head">
           <span class="panel-title">🤖 Research Concierge</span>
-          <span style="font-size:10px;color:var(--muted)">Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long-only, paper-only — I never trigger live trades.)</span>
+          <span style="font-size:12px;color:var(--muted)">Describe an idea in plain English — I'll structure it, run it through the pipeline, and report back. (Long-only, paper-only — I never trigger live trades.)</span>
         </div>
         <div id="cc-messages" style="flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:10px"></div>
         <div style="display:flex;gap:8px;margin-top:8px">
@@ -1220,7 +1223,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="panel-head">
       <span class="panel-title">Live Prices — <span id="lp-market">Crypto</span></span>
       <div style="display:flex;gap:10px;align-items:center">
-        <span id="lp-status" style="font-size:10px;color:var(--muted)">—</span>
+        <span id="lp-status" style="font-size:12px;color:var(--muted)">—</span>
         <button class="btn btn-sm" onclick="loadLivePrices()">↻</button>
       </div>
     </div>
@@ -1286,7 +1289,7 @@ svg text{font-family:'Courier New',monospace}
           <button id="kb-bulk-del-btn" class="btn btn-sm btn-red" onclick="bulkDeleteKBDocs()" style="display:none">✕ Delete Selected (0)</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <select id="kb-docs-domain" onchange="loadKBDocs()" style="font-size:10px;padding:3px 6px">
+          <select id="kb-docs-domain" onchange="loadKBDocs()" style="font-size:12px;padding:3px 6px">
             <option value="">All Domains</option>
           </select>
         </div>
@@ -1306,7 +1309,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="panel" style="margin-top:0">
       <div class="panel-head">
         <span class="panel-title">Concept Graph</span>
-        <input type="text" id="kb-concept-q" placeholder="Filter concepts…" onkeyup="loadKBConcepts()" style="font-size:10px;padding:3px 8px;width:180px">
+        <input type="text" id="kb-concept-q" placeholder="Filter concepts…" onkeyup="loadKBConcepts()" style="font-size:12px;padding:3px 8px;width:180px">
       </div>
       <div id="kb-concepts-cloud" style="margin-bottom:12px"></div>
       <div class="tbl-wrap"><table>
@@ -1320,16 +1323,16 @@ svg text{font-family:'Courier New',monospace}
     <div class="panel" style="margin-top:0">
       <div class="panel-head">
         <span class="panel-title">Knowledge Graph
-          <span id="kb-graph-live" style="color:var(--green);font-size:9px;margin-left:8px">● LIVE</span>
+          <span id="kb-graph-live" style="color:var(--green);font-size:11px;margin-left:8px">● LIVE</span>
         </span>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input type="text" id="kb-graph-search" placeholder="GraphRAG search…"
-                 style="font-size:10px;padding:3px 8px;width:170px"
+                 style="font-size:12px;padding:3px 8px;width:170px"
                  onkeydown="if(event.key==='Enter')kbGraphSearch()">
-          <select id="kb-graph-domain" onchange="loadKBGraph(true)" style="font-size:10px;padding:3px 6px">
+          <select id="kb-graph-domain" onchange="loadKBGraph(true)" style="font-size:12px;padding:3px 6px">
             <option value="">All Domains</option>
           </select>
-          <select id="kb-graph-limit" onchange="loadKBGraph(true)" style="font-size:10px;padding:3px 6px">
+          <select id="kb-graph-limit" onchange="loadKBGraph(true)" style="font-size:12px;padding:3px 6px">
             <option value="150">150 nodes</option>
             <option value="300" selected>300 nodes</option>
             <option value="500">500 nodes</option>
@@ -1342,7 +1345,7 @@ svg text{font-family:'Courier New',monospace}
         </div>
       </div>
 
-      <div id="kb-graph-legend" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:9px;color:var(--muted2)"></div>
+      <div id="kb-graph-legend" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;font-size:11px;color:var(--muted2)"></div>
 
       <div id="kb-graph-container" style="position:relative;height:560px;background:var(--bg4);border:1px solid var(--border);border-radius:6px;overflow:hidden">
         <div id="kb-cy" style="width:100%;height:100%"></div>
@@ -1371,7 +1374,7 @@ svg text{font-family:'Courier New',monospace}
       </div>
       <div id="pdf-preview" style="display:none;margin-top:10px;display:none;align-items:center;gap:10px">
         <span style="color:var(--cyan);font-size:11px">📎 <span id="pdf-filename"></span></span>
-        <span style="color:var(--muted);font-size:10px" id="pdf-filesize"></span>
+        <span style="color:var(--muted);font-size:12px" id="pdf-filesize"></span>
         <button class="btn btn-sm btn-red" onclick="clearPDF()">Remove</button>
       </div>
       <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
@@ -1485,7 +1488,7 @@ svg text{font-family:'Courier New',monospace}
   <div class="panel">
     <div class="panel-head">
       <span class="panel-title">AI Usage (Last 7 Days)</span>
-      <select id="usage-days" onchange="loadUsage()" style="font-size:10px;padding:2px 6px">
+      <select id="usage-days" onchange="loadUsage()" style="font-size:12px;padding:2px 6px">
         <option value="7">7 days</option><option value="14">14 days</option><option value="30">30 days</option>
       </select>
     </div>
@@ -1502,7 +1505,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="panel-head">
       <span class="panel-title">Daemon Logs</span>
       <div style="display:flex;gap:8px">
-        <select id="logs-level" onchange="loadLogsPage()" style="font-size:10px;padding:2px 6px">
+        <select id="logs-level" onchange="loadLogsPage()" style="font-size:12px;padding:2px 6px">
           <option>ALL</option><option>INFO</option><option>WARN</option><option>ERROR</option>
         </select>
         <button class="btn btn-sm" onclick="loadLogsPage()">↻</button>
@@ -1521,7 +1524,7 @@ svg text{font-family:'Courier New',monospace}
     <div class="modal-head">
       <div>
         <div style="font-size:14px;font-weight:bold;color:var(--cyan)" id="modal-title"></div>
-        <div style="font-size:10px;color:var(--muted);margin-top:2px" id="modal-subtitle"></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px" id="modal-subtitle"></div>
       </div>
       <button class="modal-close" onclick="closeModal()">✕</button>
     </div>
@@ -1803,8 +1806,8 @@ function svgBar(data, {width=460, height=120, color='#06b6d4', valueKey='n', lab
     const label = String(d[labelKey] || i).slice(-5);
     const fmtd = fmt ? fmt(val) : val;
     return `<rect x="${bx(i)}" y="${by}" width="${bw}" height="${bh}" fill="${color}" rx="2" opacity=".85"/>
-      ${showValue && val > 0 ? `<text x="${bx(i) + bw/2}" y="${by - 2}" text-anchor="middle" fill="${color}" font-size="9">${fmtd}</text>` : ''}
-      <text x="${bx(i) + bw/2}" y="${height - pad.b + 12}" text-anchor="middle" fill="#64748b" font-size="8">${label}</text>`;
+      ${showValue && val > 0 ? `<text x="${bx(i) + bw/2}" y="${by - 2}" text-anchor="middle" fill="${color}" font-size="11">${fmtd}</text>` : ''}
+      <text x="${bx(i) + bw/2}" y="${height - pad.b + 12}" text-anchor="middle" fill="#94a3b8" font-size="11">${label}</text>`;
   });
   return `<div class="chart-wrap"><svg width="100%" viewBox="0 0 ${width} ${height}">${bars.join('')}</svg></div>`;
 }
@@ -1822,7 +1825,7 @@ function svgLine(data, {width=460, height=100, color='#06b6d4', valueKey='n', la
   const labels = data.filter((_,i) => i === 0 || i === data.length-1 || i % Math.ceil(data.length/5) === 0)
     .map((d,_,arr) => {
       const idx = data.indexOf(d);
-      return `<text x="${xs(idx)}" y="${height-pad.b+10}" text-anchor="middle" fill="#64748b" font-size="8">${String(d[labelKey]||'').slice(-5)}</text>`;
+      return `<text x="${xs(idx)}" y="${height-pad.b+10}" text-anchor="middle" fill="#94a3b8" font-size="11">${String(d[labelKey]||'').slice(-5)}</text>`;
     });
   return `<div class="chart-wrap"><svg width="100%" viewBox="0 0 ${width} ${height}">
     <polygon points="${area}" fill="${color}" opacity=".12"/>
@@ -1968,7 +1971,7 @@ async function loadMC() {
   const models = d.ai_usage.by_model || [];
   document.getElementById('mc-models').innerHTML = models.length
     ? `<table><thead><tr><th>Model</th><th>Calls</th><th>Cost</th></tr></thead><tbody>
-        ${models.map(m=>`<tr><td style="color:var(--cyan);font-size:10px">${m.model}</td><td>${m.calls}</td><td style="color:var(--yellow)">${fmtUSD(m.cost)}</td></tr>`).join('')}
+        ${models.map(m=>`<tr><td style="color:var(--cyan);font-size:12px">${m.model}</td><td>${m.calls}</td><td style="color:var(--yellow)">${fmtUSD(m.cost)}</td></tr>`).join('')}
        </tbody></table>`
     : '<div style="color:var(--muted);font-size:11px;padding:4px">No usage today</div>';
 
@@ -2187,11 +2190,11 @@ function renderDonutChart(segments) {
   // Center labels
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#e2e8f0';
-  ctx.font = 'bold 20px Courier New';
+  ctx.fillStyle = '#e8eef7';
+  ctx.font = 'bold 22px ui-monospace, Menlo, Consolas, monospace';
   ctx.fillText(total, cx, cy - 7);
-  ctx.font = '8px Courier New';
-  ctx.fillStyle = '#64748b';
+  ctx.font = '11px ui-monospace, Menlo, Consolas, monospace';
+  ctx.fillStyle = '#94a3b8';
   ctx.fillText('TOTAL', cx, cy + 9);
   // Legend
   legend.innerHTML = segments.map(s =>
@@ -2272,7 +2275,7 @@ async function loadGateQueue() {
        <td>${gateTTBadge(r.gate)}</td>
        <td>${decisionTTBadge(r.decision)}</td>
        <td style="color:var(--muted2)">${r.decided_by||'—'}</td>
-       <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;color:var(--muted2);font-size:10px"
+       <td style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:help;color:var(--muted2);font-size:12px"
            data-tt-title="Rationale — Idea #${r.idea_id}"
            data-tt-body="${escAttr(r.rationale||'(no rationale recorded)')}"
        >${esc(r.rationale||'')}</td>
@@ -2356,20 +2359,20 @@ async function openIdeaModal(id) {
     ['BT Drawdown', `<span style="${r.backtest_dd>0.2?'color:var(--red)':'color:var(--green)'}">${fmtPct(r.backtest_dd)}</span>`],
     ['Created', tsShort(r.created_at)],
   ].map(([k,v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
-  document.getElementById('modal-hypothesis').innerHTML = `<b style="color:var(--muted);font-size:9px">HYPOTHESIS</b><br>${esc(r.hypothesis||'No hypothesis recorded')}`;
-  document.getElementById('modal-formula').innerHTML = `<b style="color:var(--muted);font-size:9px">FACTOR FORMULA</b><br>${esc(r.factor_formula||'—')}`;
+  document.getElementById('modal-hypothesis').innerHTML = `<b style="color:var(--muted);font-size:11px">HYPOTHESIS</b><br>${esc(r.hypothesis||'No hypothesis recorded')}`;
+  document.getElementById('modal-formula').innerHTML = `<b style="color:var(--muted);font-size:11px">FACTOR FORMULA</b><br>${esc(r.factor_formula||'—')}`;
 
   document.getElementById('modal-events-table').innerHTML = d.events.map(e =>
     `<tr><td>${stageBadge(e.stage)}</td><td>${statusBadge(e.event_type)}</td>
      <td style="color:var(--purple)">${e.agent||'—'}</td>
-     <td style="color:var(--muted2);font-size:10px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.notes||'')}</td>
+     <td style="color:var(--muted2);font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.notes||'')}</td>
      <td style="color:var(--muted)">${tsShort(e.created_at)}</td></tr>`
   ).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center">No events</td></tr>';
 
   document.getElementById('modal-gates-table').innerHTML = d.gate_decisions.map(g =>
     `<tr><td style="color:var(--purple)">${g.gate}</td><td>${statusBadge(g.decision)}</td>
      <td style="color:var(--muted2)">${g.decided_by||'—'}</td>
-     <td style="color:var(--muted2);font-size:10px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.rationale||'')}</td>
+     <td style="color:var(--muted2);font-size:12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(g.rationale||'')}</td>
      <td style="color:var(--muted)">${tsShort(g.created_at)}</td></tr>`
   ).join('') || '<tr><td colspan="5" style="color:var(--muted);text-align:center">No gate decisions</td></tr>';
 
@@ -2529,7 +2532,7 @@ async function loadBtlDetail(rawId) {
        <td style="${b.trade_count<30?'color:var(--red)':''}">${b.trade_count||'—'}</td>
        <td>${fmtPct(b.win_rate)}</td>
        <td style="${b.regimes_positive>=2?'color:var(--green)':'color:var(--red)'}">${b.regimes_positive!=null?b.regimes_positive+'/3':'—'}</td>
-       <td style="color:var(--muted);font-size:10px">${b.holding_period_class||'—'}</td>
+       <td style="color:var(--muted);font-size:12px">${b.holding_period_class||'—'}</td>
        <td>${b.passed ? '<span class="badge pass">PASS</span>' : '<span class="badge fail">FAIL</span>'}</td>
        <td style="color:var(--muted)">${tsShort(b.created_at)}</td>
      </tr>`
@@ -2574,10 +2577,10 @@ function btlRenderCharts(series) {
   const baseOpts = {
     responsive: true, maintainAspectRatio: false,
     animation: false,
-    plugins: { legend: { labels: { color: '#94a3b8', font: { size: 10 }, boxWidth: 12 } } },
+    plugins: { legend: { labels: { color: '#cbd5e1', font: { size: 12 }, boxWidth: 12 } } },
     scales: {
-      x: { ticks: { color: '#64748b', maxTicksLimit: 12, font: { size: 9 } }, grid: { color: '#1e2d4a' } },
-      y: { ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e2d4a' } },
+      x: { ticks: { color: '#94a3b8', maxTicksLimit: 12, font: { size: 11 } }, grid: { color: '#24365a' } },
+      y: { ticks: { color: '#94a3b8', font: { size: 11 } }, grid: { color: '#24365a' } },
     },
   };
 
@@ -2701,7 +2704,7 @@ async function loadConciergeIdeas() {
   box.innerHTML = r.ideas.map(i =>
     `<div style="padding:6px 0;border-bottom:1px solid var(--bg3)">
        <a onclick="openIdeaModal(${i.id})" style="color:var(--cyan);cursor:pointer">#${i.id} ${i.title}</a>
-       <div style="color:var(--muted2);font-size:10px">${i.stage} · ${i.status}</div>
+       <div style="color:var(--muted2);font-size:12px">${i.stage} · ${i.status}</div>
      </div>`).join('');
 }
 
@@ -2730,7 +2733,7 @@ async function runSandbox() {
       <div class="stat-card" style="flex:1"><div class="val" style="${clr(r.val?.sharpe,1)}">${fmt2(r.val?.sharpe)}</div><div class="lbl">Val Sharpe</div></div>
     </div>
     <div style="background:var(--bg3);padding:12px;border-radius:4px;margin-bottom:10px">
-      <div style="font-size:10px;color:var(--muted);margin-bottom:6px">RESULT</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px">RESULT</div>
       <div style="font-size:18px;font-weight:bold;color:${pass?'var(--green)':'var(--red)'}">
         ${pass ? '✔ Strategy PASSED Gate 2 & 3' : '✗ Strategy FAILED — see metrics above'}
       </div>
@@ -2767,7 +2770,7 @@ async function loadPaperTrades() {
        <td style="color:${t.direction==='long'?'var(--green)':'var(--red)'}">${t.direction}</td>
        <td>${t.entry_price?.toFixed(5)||'—'}</td>
        <td>${t.units||'—'}</td>
-       <td style="color:var(--muted2);font-size:10px">${esc(t.signal||'—')}</td>
+       <td style="color:var(--muted2);font-size:12px">${esc(t.signal||'—')}</td>
        <td style="color:var(--muted)">${tsShort(t.opened_at)}</td>
        <td><button class="btn btn-sm btn-red" onclick="closePaperTrade(${t.id})">Close</button></td>
      </tr>`
@@ -2843,16 +2846,16 @@ async function searchKB() {
   const d = await apiFetch(`/kb/search?q=${encodeURIComponent(q)}&domain=${domain}&limit=20`);
   if (!d) return;
   document.getElementById('kb-search-results').innerHTML = d.results.length
-    ? `<div style="color:var(--muted);font-size:10px;margin-bottom:8px">${d.results.length} result(s) for "${esc(q)}"</div>` +
+    ? `<div style="color:var(--muted);font-size:12px;margin-bottom:8px">${d.results.length} result(s) for "${esc(q)}"</div>` +
       d.results.map(r => `
         <div style="background:var(--bg3);border-radius:4px;padding:10px;margin-bottom:6px">
           <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px">
             <span style="color:var(--cyan);font-size:12px">${esc(r.title)}</span>
-            <span class="badge stage" style="font-size:9px">${r.domain}</span>
-            ${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" style="color:var(--muted);font-size:9px">↗ source</a>` : ''}
+            <span class="badge stage" style="font-size:11px">${r.domain}</span>
+            ${r.source_url ? `<a href="${esc(r.source_url)}" target="_blank" style="color:var(--muted);font-size:11px">↗ source</a>` : ''}
           </div>
           <div style="color:var(--muted2);font-size:11px">${esc(r.summary||'No summary')}</div>
-          ${r.tags ? `<div style="margin-top:4px">${JSON.parse(r.tags||'[]').map(t=>`<span style="color:var(--purple);font-size:9px;margin-right:4px">#${t}</span>`).join('')}</div>` : ''}
+          ${r.tags ? `<div style="margin-top:4px">${JSON.parse(r.tags||'[]').map(t=>`<span style="color:var(--purple);font-size:11px;margin-right:4px">#${t}</span>`).join('')}</div>` : ''}
         </div>`
       ).join('')
     : `<div style="color:var(--muted);padding:16px;text-align:center">No results for "${esc(q)}"</div>`;
@@ -2920,7 +2923,7 @@ async function loadKBDocs() {
        <td style="color:var(--muted)">${r.id}</td>
        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--cyan)">${esc(r.title)}</td>
        ${domainCell}
-       <td style="max-width:280px;color:var(--muted2);font-size:10px">${esc(summary)}</td>
+       <td style="max-width:280px;color:var(--muted2);font-size:12px">${esc(summary)}</td>
        <td style="color:var(--muted)">${tsShort(r.created_at)}</td>
        ${actionsCell}
      </tr>`;
@@ -3158,8 +3161,8 @@ function kbGraphShowNode(node) {
     <div style="display:flex;justify-content:space-between;align-items:baseline">
       <div>
         <span style="color:${KB_GRAPH_COLORS[data.type]||'var(--cyan)'};font-size:13px;font-weight:600">${esc(data.title)}</span>
-        <span class="badge stage" style="font-size:9px;margin-left:6px">${data.type}</span>
-        ${data.domain ? `<span class="badge stage" style="font-size:9px">${esc(data.domain)}</span>` : ''}
+        <span class="badge stage" style="font-size:11px;margin-left:6px">${data.type}</span>
+        ${data.domain ? `<span class="badge stage" style="font-size:11px">${esc(data.domain)}</span>` : ''}
       </div>
       <div style="display:flex;gap:6px">
         <button class="btn btn-sm" onclick="kbGraphExtractSubgraph(${data.nid}, 2)">⛏ Extract subgraph</button>
@@ -3167,17 +3170,17 @@ function kbGraphShowNode(node) {
       </div>
     </div>
     ${data.summary ? `<div style="color:var(--muted2);font-size:11px;margin:8px 0">${esc(data.summary)}</div>` : ''}
-    <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px">
+    <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 4px">
       ${neighbors.length} connection${neighbors.length===1?'':'s'}
     </div>
     <div style="display:flex;flex-direction:column;gap:3px;max-height:160px;overflow-y:auto">
       ${neighbors.map(nb => `
-        <div style="display:flex;gap:6px;align-items:center;font-size:10px">
+        <div style="display:flex;gap:6px;align-items:center;font-size:12px">
           <span style="color:${KB_GRAPH_EDGE_COLORS[nb.relation]||'var(--muted)'};min-width:14px">${nb.dir}</span>
           <span style="color:var(--muted);min-width:110px">${nb.relation}</span>
           <span style="color:var(--text)">${esc(nb.title)}</span>
           <span style="color:var(--muted)">(${(nb.weight||0).toFixed(2)})</span>
-        </div>`).join('') || '<div style="color:var(--muted);font-size:10px">No graph edges yet — the extractor runs every 2h.</div>'}
+        </div>`).join('') || '<div style="color:var(--muted);font-size:12px">No graph edges yet — the extractor runs every 2h.</div>'}
     </div>
   `;
 }
@@ -3286,8 +3289,8 @@ async function loadKBConcepts() {
   document.getElementById('kb-concepts-table').innerHTML = d.concepts.map(c =>
     `<tr>
        <td style="color:var(--purple)">${esc(c.name)}</td>
-       <td><span class="badge stage" style="font-size:9px">${c.domain||'—'}</span></td>
-       <td style="color:var(--muted2);font-size:10px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.description||'—')}</td>
+       <td><span class="badge stage" style="font-size:11px">${c.domain||'—'}</span></td>
+       <td style="color:var(--muted2);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.description||'—')}</td>
        <td style="color:var(--muted)">${c.count}</td>
        <td><button class="kb-del-btn" onclick="deleteKBConcept(${c.id},'${esc(c.name).replace(/'/g,"\\'")}')">✕</button></td>
      </tr>`
@@ -3547,17 +3550,17 @@ async function loadEventFeed() {
     card.innerHTML = `
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
         ${ticker ? `<span class="badge stage">${ticker}</span>` : ''}
-        <span style="background:#1a2a3a;color:${typeCol};padding:1px 7px;border-radius:10px;font-size:10px;font-weight:bold">${(ev.event_type||'').toUpperCase().replace(/_/g,' ')}</span>
-        <span style="color:var(--muted);font-size:10px;margin-left:auto">${ts}</span>
-        ${ev.company ? `<span style="color:var(--muted2);font-size:10px">${ev.company}</span>` : ''}
+        <span style="background:#1a2a3a;color:${typeCol};padding:1px 7px;border-radius:10px;font-size:12px;font-weight:bold">${(ev.event_type||'').toUpperCase().replace(/_/g,' ')}</span>
+        <span style="color:var(--muted);font-size:12px;margin-left:auto">${ts}</span>
+        ${ev.company ? `<span style="color:var(--muted2);font-size:12px">${ev.company}</span>` : ''}
       </div>
       <div style="font-weight:bold;margin-bottom:4px;font-size:12px">${ev.headline||''}</div>
       ${bodySnip ? `<div style="color:var(--muted2);font-size:11px;margin-bottom:6px;line-height:1.4">${bodySnip}</div>` : ''}
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px">
-        <span style="font-size:10px;color:var(--muted)">Conf: <span style="color:${typeCol}">${conf}</span></span>
-        ${edge ? `<span style="font-size:10px;color:var(--muted)">Edge: <span style="color:var(--green)">${edge}</span></span>` : ''}
-        <span style="font-size:10px;padding:1px 6px;border-radius:8px;background:#1a2a2a;color:${ACTION_COLOURS[action]||'#888'}">${action.replace(/_/g,' ')}</span>
-        ${ev.idea_id ? `<span style="font-size:10px;color:var(--cyan)">→ Idea #${ev.idea_id}</span>` : ''}
+        <span style="font-size:12px;color:var(--muted)">Conf: <span style="color:${typeCol}">${conf}</span></span>
+        ${edge ? `<span style="font-size:12px;color:var(--muted)">Edge: <span style="color:var(--green)">${edge}</span></span>` : ''}
+        <span style="font-size:12px;padding:1px 6px;border-radius:8px;background:#1a2a2a;color:${ACTION_COLOURS[action]||'#888'}">${action.replace(/_/g,' ')}</span>
+        ${ev.idea_id ? `<span style="font-size:12px;color:var(--cyan)">→ Idea #${ev.idea_id}</span>` : ''}
       </div>
       <div style="height:2px;background:var(--border);border-radius:1px;overflow:hidden">
         <div style="height:100%;width:${ev.confidence ? (ev.confidence*100).toFixed(0)+'%' : '0'};background:${typeCol};border-radius:1px;transition:width .3s"></div>
@@ -3578,10 +3581,10 @@ async function loadCalendarStrip() {
     const urgency = days <= 3 ? 'var(--red)' : days <= 7 ? 'var(--yellow)' : 'var(--muted2)';
     const card = document.createElement('div');
     card.style.cssText = 'background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:8px 12px;min-width:160px';
-    card.innerHTML = `<div style="font-size:10px;color:var(--muted);text-transform:uppercase">${ev.country||'?'} — ${(ev.event_type||'').replace(/_/g,' ')}</div>
+    card.innerHTML = `<div style="font-size:12px;color:var(--muted);text-transform:uppercase">${ev.country||'?'} — ${(ev.event_type||'').replace(/_/g,' ')}</div>
       <div style="font-size:11px;font-weight:bold;margin:2px 0">${ev.event_name}</div>
-      <div style="font-size:10px;color:${urgency}">in ${days} day${days===1?'':'s'} (${ev.scheduled_date})</div>
-      ${ev.forecast_value ? `<div style="font-size:10px;color:var(--muted)">Forecast: ${ev.forecast_value}</div>` : ''}`;
+      <div style="font-size:12px;color:${urgency}">in ${days} day${days===1?'':'s'} (${ev.scheduled_date})</div>
+      ${ev.forecast_value ? `<div style="font-size:12px;color:var(--muted)">Forecast: ${ev.forecast_value}</div>` : ''}`;
     strip.appendChild(card);
   });
 }
@@ -3620,7 +3623,7 @@ async function loadLogsPage() {
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function showToast(msg, error = false) {
   const t = document.createElement('div');
-  t.style.cssText = `position:fixed;bottom:20px;right:20px;background:${error?'var(--red)':'var(--green)'};color:#000;padding:8px 16px;border-radius:5px;font-size:12px;z-index:999;font-family:'Courier New',monospace;max-width:320px`;
+  t.style.cssText = `position:fixed;bottom:20px;right:20px;background:${error?'var(--red)':'var(--green)'};color:#000;padding:8px 16px;border-radius:5px;font-size:13px;z-index:999;font-family:var(--font-sans);max-width:320px`;
   t.textContent = msg;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 3000);
@@ -3838,7 +3841,7 @@ function renderArsenal() {
            <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
          </div>` : ''}
       ${profilePanel}
-      ${stockTypes ? `<div style="font-size:9px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
+      ${stockTypes ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
     </div>`;
   }).join('') || '<div style="color:var(--muted);padding:20px">No techniques match the current filter.</div>';
 }
@@ -4130,11 +4133,11 @@ function renderAlphaPanel(d) {
     <div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;
       border-bottom:1px solid #ffffff08;font-size:12px;flex-wrap:wrap">
       <span style="background:#ffffff10;padding:2px 8px;border-radius:4px;
-        font-size:10px;font-weight:700;flex-shrink:0">${esc(g.gate)}</span>
+        font-size:12px;font-weight:700;flex-shrink:0">${esc(g.gate)}</span>
       <span style="color:${g.decision==='approve'?'#22c55e':'#ef4444'};font-weight:700;flex-shrink:0">
         ${esc((g.decision||'').toUpperCase())}</span>
-      <span style="color:#888;font-size:10px;flex-shrink:0">${esc(g.decided_by||'')}</span>
-      <span style="color:#888;font-size:10px;margin-left:auto;flex-shrink:0">${(g.created_at||'').slice(0,16)}</span>
+      <span style="color:#888;font-size:12px;flex-shrink:0">${esc(g.decided_by||'')}</span>
+      <span style="color:#888;font-size:12px;margin-left:auto;flex-shrink:0">${(g.created_at||'').slice(0,16)}</span>
     </div>
     ${g.rationale ? `<div style="color:#888;font-size:11px;padding:2px 0 6px 0;
       border-bottom:1px solid #ffffff08">${esc((g.rationale||'').slice(0,200))}</div>` : ''}
@@ -4147,17 +4150,17 @@ function renderAlphaPanel(d) {
       <div>Research <span class="score-badge ${(i.research_score||0)>=6?'good':(i.research_score||0)>=4?'ok':'poor'}">${(i.research_score||0).toFixed(1)}</span></div>
     </div>
     <div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">HYPOTHESIS</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">HYPOTHESIS</div>
       <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:12px;line-height:1.6;
         color:#ddd;max-height:140px;overflow-y:auto">${esc(i.hypothesis||'')}</div>
     </div>
     <div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">FACTOR FORMULA</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">FACTOR FORMULA</div>
       <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
         font-family:monospace;color:#a5f3fc;max-height:100px;overflow-y:auto">${esc(i.factor_formula||'')}</div>
     </div>
     ${sp ? `<div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">STRATEGY PROFILE — ${esc(sp.name||sp.strategy_key||'')}</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">STRATEGY PROFILE — ${esc(sp.name||sp.strategy_key||'')}</div>
       <div style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
         color:#ddd;display:grid;grid-template-columns:1fr 1fr;gap:8px">
         <div><span style="color:#888">Phenomenon:</span> ${esc(sp.phenomenon||'')}</div>
@@ -4166,7 +4169,7 @@ function renderAlphaPanel(d) {
       </div>
     </div>` : ''}
     <div>
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">GATE HISTORY</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">GATE HISTORY</div>
       ${gates || '<div style="color:#888;font-size:12px;padding:10px">No gate decisions yet</div>'}
     </div>`;
 }
@@ -4201,11 +4204,11 @@ function renderQuantPanel(d) {
         ].map(([l,v,c])=>`
         <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
           <div style="color:${c};font-size:16px;font-weight:700">${v}</div>
-          <div style="color:#888;font-size:9px;margin-top:4px;text-transform:uppercase">${l}</div>
+          <div style="color:#888;font-size:11px;margin-top:4px;text-transform:uppercase">${l}</div>
         </div>`).join('')}
     </div>
     <div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">TRAIN / VAL / TEST (Best Run #${best.id||'—'})</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">TRAIN / VAL / TEST (Best Run #${best.id||'—'})</div>
       <div style="display:flex;gap:12px;align-items:flex-end;height:90px">
         ${[['Train',best.train_sharpe,best.train_dd],
            ['Val',  best.val_sharpe,  best.val_dd  ],
@@ -4214,14 +4217,14 @@ function renderQuantPanel(d) {
             <div style="font-size:11px;font-weight:700;color:${barC(sh||0)}">${(sh||0).toFixed(3)}</div>
             <div style="width:100%;height:${barH(sh||0)}px;background:${barC(sh||0)};
               border-radius:3px 3px 0 0;opacity:.8;min-height:4px"></div>
-            <div style="font-size:10px;color:#888">${label}</div>
-            <div style="font-size:10px;color:#666">DD ${((dd||0)*100).toFixed(1)}%</div>
+            <div style="font-size:12px;color:#888">${label}</div>
+            <div style="font-size:12px;color:#666">DD ${((dd||0)*100).toFixed(1)}%</div>
           </div>`).join('')}
       </div>
       ${oosBadge}
     </div>
     <div>
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
         ALL RUNS (${s.total_runs||0} total · ${s.passes||0} passed)</div>
       <div style="overflow-x:auto">
         <table class="run-table">
@@ -4249,18 +4252,18 @@ function renderDataPanel(d) {
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px">
       <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
         <div style="color:#10b981;font-size:16px;font-weight:700">${d.fundamental_coverage||0}</div>
-        <div style="color:#888;font-size:9px;margin-top:4px">WITH FUNDAMENTALS</div>
+        <div style="color:#888;font-size:11px;margin-top:4px">WITH FUNDAMENTALS</div>
       </div>
       <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
         <div style="color:#10b981;font-size:16px;font-weight:700">${d.universe_size||69}</div>
-        <div style="color:#888;font-size:9px;margin-top:4px">FBM70 UNIVERSE</div>
+        <div style="color:#888;font-size:11px;margin-top:4px">FBM70 UNIVERSE</div>
       </div>
       <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
         <div style="color:#10b981;font-size:16px;font-weight:700">${(d.tickers||[]).length}</div>
-        <div style="color:#888;font-size:9px;margin-top:4px">IDEA TICKERS</div>
+        <div style="color:#888;font-size:11px;margin-top:4px">IDEA TICKERS</div>
       </div>
     </div>
-    <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">TICKER FUNDAMENTALS</div>
+    <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">TICKER FUNDAMENTALS</div>
     <div style="overflow-x:auto">
       <table class="run-table">
         <thead><tr><th>Ticker</th><th>Name</th><th>ROE</th><th>DER</th><th>P/B</th><th>P/E</th><th>DY</th><th>Data</th><th>Quality</th></tr></thead>
@@ -4268,7 +4271,7 @@ function renderDataPanel(d) {
       </table>
     </div>
     ${(d.data_sources||[]).length ? `<div style="margin-top:12px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">DATA SOURCES</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:5px">DATA SOURCES</div>
       <ul style="margin:0;padding:0 0 0 16px;color:#888;font-size:11px;line-height:1.9">${(d.data_sources||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>
     </div>` : ''}`;
 }
@@ -4283,14 +4286,14 @@ function renderRedBluePanel(d) {
       <div style="background:#ffffff08;border-radius:8px;padding:12px;margin-bottom:10px;border-left:3px solid ${borderC}">
         <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
           <span style="font-weight:700;font-size:13px;color:${verdictC}">${esc((db.verdict||'unknown').toUpperCase())}</span>
-          <span style="background:#ffffff10;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;color:#ef4444">
+          <span style="background:#ffffff10;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;color:#ef4444">
             RISK: ${esc((db.risk_level||'unknown').toUpperCase())}</span>
-          ${db.parse_failed?'<span style="background:#f59e0b20;color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:10px">⚠ PARSE FAILURE</span>':''}
-          <span style="color:#888;font-size:10px;margin-left:auto">${(db.created_at||'').slice(0,16)}</span>
+          ${db.parse_failed?'<span style="background:#f59e0b20;color:#f59e0b;padding:2px 8px;border-radius:4px;font-size:12px">⚠ PARSE FAILURE</span>':''}
+          <span style="color:#888;font-size:12px;margin-left:auto">${(db.created_at||'').slice(0,16)}</span>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
           <div style="background:#ef444415;border-radius:6px;padding:8px">
-            <div style="font-size:10px;font-weight:700;color:#ef4444;margin-bottom:4px">
+            <div style="font-size:12px;font-weight:700;color:#ef4444;margin-bottom:4px">
               🔴 RED TEAM${db.red_score!=null?' · Score: '+db.red_score:''}</div>
             ${findings.length ? `<ul style="margin:0;padding:0 0 0 14px;font-size:11px;color:#ddd;line-height:1.7">
               ${findings.slice(0,5).map(f=>`<li>${esc(typeof f==='string'?f.slice(0,100):JSON.stringify(f).slice(0,100))}</li>`).join('')}
@@ -4298,7 +4301,7 @@ function renderRedBluePanel(d) {
               </ul>` : `<div style="color:#888;font-size:11px">${db.red_score!=null?'Score: '+db.red_score:'No findings parsed'}</div>`}
           </div>
           <div style="background:#22c55e15;border-radius:6px;padding:8px">
-            <div style="font-size:10px;font-weight:700;color:#22c55e;margin-bottom:4px">
+            <div style="font-size:12px;font-weight:700;color:#22c55e;margin-bottom:4px">
               🔵 BLUE TEAM${db.blue_score!=null?' · Score: '+db.blue_score:''}</div>
             <div style="color:#888;font-size:11px">
               ${db.blue_score!=null?'Defense score: '+db.blue_score:db.parse_failed?'Parse failure — score unavailable':'Score unavailable'}</div>
@@ -4316,10 +4319,10 @@ function renderRedBluePanel(d) {
         ].map(([l,v,c])=>`
         <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
           <div style="color:${c};font-size:18px;font-weight:700">${v}</div>
-          <div style="color:#888;font-size:9px;margin-top:4px;text-transform:uppercase">${l}</div>
+          <div style="color:#888;font-size:11px;margin-top:4px;text-transform:uppercase">${l}</div>
         </div>`).join('')}
     </div>
-    <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">DEBATE HISTORY</div>
+    <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:8px">DEBATE HISTORY</div>
     ${debates||'<div style="color:#888;font-size:12px;padding:20px;text-align:center">No debates yet for this idea</div>'}`;
 }
 
@@ -4352,11 +4355,11 @@ function renderExecutionPanel(d) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
         <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
           <div style="color:#f59e0b;font-size:16px;font-weight:700">${pt.backtest_sharpe!=null?pt.backtest_sharpe.toFixed(3):'—'}</div>
-          <div style="color:#888;font-size:9px;margin-top:4px">BACKTEST SHARPE</div>
+          <div style="color:#888;font-size:11px;margin-top:4px">BACKTEST SHARPE</div>
         </div>
         <div style="background:#ffffff08;border-radius:6px;padding:10px;text-align:center">
           <div style="color:#22c55e;font-size:16px;font-weight:700">${(pt.target_sharpe||1.0).toFixed(1)}+</div>
-          <div style="color:#888;font-size:9px;margin-top:4px">TARGET SHARPE</div>
+          <div style="color:#888;font-size:11px;margin-top:4px">TARGET SHARPE</div>
         </div>
       </div>
     </div>
@@ -4366,7 +4369,7 @@ function renderExecutionPanel(d) {
 function renderMarketPanel(d) {
   const events = (d.recent_events||[]).slice(0,10).map(e=>`
     <div style="display:flex;gap:8px;padding:7px 0;border-bottom:1px solid #ffffff08;font-size:12px">
-      <span style="color:#06b6d4;font-size:10px;width:90px;flex-shrink:0">${(e.detected_at||e.event_date||'').slice(0,10)}</span>
+      <span style="color:#06b6d4;font-size:12px;width:90px;flex-shrink:0">${(e.detected_at||e.event_date||'').slice(0,10)}</span>
       <span style="color:#ddd">${esc((e.title||e.event_type||'Event').slice(0,80))}</span>
     </div>`).join('');
   const overlap = (d.ticker_overlap||[]).map(e=>`
@@ -4374,11 +4377,11 @@ function renderMarketPanel(d) {
   `).join('');
   return `
     ${overlap ? `<div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">EVENTS AFFECTING IDEA TICKERS</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">EVENTS AFFECTING IDEA TICKERS</div>
       ${overlap}
     </div>` : ''}
     <div>
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RECENT MARKET EVENTS</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RECENT MARKET EVENTS</div>
       ${events||'<div style="color:#888;font-size:12px;text-align:center;padding:20px">No recent events</div>'}
     </div>`;
 }
@@ -4397,11 +4400,11 @@ function renderKBPanel(d) {
   const liveCount = (d.techniques||[]).filter(t=>t.implemented).length;
   return `
     <div style="margin-bottom:14px">
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RESEARCH ANGLE COVERAGE</div>
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">RESEARCH ANGLE COVERAGE</div>
       ${angles||'<div style="color:#888">No documents yet</div>'}
     </div>
     <div>
-      <div style="font-size:10px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
+      <div style="font-size:12px;color:#888;font-weight:700;letter-spacing:1px;margin-bottom:6px">
         TECHNIQUE ARSENAL (${liveCount} LIVE / ${(d.techniques||[]).length} TOTAL)</div>
       <div style="line-height:2">${techniques||'<div style="color:#888">Loading…</div>'}</div>
     </div>`;
