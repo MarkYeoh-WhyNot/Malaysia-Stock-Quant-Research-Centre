@@ -93,6 +93,21 @@ print(json.dumps({
     assert all(r.values()), r
 
 
+def test_crypto_universe_endpoint_returns_usdt_pairs():
+    out = run_crypto("""
+import json
+from dashboard.api.server import universe
+u = universe()
+syms = [x["symbol"] for x in u["universe"]]
+print(json.dumps({"n": len(syms), "btc": "BTC/USDT" in syms,
+                  "kl": any(s.endswith(".KL") for s in syms)}))
+""")
+    r = json.loads(out.strip().splitlines()[-1])
+    assert r["btc"] is True
+    assert r["kl"] is False
+    assert r["n"] == 20
+
+
 def test_crypto_concierge_prompt_lists_crypto_techniques():
     """The concierge system prompt's arsenal index must carry the CRYPTO
     technique set (and its new tool must return detail for a crypto key)."""

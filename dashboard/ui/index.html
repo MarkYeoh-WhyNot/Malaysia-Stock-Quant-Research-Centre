@@ -1025,7 +1025,7 @@ svg text{font-family:var(--font-mono)}
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label>Stock</label>
+            <label id="sb-pair-label">Stock</label>
             <select id="sb-pair" style="width:100%">
               <option value="1155.KL">1155.KL — Maybank</option>
               <option value="1023.KL">1023.KL — CIMB</option>
@@ -1059,7 +1059,7 @@ svg text{font-family:var(--font-mono)}
         <button class="btn btn-cyan" onclick="runSandbox()" id="sb-run-btn" style="width:100%">
           🧪 Run Backtest
         </button>
-        <div style="margin-top:8px;font-size:12px;color:var(--muted)">
+        <div id="sb-data-note" style="margin-top:8px;font-size:12px;color:var(--muted)">
           Saves idea to DB, fetches 5yr Yahoo Finance .KL data, runs train/val/test split.
         </div>
       </div>
@@ -1075,7 +1075,7 @@ svg text{font-family:var(--font-mono)}
         <div class="panel-head"><span class="panel-title">Signal Type Reference</span></div>
         <table>
           <thead><tr><th>Signal Type</th><th>Example Formula</th><th>Best For</th></tr></thead>
-          <tbody>
+          <tbody id="sb-sigref-body">
             <tr><td style="color:var(--cyan)">sma_crossover</td><td style="color:var(--muted2)">SMA(20) crosses SMA(50) on 1155.KL</td><td>Trending KLCI stocks</td></tr>
             <tr><td style="color:var(--cyan)">ema_crossover</td><td style="color:var(--muted2)">EMA(12) / EMA(26) crossover</td><td>Faster trend following</td></tr>
             <tr><td style="color:var(--cyan)">rsi</td><td style="color:var(--muted2)">RSI(14) &lt; 30 on 5285.KL — oversold plantation</td><td>Oversold KLSE stocks</td></tr>
@@ -1142,7 +1142,7 @@ svg text{font-family:var(--font-mono)}
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:1">
-            <label>Stock</label>
+            <label id="pt-pair-label">Stock</label>
             <select id="pt-pair" style="width:100%">
               <option value="1155.KL">1155.KL — Maybank</option>
               <option value="1023.KL">1023.KL — CIMB</option>
@@ -1465,7 +1465,7 @@ svg text{font-family:var(--font-mono)}
   </div>
 
   <!-- Filter pills -->
-  <div style="margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap">
+  <div id="ev-filter-pills" style="margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap">
     <button class="btn btn-sm btn-cyan active" onclick="filterEvents('all',this)">All</button>
     <button class="btn btn-sm" onclick="filterEvents('earnings_beat',this)">Earnings Beat</button>
     <button class="btn btn-sm" onclick="filterEvents('earnings_miss',this)">Earnings Miss</button>
@@ -1611,6 +1611,64 @@ document.addEventListener('DOMContentLoaded', () => {
       '• "Short SOL/USDT on RSI overbought"<br>' +
       '• "How is idea 123 doing?"<br>' +
       '• "List the ideas I\'ve submitted"';
+
+    // Ticker dropdowns (sandbox + paper trades): the inline options are the
+    // Bursa universe; rebuild both from the market-aware /api/universe.
+    fetch(API + '/universe').then(r => r.json()).then(d => {
+      const opts = (d.universe || []).map(u =>
+        `<option value="${u.symbol}">${u.symbol} — ${u.name}</option>`).join('');
+      if (opts) {
+        for (const id of ['sb-pair', 'pt-pair']) {
+          const sel = document.getElementById(id);
+          if (sel) sel.innerHTML = opts;
+        }
+      }
+    }).catch(() => {});
+    for (const id of ['sb-pair-label', 'pt-pair-label']) {
+      const lbl = document.getElementById(id);
+      if (lbl) lbl.textContent = 'Pair';
+    }
+
+    // Factor Sandbox copy
+    const sbFormula = document.getElementById('sb-formula');
+    if (sbFormula) sbFormula.placeholder =
+      'Describe the signal logic, e.g.:\n\n' +
+      'SMA(20) crosses above SMA(50) on BTC/USDT → long\n' +
+      'Short ETH/USDT when RSI(14) > 75 — overbought fade\n' +
+      'Close breaks below sma(50) on SOL/USDT → short\n' +
+      '20-day momentum ranking on majors → long leaders';
+    const sbNote = document.getElementById('sb-data-note');
+    if (sbNote) sbNote.textContent =
+      'Saves idea to DB, fetches 5yr Binance daily data via ccxt, runs train/val/test split.';
+    const sbRef = document.getElementById('sb-sigref-body');
+    if (sbRef) sbRef.innerHTML = [
+      ['sma_crossover', 'SMA(20) crosses SMA(50) on BTC/USDT', 'Trending majors'],
+      ['ema_crossover', 'EMA(12) / EMA(26) crossover', 'Faster trend following'],
+      ['rsi', 'RSI(14) &gt; 75 → short; RSI(14) &lt; 30 → long', 'Overbought/oversold fades'],
+      ['bollinger', 'Price below BB lower → long', 'Mean reversion'],
+      ['momentum', '20-day return ranking, long/short', 'Trend following both directions'],
+      ['macd', 'MACD line crosses signal', 'Trend confirmation'],
+      ['reversal', 'Fade a 2-day spike &gt; 15%', 'Short-horizon mean reversion'],
+    ].map(r => `<tr><td style="color:var(--cyan)">${r[0]}</td>` +
+               `<td style="color:var(--muted2)">${r[1]}</td><td>${r[2]}</td></tr>`).join('');
+
+    // Event feed: crypto event-type pills; hide the Bursa-only economic
+    // calendar strip (economic_calendar has no crypto source).
+    const evPills = document.getElementById('ev-filter-pills');
+    if (evPills) evPills.innerHTML = [
+      ['all', 'All', 'btn btn-sm btn-cyan active'],
+      ['funding_spike', 'Funding', 'btn btn-sm'],
+      ['oi_surge', 'OI Surge', 'btn btn-sm'],
+      ['basis_dislocation', 'Basis', 'btn btn-sm'],
+      ['btc_move', 'BTC Move', 'btn btn-sm'],
+      ['eth_move', 'ETH Move', 'btn btn-sm'],
+      ['listing', 'Listing', 'btn btn-sm'],
+      ['unlock', 'Unlock', 'btn btn-sm'],
+      ['dxy_move', 'Macro', 'btn btn-sm'],
+      ['kb_only', 'KB Only', 'btn btn-sm'],
+    ].map(p => `<button class="${p[2]}" onclick="filterEvents('${p[0]}',this)">${p[1]}</button>`).join('');
+    const calStrip = document.getElementById('calendar-strip-panel');
+    if (calStrip) calStrip.style.display = 'none';
   }
 });
 let _allMCLogs = [];
@@ -3538,6 +3596,12 @@ const EV_COLOURS = {
   fed_decision: '#64748b', china_pmi_weak: '#64748b',
   analyst_upgrade: '#3b82f6', analyst_downgrade: '#ef4444',
   irrelevant: '#374151',
+  // Crypto event types (cards rendered generic gray before these existed)
+  funding_spike: '#f97316', oi_surge: '#f97316',
+  basis_dislocation: '#f59e0b', btc_move: '#f59e0b', eth_move: '#f59e0b',
+  btc_dominance_shift: '#f59e0b', listing: '#3b82f6', unlock: '#8b5cf6',
+  depeg: '#ef4444', dxy_move: '#64748b', yield_move: '#64748b',
+  regulatory: '#64748b',
 };
 
 const ACTION_COLOURS = {gate0_idea:'#10b981', alert:'#f59e0b', kb_only:'#64748b', ignore:'#374151'};

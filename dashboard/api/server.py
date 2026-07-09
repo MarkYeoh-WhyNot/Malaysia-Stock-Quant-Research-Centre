@@ -150,6 +150,16 @@ async def prices():
     return payload
 
 
+@app.get("/api/universe")
+def universe():
+    """The active market's tradable universe (symbol/name/sector) — feeds the
+    dashboard's ticker dropdowns so the same HTML serves both markets."""
+    from config.settings import MARKET, KLCI_STOCKS
+    return {"market": MARKET,
+            "universe": [{"symbol": s["symbol"], "name": s["name"],
+                          "sector": s["sector"]} for s in KLCI_STOCKS]}
+
+
 # ─── Agent Progress ──────────────────────────────────────────────────────────
 
 @app.get("/api/agent-progress")
