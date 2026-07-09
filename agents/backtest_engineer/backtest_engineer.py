@@ -1443,6 +1443,38 @@ Rules:
         "max_train_val_gap":   1.00,   # bypassed — improving trend is not overfitting
     }
 
+    # ── Noise-aware train/val gap tolerance ────────────────────────────────────
+    # A fixed |train − val| Sharpe threshold (the old 0.30) is far tighter than
+    # the sampling noise of a Sharpe estimated on a ~20% validation slice: the
+    # standard error of an annualised Sharpe over a few hundred bars is ~0.5–0.7,
+    # so the SE of the gap is ~0.8. A 0.30 fixed cap therefore rejects genuinely
+    # stationary edges the majority of the time (proven by the calibration
+    # harness: winner pass rate ~45%, 100% of rejections here). The gap is only
+    # evidence of OVERFITTING when it exceeds what noise alone would produce, so
+    # the tolerance is the max of the fixed floor and a k-sigma noise band.
+    _TVG_SIGMA_K = 2.0   # allow gaps up to 2σ of sampling noise before flagging
+
+    @staticmethod
+    def _sharpe_stderr(sharpe_ann: float, n_bars: int, ann: float) -> float:
+        """Standard error of an annualised Sharpe estimate (Lo 2002, IID form):
+        se(SR_per_bar) = sqrt((1 + 0.5·SR_per_bar²)/n); annualise by sqrt(ann)."""
+        if n_bars < 2 or ann <= 0:
+            return float("inf")
+        sr_pb = sharpe_ann / np.sqrt(ann)
+        return float(np.sqrt((1.0 + 0.5 * sr_pb * sr_pb) / n_bars) * np.sqrt(ann))
+
+    @classmethod
+    def _train_val_gap_tolerance(cls, train_sharpe: float, val_sharpe: float,
+                                 n_train: int, n_val: int, ann: float,
+                                 floor: float) -> float:
+        """Max allowable |train − val| Sharpe before it counts as overfitting.
+        Never below ``floor`` (with lots of data a real 0.30 gap still matters),
+        but widened to a k-sigma band of the gap's sampling noise for short
+        slices — so genuine stationary edges are not rejected on Sharpe noise."""
+        se_gap = float(np.hypot(cls._sharpe_stderr(train_sharpe, n_train, ann),
+                                cls._sharpe_stderr(val_sharpe, n_val, ann)))
+        return max(float(floor), cls._TVG_SIGMA_K * se_gap)
+
     # ── Formula verification ──────────────────────────────────────────────────
 
     def verify_formula(self, params: dict, factor_formula: str, df: pd.DataFrame) -> dict:
@@ -2071,9 +2103,18 @@ Return JSON only:
         # window, NOT parameter overfitting.  Only drawdown is checked per-split;
         # the train_val_gap limit is relaxed to 1.0 (an improving train→val→test
         # trend is healthy, not a sign of overfitting).
-        _max_tvg = (self.FUNDAMENTAL_SCREEN_THRESHOLDS["max_train_val_gap"]
-                    if params.get("signal_type") == "fundamental_screen"
-                    else GATE_CONFIG.stage3_max_train_val_gap)
+        # Noise-aware tolerance (see _train_val_gap_tolerance): the fundamental
+        # branch keeps its own relaxed constant; active DSL signals get a
+        # tolerance widened from the fixed floor by the Sharpe sampling noise of
+        # these specific train/val slice lengths.
+        if params.get("signal_type") == "fundamental_screen":
+            _max_tvg = self.FUNDAMENTAL_SCREEN_THRESHOLDS["max_train_val_gap"]
+        else:
+            _max_tvg = self._train_val_gap_tolerance(
+                train_r["sharpe"], val_r["sharpe"],
+                len(train_df), len(val_df),
+                BARS_PER_YEAR.get(interval, 252),
+                GATE_CONFIG.stage3_max_train_val_gap)
         if params.get("signal_type") == "fundamental_screen":
             gate2_pass = (
                 train_r["max_dd"] <= max_dd_threshold
@@ -2515,6 +2556,7 @@ Return JSON only:
             "oos_degradation":     oos_deg,
             "regimes":             reg,
             "train_val_gap":       round(train_val_gap, 3),
+            "train_val_gap_tol":   round(_max_tvg, 3),
             "params":              params,
             "bars_total":          len(df),
             "factor_formula":      row["factor_formula"] or "",
@@ -3052,6 +3094,7 @@ Return JSON only:
             "oos_degradation":     oos_deg,
             "regimes":             reg,
             "train_val_gap":       round(train_val_gap, 3),
+            "train_val_gap_tol":   round(_max_tvg, 3),
             "params":              params,
             "rebalance_log":       rebalance_log,
             "holding_period_class": hp_class,
