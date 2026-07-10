@@ -550,6 +550,8 @@ def _rep(representable, rep_type=None, leaves=(), factor=None, missing=()):
 
 _BURSA_ARSENAL_V2: dict[str, dict] = {
     "kalman_filter": {
+        "description": "A recursive filter that smooths noisy price series into a "
+                       "cleaner trend estimate with less lag than a moving average.",
         "family_id": "signal_filtering",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["kalman_smoothed_level"]),
@@ -557,6 +559,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "substituting an SMA/EMA would misrepresent the technique"},
     },
     "hidden_markov_model": {
+        "description": "A statistical model that classifies the market into hidden "
+                       "regimes (bull/bear/sideways) from price behaviour alone.",
         "family_id": "regime_detection",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["regime_state"]),
@@ -564,6 +568,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "regime probability"},
     },
     "garch": {
+        "description": "Models how volatility clusters and evolves over time, "
+                       "forecasting near-term risk rather than direction.",
         "family_id": "volatility_modeling",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["vol_forecast"]),
@@ -571,6 +577,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "condition; no vol-forecast leaf exists"},
     },
     "information_coefficient": {
+        "description": "Measures how well a factor's ranking predicts future "
+                       "returns across the universe — the standard cross-sectional "
+                       "validation metric.",
         "family_id": "validation_methodology",
         "strategy_shape": "methodology",
         "representability": _rep(False),
@@ -578,6 +587,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "(Stage 3 cross-sectional IC), not a tradable signal"},
     },
     "sma_crossover": {
+        "description": "Goes long when a fast simple moving average crosses above "
+                       "a slower one — the classic trend-following signal.",
         "family_id": "trend_following",
         "strategy_shape": "dsl_tree",
         "representability": _rep(True, "dsl_tree", leaves=["sma_cross"]),
@@ -585,6 +596,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                                       "direction": "above"}}},
     },
     "rsi_mean_reversion": {
+        "description": "Buys when the Relative Strength Index signals oversold "
+                       "conditions and exits once it recovers, betting on "
+                       "short-term reversion.",
         "family_id": "mean_reversion_price",
         "strategy_shape": "dsl_tree",
         "representability": _rep(True, "dsl_tree", leaves=["rsi"]),
@@ -592,6 +606,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "exit": {"leaf": "rsi", "period": 14, "above": 55}}},
     },
     "bollinger_squeeze": {
+        "description": "Waits for volatility to compress into tight Bollinger "
+                       "Bands, then trades the breakout once the bands expand.",
         "family_id": "volatility_breakout",
         "strategy_shape": "dsl_tree",
         # The breakout-confirmation leg is representable; the squeeze-width
@@ -604,6 +620,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
             {"leaf": "volume_ratio", "period": 20, "min_ratio": 1.5}]}}},
     },
     "event_study": {
+        "description": "Measures abnormal returns around a specific announcement "
+                       "date (earnings, dividends, index changes) versus a "
+                       "normal-return baseline.",
         "family_id": "event_window",
         "strategy_shape": "methodology",
         "representability": _rep(False),
@@ -612,6 +631,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "(div_days_to_ex) has no leaves"},
     },
     "pead": {
+        "description": "Captures the tendency for a stock to keep drifting in the "
+                       "direction of an earnings surprise for weeks afterward.",
         "family_id": "event_window",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["earnings_surprise"]),
@@ -620,12 +641,16 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "historical genericization failure mode"},
     },
     "pca_factor_model": {
+        "description": "Decomposes the return covariance matrix into a small "
+                       "number of statistically independent systematic factors.",
         "family_id": "factor_models",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["pca_loading"]),
         "example": {"none": "no factor computes PCA loadings over the universe"},
     },
     "fama_french_3factor": {
+        "description": "Explains returns via market, size (SMB), and value (HML) "
+                       "factor loadings, localised for Bursa.",
         "family_id": "factor_models",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["book_to_market", "size_factor"]),
@@ -634,6 +659,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "instead"},
     },
     "epf_flow_tracker": {
+        "description": "Tracks accumulation or distribution by Malaysia's "
+                       "dominant institutional investor (EPF) as a directional "
+                       "signal.",
         "family_id": "flow_institutional",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["institutional_flow"]),
@@ -641,6 +669,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "data"},
     },
     "cpo_correlation": {
+        "description": "Trades plantation stocks off the lagged relationship "
+                       "between crude palm oil futures and their share prices.",
         "family_id": "commodity_linkage",
         "strategy_shape": "dsl_tree",
         "representability": _rep(True, "dsl_tree", leaves=["cpo_change"]),
@@ -648,6 +678,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                                       "min_pct": 0.03}}},
     },
     "opr_banking_signal": {
+        "description": "Positions banking stocks around Bank Negara Malaysia's "
+                       "interest-rate cycle, which drives their net interest "
+                       "margins.",
         "family_id": "macro_rates",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["opr_decision"]),
@@ -655,6 +688,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "state"},
     },
     "cross_sectional_momentum": {
+        "description": "Ranks the universe by trailing return and goes long the "
+                       "top performers, rebalanced periodically.",
         "family_id": "cross_sectional_ranking",
         "strategy_shape": "cross_sectional_factor",
         "representability": _rep(True, "cross_sectional_factor",
@@ -664,6 +699,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
             "top_n": 6, "bottom_n": 0, "rebalance_bars": 21}},
     },
     "short_term_reversal": {
+        "description": "Bets that a sharp short-term price drop with no "
+                       "fundamental cause will bounce back within days.",
         "family_id": "mean_reversion_price",
         "strategy_shape": "dsl_tree",
         "representability": _rep(True, "dsl_tree", leaves=["reversal"]),
@@ -671,6 +708,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                                       "max_return": -0.06}}},
     },
     "low_volatility_anomaly": {
+        "description": "Goes long the least volatile stocks in the universe, "
+                       "exploiting the tendency for low-vol names to outperform "
+                       "on a risk-adjusted basis.",
         "family_id": "cross_sectional_ranking",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["realized_vol"]),
@@ -678,6 +718,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "cross-sectional registry yet"},
     },
     "gap_fill": {
+        "description": "Bets that an overnight price gap with no fundamental "
+                       "cause will retrace back toward the prior close.",
         "family_id": "mean_reversion_price",
         "strategy_shape": "dsl_tree",
         "representability": _rep(True, "dsl_tree", leaves=["gap"]),
@@ -685,6 +727,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                                       "min_pct": 0.02}}},
     },
     "opening_range_breakout": {
+        "description": "Trades a breakout above or below the first session's "
+                       "trading range on high-conviction days.",
         "family_id": "volatility_breakout",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["intraday_opening_range"]),
@@ -692,6 +736,9 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "system does not ingest for Bursa"},
     },
     "garch_volatility_overlay": {
+        "description": "Uses a GARCH volatility forecast to scale position size "
+                       "down in high-risk regimes, rather than as a standalone "
+                       "signal.",
         "family_id": "volatility_modeling",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["vol_forecast"]),
@@ -699,6 +746,8 @@ _BURSA_ARSENAL_V2: dict[str, dict] = {
                             "condition; no vol-forecast leaf exists"},
     },
     "hmm_regime_detector": {
+        "description": "Uses a Hidden Markov Model to classify the current "
+                       "regime and condition other strategies on it.",
         "family_id": "regime_detection",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["regime_state"]),
@@ -841,6 +890,10 @@ class TechniqueLibrary:
             return f"[Technique '{key}' not found in library]"
         lines = [
             f"TECHNIQUE: {tech['name']}",
+        ]
+        if tech.get("description"):
+            lines.append(tech["description"])
+        lines += [
             f"Research angle: {tech.get('angle', '?')}",
             f"Market applicability: {tech.get('market_applicability', '?')}",
             f"Complexity: {tech.get('complexity', '?')} | "
@@ -935,6 +988,7 @@ class TechniqueLibrary:
             result.append({
                 "key":                  key,
                 "name":                 tech["name"],
+                "description":          tech.get("description", ""),
                 "angle":                tech.get("angle", ""),
                 "implemented":          tech.get("implemented", False),
                 "complexity":           tech.get("complexity", ""),

@@ -153,7 +153,7 @@ svg text{font-family:var(--font-mono)}
 .arsenal-table tbody tr{cursor:pointer;transition:background .1s}
 .arsenal-table tbody tr:hover{background:var(--bg3)}
 .at-name{font-weight:bold;color:var(--text);font-size:12px}
-.at-key{font-size:10px;color:var(--muted);font-family:monospace;margin-top:1px}
+.at-desc{font-size:11px;color:var(--muted2);margin-top:2px;max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .at-dim{color:var(--muted2)}
 .tc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
 .tc-name{font-size:12px;font-weight:bold;color:var(--text);line-height:1.3}
@@ -3958,11 +3958,28 @@ const _ARSENAL_SHAPE_LABEL = {
   dsl_tree: 'DSL Tree', cross_sectional_factor: 'Cross-Sectional Factor',
   methodology: 'Methodology', unimplemented_concept: 'No Vocabulary Yet',
 };
+const _ARSENAL_SHAPE_TOOLTIP = {
+  dsl_tree: 'Directly executable as a single rule in the backtester',
+  cross_sectional_factor: 'Executable as a ranked long/short basket across the universe, not a single-instrument rule',
+  methodology: 'A validation tool applied to other strategies — not a tradable signal itself',
+  unimplemented_concept: 'A real concept, but no leaf or factor exists yet to express it',
+};
+const _ARSENAL_STATUS_TOOLTIP = {
+  live: 'Implemented and wired into the live pipeline',
+  planned: 'Documented in the arsenal but not yet coded',
+  deferred: 'Was implemented or planned, now paused',
+};
 const _ARSENAL_EXIT_LABEL = {
   signal: 'Signal exit', event: 'Event exit',
   signal_or_time: 'Signal + time', time_fallback: 'Time fallback',
 };
 const _ARSENAL_RISK_LABEL = {low:'🟢 low', medium:'🟡 med', high:'🔴 high'};
+
+function _arsenalShapeBadge(t) {
+  if (!t.strategy_shape) return '<span class="at-dim">—</span>';
+  const tip = _ARSENAL_SHAPE_TOOLTIP[t.strategy_shape] || '';
+  return `<span class="tc-shape-badge ${t.strategy_shape}" title="${esc(tip)}">${_ARSENAL_SHAPE_LABEL[t.strategy_shape] || t.strategy_shape}</span>`;
+}
 const _ARSENAL_SORT_KEYS = {
   name:   t => t.name || '',
   angle:  t => t.angle || '',
@@ -3981,9 +3998,10 @@ function arsenalSort(key) {
 
 function _arsenalStatusBadge(t) {
   const status = t.implementation_status || (t.implemented ? 'live' : 'planned');
-  if (status === 'live') return '<span class="tc-badge impl">✅ Live</span>';
-  if (status === 'deferred') return '<span class="tc-badge high">⏸ Deferred</span>';
-  return '<span class="tc-badge pending">🔲 Planned</span>';
+  const tip = _ARSENAL_STATUS_TOOLTIP[status] || '';
+  if (status === 'live') return `<span class="tc-badge impl" title="${esc(tip)}">✅ Live</span>`;
+  if (status === 'deferred') return `<span class="tc-badge high" title="${esc(tip)}">⏸ Deferred</span>`;
+  return `<span class="tc-badge pending" title="${esc(tip)}">🔲 Planned</span>`;
 }
 
 function renderArsenal() {
@@ -4009,18 +4027,14 @@ function renderArsenal() {
   const getSort = _ARSENAL_SORT_KEYS[_arsenalSortKey] || _ARSENAL_SORT_KEYS.name;
   techs = [...techs].sort((a, b) => getSort(a).localeCompare(getSort(b)) * _arsenalSortDir);
 
-  document.getElementById('arsenal-tbody').innerHTML = techs.map(t => {
-    const shapeBadge = t.strategy_shape
-      ? `<span class="tc-shape-badge ${t.strategy_shape}">${_ARSENAL_SHAPE_LABEL[t.strategy_shape] || t.strategy_shape}</span>`
-      : '<span class="at-dim">—</span>';
-    return `<tr onclick="openArsenalModal('${t.key}')">
-      <td><div class="at-name">${esc(t.name)}</div><div class="at-key">${esc(t.key)}</div></td>
+  document.getElementById('arsenal-tbody').innerHTML = techs.map(t => `<tr onclick="openArsenalModal('${t.key}')">
+      <td><div class="at-name">${esc(t.name)}</div><div class="at-desc" title="${esc(t.description||'')}">${esc(t.description || '')}</div></td>
       <td class="at-dim">${esc(t.angle || '—')}</td>
       <td class="at-dim">${esc(t.family_id || '—')}</td>
-      <td>${shapeBadge}</td>
+      <td>${_arsenalShapeBadge(t)}</td>
       <td>${_arsenalStatusBadge(t)}</td>
-    </tr>`;
-  }).join('') || '<tr><td colspan="5" style="color:var(--muted);padding:20px">No techniques match the current filter.</td></tr>';
+    </tr>`
+  ).join('') || '<tr><td colspan="5" style="color:var(--muted);padding:20px">No techniques match the current filter.</td></tr>';
 
   document.querySelectorAll('.arsenal-table th').forEach(th => {
     const key = th.id.replace('ath-', '');
@@ -4118,15 +4132,14 @@ function openArsenalModal(key) {
   const icBench = t.ic_benchmark ? `<div class="tc-ic-bench">📐 IC: ${esc(String(t.ic_benchmark))}</div>` : '';
   const stockTypes = (t.stock_types||[]).join(', ');
   const holdingPeriods = (t.holding_periods||[]).join(', ');
-  const shapeBadge = t.strategy_shape
-    ? `<span class="tc-shape-badge ${t.strategy_shape}">${_ARSENAL_SHAPE_LABEL[t.strategy_shape] || t.strategy_shape}</span>` : '';
 
   document.getElementById('am-title').textContent = t.name;
   document.getElementById('am-subtitle').textContent = `${t.key} · ${t.angle || '—'}`;
   document.getElementById('am-body').innerHTML = `
+    ${t.description ? `<div class="tc-profile-text" style="font-size:13px;color:var(--text);margin-bottom:10px">${esc(t.description)}</div>` : ''}
     <div class="tc-badges" style="margin-bottom:10px">
       ${_arsenalStatusBadge(t)}
-      ${shapeBadge}
+      ${_arsenalShapeBadge(t)}
       <span class="tc-badge ${cplxClass}">${t.complexity}</span>
       <span class="tc-badge ${cplxClass}" title="Overfitting risk">${_ARSENAL_RISK_LABEL[t.overfitting_risk]||t.overfitting_risk}</span>
     </div>

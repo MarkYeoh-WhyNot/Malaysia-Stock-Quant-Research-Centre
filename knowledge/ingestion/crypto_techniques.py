@@ -319,6 +319,9 @@ def _rep(representable, rep_type=None, leaves=(), factor=None, missing=()):
 
 _CRYPTO_ARSENAL_V2: dict[str, dict] = {
     "funding_rate_carry": {
+        "description": "Collects the periodic funding payment on perpetual "
+                       "futures by holding the side that gets paid, when "
+                       "funding is persistently one-sided.",
         "family_id": "carry_funding",
         "strategy_shape": "cross_sectional_factor",
         # Single-name funding conditions also exist as DSL leaves
@@ -332,6 +335,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
             "top_n": 3, "bottom_n": 3, "rebalance_bars": 24}},
     },
     "perp_basis_arb": {
+        "description": "Trades the price gap between a perpetual future and its "
+                       "spot price, converging as the two prices re-align.",
         "family_id": "carry_funding",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["spot_perp_basis"]),
@@ -340,6 +345,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "single-instrument engine"},
     },
     "xs_momentum_majors": {
+        "description": "Ranks the liquid pair universe by trailing return and "
+                       "goes long winners / short losers.",
         "family_id": "cross_sectional_ranking",
         "strategy_shape": "cross_sectional_factor",
         "representability": _rep(True, "cross_sectional_factor",
@@ -349,6 +356,9 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
             "top_n": 4, "bottom_n": 4, "rebalance_bars": 21}},
     },
     "xs_reversal_short_term": {
+        "description": "Bets that the biggest 1-3 day movers in the universe "
+                       "will revert, fading extreme short-term winners and "
+                       "losers.",
         "family_id": "cross_sectional_ranking",
         "strategy_shape": "cross_sectional_factor",
         "representability": _rep(True, "cross_sectional_factor",
@@ -358,6 +368,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
             "top_n": 4, "bottom_n": 4, "rebalance_bars": 3}},
     },
     "btc_beta_neutralization": {
+        "description": "Hedges out an altcoin's BTC exposure so only its "
+                       "BTC-independent (idiosyncratic) return remains.",
         "family_id": "stat_arb",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["btc_beta_residual"]),
@@ -366,6 +378,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "current engine"},
     },
     "pairs_cointegration": {
+        "description": "Trades the spread between two historically co-moving "
+                       "tokens, betting on reversion when it diverges.",
         "family_id": "stat_arb",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["pair_spread_zscore"]),
@@ -373,6 +387,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "single-instrument DSL and basket engine"},
     },
     "garch_vol_regime": {
+        "description": "Uses a GARCH volatility forecast to scale position "
+                       "size, sizing down ahead of expected turbulence.",
         "family_id": "volatility_modeling",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["vol_forecast"]),
@@ -380,6 +396,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "condition; no vol-forecast leaf exists"},
     },
     "hmm_regime": {
+        "description": "Classifies the market into bull/bear/chop regimes and "
+                       "conditions strategy choice on the detected state.",
         "family_id": "regime_detection",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["regime_state"]),
@@ -387,6 +405,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "regime probability"},
     },
     "exchange_flow_signal": {
+        "description": "Reads large token movements on/off exchanges as an "
+                       "accumulation or distribution signal.",
         "family_id": "flow_institutional",
         "strategy_shape": "unimplemented_concept",
         "representability": _rep(False, missing=["exchange_netflow"]),
@@ -394,6 +414,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "wired, so no leaf can carry it"},
     },
     "oi_liquidation_cascade": {
+        "description": "Fades crowded leveraged positioning, trading the "
+                       "snapback after a forced-liquidation cascade.",
         "family_id": "positioning_leverage",
         "strategy_shape": "unimplemented_concept",
         # funding_level/funding_zscore capture only the funding fragment of the
@@ -406,6 +428,9 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "do not express the cascade thesis"},
     },
     "cross_sectional_ic": {
+        "description": "Measures how well a signal's ranking predicts future "
+                       "returns across the liquid pair universe — the core "
+                       "validation gate.",
         "family_id": "validation_methodology",
         "strategy_shape": "methodology",
         "representability": _rep(False),
@@ -413,6 +438,8 @@ _CRYPTO_ARSENAL_V2: dict[str, dict] = {
                             "not a tradable signal"},
     },
     "deflated_sharpe": {
+        "description": "Discounts a backtested Sharpe ratio for the number of "
+                       "trials run, guarding against data-mined 'edges'.",
         "family_id": "validation_methodology",
         "strategy_shape": "methodology",
         "representability": _rep(False),

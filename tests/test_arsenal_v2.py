@@ -52,6 +52,13 @@ def test_entry_has_v2_fields(market, key, tech):
 
 
 @pytest.mark.parametrize("market,key,tech", _ALL, ids=_IDS)
+def test_entry_has_description(market, key, tech):
+    desc = tech.get("description")
+    assert isinstance(desc, str) and len(desc) > 15, \
+        f"{market}:{key} needs a one-sentence description"
+
+
+@pytest.mark.parametrize("market,key,tech", _ALL, ids=_IDS)
 def test_shape_consistent_with_example_and_representability(market, key, tech):
     shape, ex, rep = tech["strategy_shape"], tech["example"], tech["representability"]
     if shape == "dsl_tree":
