@@ -143,11 +143,18 @@ svg text{font-family:var(--font-mono)}
 .arsenal-filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
 .arsenal-filter-btn{background:var(--bg3);border:1px solid var(--border);color:var(--muted2);padding:3px 10px;border-radius:12px;font-size:12px;cursor:pointer;font-family:inherit;transition:all .12s}
 .arsenal-filter-btn:hover,.arsenal-filter-btn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(6,182,212,.08)}
-.technique-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:10px}
-.technique-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:14px;position:relative;transition:border-color .15s}
-.technique-card:hover{border-color:var(--cyan)}
-.technique-card.implemented{border-left:3px solid var(--green)}
-.technique-card.pending{border-left:3px solid var(--muted)}
+.arsenal-table{width:100%;border-collapse:collapse;font-size:12px}
+.arsenal-table th{text-align:left;padding:7px 10px;color:var(--muted);border-bottom:1px solid var(--border);cursor:pointer;white-space:nowrap;user-select:none}
+.arsenal-table th:hover{color:var(--cyan)}
+.arsenal-table th.sorted{color:var(--cyan)}
+.arsenal-table th.sorted::after{content:" ▾"}
+.arsenal-table th.sorted.asc::after{content:" ▴"}
+.arsenal-table td{padding:7px 10px;border-bottom:1px solid var(--bg4);vertical-align:middle}
+.arsenal-table tbody tr{cursor:pointer;transition:background .1s}
+.arsenal-table tbody tr:hover{background:var(--bg3)}
+.at-name{font-weight:bold;color:var(--text);font-size:12px}
+.at-key{font-size:10px;color:var(--muted);font-family:monospace;margin-top:1px}
+.at-dim{color:var(--muted2)}
 .tc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
 .tc-name{font-size:12px;font-weight:bold;color:var(--text);line-height:1.3}
 .tc-key{font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px}
@@ -530,8 +537,21 @@ svg text{font-family:var(--font-mono)}
     <button class="arsenal-filter-btn" onclick="arsenalFilterExitClass('meta',this)">Meta</button>
   </div>
 
-  <div class="technique-grid" id="technique-grid">
-    <div style="color:var(--muted);padding:20px">Loading techniques…</div>
+  <div style="overflow-x:auto;border:1px solid var(--border);border-radius:6px">
+    <table class="arsenal-table" id="arsenal-table">
+      <thead>
+        <tr>
+          <th id="ath-name" onclick="arsenalSort('name')">Technique</th>
+          <th id="ath-angle" onclick="arsenalSort('angle')">Angle</th>
+          <th id="ath-family" onclick="arsenalSort('family')">Family</th>
+          <th id="ath-shape" onclick="arsenalSort('shape')">Shape</th>
+          <th id="ath-status" onclick="arsenalSort('status')">Status</th>
+        </tr>
+      </thead>
+      <tbody id="arsenal-tbody">
+        <tr><td colspan="5" style="color:var(--muted);padding:20px">Loading techniques…</td></tr>
+      </tbody>
+    </table>
   </div>
 </div>
 
@@ -1539,6 +1559,20 @@ svg text{font-family:var(--font-mono)}
 </div>
 
 </main>
+</div>
+
+<!-- ── Arsenal technique detail ─────────────────────────────────────────────── -->
+<div class="modal-overlay" id="arsenal-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div style="font-size:14px;font-weight:bold;color:var(--cyan)" id="am-title"></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px" id="am-subtitle"></div>
+      </div>
+      <button class="modal-close" onclick="closeArsenalModal()">✕</button>
+    </div>
+    <div id="am-body"></div>
+  </div>
 </div>
 
 <!-- ═══ IDEA DETAIL MODAL ══════════════════════════════════════════════════ -->
@@ -3918,6 +3952,40 @@ function arsenalFilterExitClass(cls, btn) {
   renderArsenal();
 }
 
+// Shared label maps — used by both the table row and the detail modal, so
+// they can never drift apart from each other.
+const _ARSENAL_SHAPE_LABEL = {
+  dsl_tree: 'DSL Tree', cross_sectional_factor: 'Cross-Sectional Factor',
+  methodology: 'Methodology', unimplemented_concept: 'No Vocabulary Yet',
+};
+const _ARSENAL_EXIT_LABEL = {
+  signal: 'Signal exit', event: 'Event exit',
+  signal_or_time: 'Signal + time', time_fallback: 'Time fallback',
+};
+const _ARSENAL_RISK_LABEL = {low:'🟢 low', medium:'🟡 med', high:'🔴 high'};
+const _ARSENAL_SORT_KEYS = {
+  name:   t => t.name || '',
+  angle:  t => t.angle || '',
+  family: t => t.family_id || '',
+  shape:  t => t.strategy_shape || '',
+  status: t => t.implementation_status || (t.implemented ? 'live' : 'planned'),
+};
+let _arsenalSortKey = 'name';
+let _arsenalSortDir = 1;
+
+function arsenalSort(key) {
+  if (_arsenalSortKey === key) _arsenalSortDir *= -1;
+  else { _arsenalSortKey = key; _arsenalSortDir = 1; }
+  renderArsenal();
+}
+
+function _arsenalStatusBadge(t) {
+  const status = t.implementation_status || (t.implemented ? 'live' : 'planned');
+  if (status === 'live') return '<span class="tc-badge impl">✅ Live</span>';
+  if (status === 'deferred') return '<span class="tc-badge high">⏸ Deferred</span>';
+  return '<span class="tc-badge pending">🔲 Planned</span>';
+}
+
 function renderArsenal() {
   let techs = _arsenalData;
 
@@ -3938,185 +4006,148 @@ function renderArsenal() {
   // Strategy class filter
   if (_arsenalClassFilter) techs = techs.filter(t => t.strategy_class === _arsenalClassFilter);
 
-  const complexityColors = {low:'low', medium:'medium', high:'high'};
-  const riskLabels = {low:'🟢 low', medium:'🟡 med', high:'🔴 high'};
+  const getSort = _ARSENAL_SORT_KEYS[_arsenalSortKey] || _ARSENAL_SORT_KEYS.name;
+  techs = [...techs].sort((a, b) => getSort(a).localeCompare(getSort(b)) * _arsenalSortDir);
 
-  const exitBadgeLabel = {
-    signal:        'Signal exit',
-    event:         'Event exit',
-    signal_or_time:'Signal + time',
-    time_fallback: 'Time fallback',
-  };
-
-  document.getElementById('technique-grid').innerHTML = techs.map(t => {
-    const implClass = t.implemented ? 'implemented' : 'pending';
-    const implStatus = t.implementation_status || (t.implemented ? 'live' : 'planned');
-    const implBadge = implStatus === 'live'
-      ? '<span class="tc-badge impl">✅ LIVE</span>'
-      : implStatus === 'deferred'
-      ? '<span class="tc-badge high">⏸ DEFERRED</span>'
-      : '<span class="tc-badge pending">🔲 PLANNED</span>';
-    const cplxClass = complexityColors[t.complexity] || 'medium';
-    const useItems  = (t.when_to_use||[]).slice(0,3).map(u =>
-      `<li>${esc(u)}</li>`).join('');
-    const avoidItems= (t.when_to_avoid||[]).map(u =>
-      `<li class="tc-avoid-list">${esc(u)}</li>`).join('');
-    const icBench = t.ic_benchmark
-      ? `<div class="tc-ic-bench">📐 IC: ${esc(String(t.ic_benchmark).slice(0,80))}</div>` : '';
-    const stockTypes = (t.stock_types||[]).join(', ');
-    const holdingPeriods = (t.holding_periods||[]).join(', ');
-
-    // ── Arsenal v2: Signature Panel ─────────────────────────────────────────
-    const shapeLabel = {
-      dsl_tree: 'DSL Tree', cross_sectional_factor: 'Cross-Sectional Factor',
-      methodology: 'Methodology', unimplemented_concept: 'No Vocabulary Yet',
-    };
+  document.getElementById('arsenal-tbody').innerHTML = techs.map(t => {
     const shapeBadge = t.strategy_shape
-      ? `<span class="tc-shape-badge ${t.strategy_shape}">${shapeLabel[t.strategy_shape] || t.strategy_shape}</span>`
-      : '';
+      ? `<span class="tc-shape-badge ${t.strategy_shape}">${_ARSENAL_SHAPE_LABEL[t.strategy_shape] || t.strategy_shape}</span>`
+      : '<span class="at-dim">—</span>';
+    return `<tr onclick="openArsenalModal('${t.key}')">
+      <td><div class="at-name">${esc(t.name)}</div><div class="at-key">${esc(t.key)}</div></td>
+      <td class="at-dim">${esc(t.angle || '—')}</td>
+      <td class="at-dim">${esc(t.family_id || '—')}</td>
+      <td>${shapeBadge}</td>
+      <td>${_arsenalStatusBadge(t)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" style="color:var(--muted);padding:20px">No techniques match the current filter.</td></tr>';
 
-    let signaturePanel = '';
-    if (t.strategy_shape) {
-      const rep = t.representability || {};
-      const ex  = t.example || {};
-      const reqBits = [];
-      if ((rep.required_leaves||[]).length) reqBits.push(`leaves: ${rep.required_leaves.join(', ')}`);
-      if (rep.required_factor) reqBits.push(`factor: ${rep.required_factor}`);
-      const repLine = rep.is_representable
-        ? `<div class="tc-sig-leaves">✅ Representable (${esc(rep.representation_type||'')})${reqBits.length ? ' — requires ' + esc(reqBits.join('; ')) : ''}</div>`
-        : `<div class="tc-sig-leaves" style="color:var(--red)">🚫 Not representable with the current leaf/factor registry</div>`;
-      const missingLine = (rep.missing_leaves||[]).length
-        ? `<div class="tc-sig-missing">Missing vocabulary: ${esc(rep.missing_leaves.join(', '))}</div>` : '';
+  document.querySelectorAll('.arsenal-table th').forEach(th => {
+    const key = th.id.replace('ath-', '');
+    th.classList.toggle('sorted', key === _arsenalSortKey);
+    th.classList.toggle('asc', key === _arsenalSortKey && _arsenalSortDir === -1);
+  });
+}
 
-      let exampleBlock;
-      if (ex.dsl) {
-        exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.dsl, null, 2))}</div>`;
-      } else if (ex.factor_spec) {
-        exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.factor_spec, null, 2))}</div>`;
-      } else {
-        exampleBlock = `<div class="tc-sig-none">No executable example: ${esc(ex.none || '—')}</div>`;
-      }
+// ── Arsenal detail modal — the full picture for one technique on demand ──────
+function _arsenalSignatureHtml(t) {
+  if (!t.strategy_shape) return '';
+  const rep = t.representability || {};
+  const ex  = t.example || {};
+  const reqBits = [];
+  if ((rep.required_leaves||[]).length) reqBits.push(`leaves: ${rep.required_leaves.join(', ')}`);
+  if (rep.required_factor) reqBits.push(`factor: ${rep.required_factor}`);
+  const repLine = rep.is_representable
+    ? `<div class="tc-sig-leaves">✅ Representable (${esc(rep.representation_type||'')})${reqBits.length ? ' — requires ' + esc(reqBits.join('; ')) : ''}</div>`
+    : `<div class="tc-sig-leaves" style="color:var(--red)">🚫 Not representable with the current leaf/factor registry</div>`;
+  const missingLine = (rep.missing_leaves||[]).length
+    ? `<div class="tc-sig-missing">Missing vocabulary: ${esc(rep.missing_leaves.join(', '))}</div>` : '';
+  let exampleBlock;
+  if (ex.dsl) exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.dsl, null, 2))}</div>`;
+  else if (ex.factor_spec) exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.factor_spec, null, 2))}</div>`;
+  else exampleBlock = `<div class="tc-sig-none">No executable example: ${esc(ex.none || '—')}</div>`;
 
-      signaturePanel = `
-        <button class="tc-profile-toggle" onclick="toggleProfile('sig-${t.key}',this)">
-          ▸ Signature — ${shapeBadge}
-        </button>
-        <div id="sig-${t.key}" class="tc-profile-panel">
-          ${t.family_id ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">Family</div>
-            <div class="tc-profile-text">${esc(t.family_id)}</div>
-          </div>` : ''}
-          <div class="tc-profile-section">
-            <div class="tc-profile-label">Representability</div>
-            ${repLine}
-            ${missingLine}
-          </div>
-          <div class="tc-profile-section">
-            <div class="tc-profile-label">Validated Example</div>
-            ${exampleBlock}
-          </div>
-        </div>`;
-    }
-
-    // ── Strategy Profile Panel ──────────────────────────────────────────────
-    let profilePanel = '';
-    if (t.exit_type || t.phenomenon) {
-      const exitBadge = t.exit_type
-        ? `<span class="tc-exit-badge ${t.exit_type}">${exitBadgeLabel[t.exit_type] || t.exit_type}</span>`
-        : '';
-
-      const stopBadge = t.stop_loss_pct != null
-        ? `<span class="tc-risk-badge stop">SL -${t.stop_loss_pct}%</span>` : '';
-      const tgtBadge  = t.profit_target_pct != null
-        ? `<span class="tc-risk-badge target">TP +${t.profit_target_pct}%</span>`
-        : '<span class="tc-risk-badge">No target</span>';
-      const minBadge  = t.min_hold_days != null
-        ? `<span class="tc-risk-badge hold">Min ${t.min_hold_days}d</span>` : '';
-      const maxBadge  = t.max_hold_days != null
-        ? `<span class="tc-risk-badge hold">Max ${t.max_hold_days}d</span>`
-        : (t.exit_type === 'signal' ? '<span class="tc-risk-badge hold">Unlimited</span>' : '');
-
-      profilePanel = `
-        <button class="tc-profile-toggle" onclick="toggleProfile('profile-${t.key}',this)">
-          ▸ Strategy Profile — ${exitBadge}
-        </button>
-        <div id="profile-${t.key}" class="tc-profile-panel">
-          ${t.phenomenon ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">The Phenomenon</div>
-            <div class="tc-profile-text">${esc(t.phenomenon)}</div>
-          </div>` : ''}
-          ${t.bursa_nuance ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">Market Nuance</div>
-            <div class="tc-profile-text" style="color:var(--cyan)">${esc(t.bursa_nuance)}</div>
-          </div>` : ''}
-          ${t.entry_condition ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">Entry Condition</div>
-            <div class="tc-profile-text">${esc(t.entry_condition)}</div>
-          </div>` : ''}
-          ${t.exit_condition ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">Exit Condition ${exitBadge}</div>
-            <div class="tc-profile-text">${esc(t.exit_condition)}</div>
-            ${t.exit_rationale ? `<div class="tc-profile-text" style="margin-top:4px;color:var(--muted);font-style:italic">${esc(t.exit_rationale)}</div>` : ''}
-          </div>` : ''}
-          <div class="tc-profile-section">
-            <div class="tc-profile-label">Risk Parameters</div>
-            <div class="tc-risk-badges">${stopBadge}${tgtBadge}${minBadge}${maxBadge}</div>
-            ${t.hold_rationale ? `<div class="tc-profile-text" style="color:var(--muted)">${esc(t.hold_rationale)}</div>` : ''}
-          </div>
-          <div class="tc-profile-row">
-            ${t.use_when ? `<div><div class="tc-profile-label" style="color:#4ade80">Use When</div>
-              <div class="tc-use-when">${esc(t.use_when)}</div></div>` : '<div></div>'}
-            ${t.avoid_when ? `<div><div class="tc-profile-label" style="color:#ef4444">Avoid When</div>
-              <div class="tc-avoid-when">${esc(t.avoid_when)}</div></div>` : '<div></div>'}
-          </div>
-          ${t.ic_benchmark ? `<div class="tc-profile-section">
-            <div class="tc-profile-label">IC Benchmark</div>
-            <div class="tc-ic-bench-full">${esc(t.ic_benchmark)}</div>
-          </div>` : ''}
-        </div>`;
-    }
-
-    return `<div class="technique-card ${implClass}">
-      <div class="tc-head">
-        <div>
-          <div class="tc-name">${esc(t.name)}</div>
-          <div class="tc-key"><code>${t.key}</code> &middot; ${t.angle || '—'}</div>
-        </div>
-        <div class="tc-badges">
-          ${implBadge}
-          ${shapeBadge}
-          <span class="tc-badge ${cplxClass}">${t.complexity}</span>
-          <span class="tc-badge ${cplxClass}" title="Overfitting risk">${riskLabels[t.overfitting_risk]||t.overfitting_risk}</span>
-        </div>
-      </div>
-      <div class="tc-applicability">${esc(t.market_applicability || t.bursa_applicability || '')}</div>
-      ${icBench}
-      ${useItems ? `<div class="tc-use-label">Use when</div>
-      <ul class="tc-use-list">${useItems}</ul>` : ''}
-      ${avoidItems ? `<button class="tc-expand-btn" onclick="toggleAvoid('avoid-${t.key}',this)">▸ Show avoid rules</button>
-         <div id="avoid-${t.key}" class="tc-avoid-section">
-           <div class="tc-use-label" style="color:var(--red)">Avoid when</div>
-           <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
-         </div>` : ''}
-      ${signaturePanel}
-      ${profilePanel}
-      ${stockTypes ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
+  return `
+    <div class="tc-profile-section">
+      <div class="tc-profile-label">Family</div>
+      <div class="tc-profile-text">${esc(t.family_id || '—')}</div>
+    </div>
+    <div class="tc-profile-section">
+      <div class="tc-profile-label">Representability</div>
+      ${repLine}
+      ${missingLine}
+    </div>
+    <div class="tc-profile-section">
+      <div class="tc-profile-label">Validated Example</div>
+      ${exampleBlock}
     </div>`;
-  }).join('') || '<div style="color:var(--muted);padding:20px">No techniques match the current filter.</div>';
 }
 
-function toggleProfile(id, btn) {
-  const panel = document.getElementById(id);
-  if (!panel) return;
-  panel.classList.toggle('open');
-  btn.innerHTML = btn.innerHTML.replace(/^[▸▾]/, panel.classList.contains('open') ? '▾' : '▸');
+function _arsenalProfileHtml(t) {
+  if (!t.exit_type && !t.phenomenon) return '';
+  const exitBadge = t.exit_type
+    ? `<span class="tc-exit-badge ${t.exit_type}">${_ARSENAL_EXIT_LABEL[t.exit_type] || t.exit_type}</span>` : '';
+  const stopBadge = t.stop_loss_pct != null ? `<span class="tc-risk-badge stop">SL -${t.stop_loss_pct}%</span>` : '';
+  const tgtBadge  = t.profit_target_pct != null
+    ? `<span class="tc-risk-badge target">TP +${t.profit_target_pct}%</span>` : '<span class="tc-risk-badge">No target</span>';
+  const minBadge  = t.min_hold_days != null ? `<span class="tc-risk-badge hold">Min ${t.min_hold_days}d</span>` : '';
+  const maxBadge  = t.max_hold_days != null ? `<span class="tc-risk-badge hold">Max ${t.max_hold_days}d</span>`
+    : (t.exit_type === 'signal' ? '<span class="tc-risk-badge hold">Unlimited</span>' : '');
+
+  return `
+    ${t.phenomenon ? `<div class="tc-profile-section">
+      <div class="tc-profile-label">The Phenomenon</div>
+      <div class="tc-profile-text">${esc(t.phenomenon)}</div>
+    </div>` : ''}
+    ${t.bursa_nuance ? `<div class="tc-profile-section">
+      <div class="tc-profile-label">Market Nuance</div>
+      <div class="tc-profile-text" style="color:var(--cyan)">${esc(t.bursa_nuance)}</div>
+    </div>` : ''}
+    ${t.entry_condition ? `<div class="tc-profile-section">
+      <div class="tc-profile-label">Entry Condition</div>
+      <div class="tc-profile-text">${esc(t.entry_condition)}</div>
+    </div>` : ''}
+    ${t.exit_condition ? `<div class="tc-profile-section">
+      <div class="tc-profile-label">Exit Condition ${exitBadge}</div>
+      <div class="tc-profile-text">${esc(t.exit_condition)}</div>
+      ${t.exit_rationale ? `<div class="tc-profile-text" style="margin-top:4px;color:var(--muted);font-style:italic">${esc(t.exit_rationale)}</div>` : ''}
+    </div>` : ''}
+    <div class="tc-profile-section">
+      <div class="tc-profile-label">Risk Parameters</div>
+      <div class="tc-risk-badges">${stopBadge}${tgtBadge}${minBadge}${maxBadge}</div>
+      ${t.hold_rationale ? `<div class="tc-profile-text" style="color:var(--muted)">${esc(t.hold_rationale)}</div>` : ''}
+    </div>
+    <div class="tc-profile-row">
+      ${t.use_when ? `<div><div class="tc-profile-label" style="color:#4ade80">Use When</div>
+        <div class="tc-use-when">${esc(t.use_when)}</div></div>` : '<div></div>'}
+      ${t.avoid_when ? `<div><div class="tc-profile-label" style="color:#ef4444">Avoid When</div>
+        <div class="tc-avoid-when">${esc(t.avoid_when)}</div></div>` : '<div></div>'}
+    </div>
+    ${t.ic_benchmark ? `<div class="tc-profile-section">
+      <div class="tc-profile-label">IC Benchmark</div>
+      <div class="tc-ic-bench-full">${esc(t.ic_benchmark)}</div>
+    </div>` : ''}`;
 }
 
-function toggleAvoid(id, btn) {
-  const el = document.getElementById(id);
-  const open = el.classList.toggle('open');
-  btn.textContent = open ? '▾ Hide avoid rules' : '▸ Show avoid rules';
+function openArsenalModal(key) {
+  const t = _arsenalData.find(x => x.key === key);
+  if (!t) return;
+  const cplxClass = {low:'low', medium:'medium', high:'high'}[t.complexity] || 'medium';
+  const useItems   = (t.when_to_use||[]).map(u => `<li>${esc(u)}</li>`).join('');
+  const avoidItems = (t.when_to_avoid||[]).map(u => `<li class="tc-avoid-list">${esc(u)}</li>`).join('');
+  const icBench = t.ic_benchmark ? `<div class="tc-ic-bench">📐 IC: ${esc(String(t.ic_benchmark))}</div>` : '';
+  const stockTypes = (t.stock_types||[]).join(', ');
+  const holdingPeriods = (t.holding_periods||[]).join(', ');
+  const shapeBadge = t.strategy_shape
+    ? `<span class="tc-shape-badge ${t.strategy_shape}">${_ARSENAL_SHAPE_LABEL[t.strategy_shape] || t.strategy_shape}</span>` : '';
+
+  document.getElementById('am-title').textContent = t.name;
+  document.getElementById('am-subtitle').textContent = `${t.key} · ${t.angle || '—'}`;
+  document.getElementById('am-body').innerHTML = `
+    <div class="tc-badges" style="margin-bottom:10px">
+      ${_arsenalStatusBadge(t)}
+      ${shapeBadge}
+      <span class="tc-badge ${cplxClass}">${t.complexity}</span>
+      <span class="tc-badge ${cplxClass}" title="Overfitting risk">${_ARSENAL_RISK_LABEL[t.overfitting_risk]||t.overfitting_risk}</span>
+    </div>
+    <div class="tc-applicability">${esc(t.market_applicability || t.bursa_applicability || '')}</div>
+    ${icBench}
+    ${useItems ? `<div class="tc-use-label">Use when</div><ul class="tc-use-list">${useItems}</ul>` : ''}
+    ${avoidItems ? `<div class="tc-use-label" style="color:var(--red);margin-top:8px">Avoid when</div><ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>` : ''}
+    <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
+      <div class="tc-profile-label" style="margin-bottom:6px">Signature</div>
+      ${_arsenalSignatureHtml(t)}
+    </div>
+    ${t.exit_type || t.phenomenon ? `<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
+      <div class="tc-profile-label" style="margin-bottom:6px">Strategy Profile</div>
+      ${_arsenalProfileHtml(t)}
+    </div>` : ''}
+    ${stockTypes ? `<div style="font-size:11px;color:var(--muted);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}`;
+
+  document.getElementById('arsenal-modal').classList.add('open');
 }
+function closeArsenalModal() { document.getElementById('arsenal-modal').classList.remove('open'); }
+document.getElementById('arsenal-modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeArsenalModal(); });
 
 // ── System Direction ─────────────────────────────────────────────────────────
 function dirToggle(id) {
