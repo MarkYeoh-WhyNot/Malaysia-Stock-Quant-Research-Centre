@@ -303,3 +303,123 @@ CRYPTO_TECHNIQUE_LIBRARY: dict[str, dict] = {
         "overfitting_risk": "low",
     },
 }
+
+
+# ── Arsenal v2 fields (signature-DB slim adoption, 2026-07-11) ───────────────
+# Same contract as _BURSA_ARSENAL_V2 in technique_library.py (see the comment
+# there); validated against the live signal_dsl.LEAVES / factors.FACTORS
+# registries by tests/test_arsenal_v2.py. Local _rep helper — importing it from
+# technique_library would be circular (that module imports this one).
+
+def _rep(representable, rep_type=None, leaves=(), factor=None, missing=()):
+    return {"is_representable": representable, "representation_type": rep_type,
+            "required_leaves": list(leaves), "required_factor": factor,
+            "missing_leaves": list(missing)}
+
+
+_CRYPTO_ARSENAL_V2: dict[str, dict] = {
+    "funding_rate_carry": {
+        "family_id": "carry_funding",
+        "strategy_shape": "cross_sectional_factor",
+        # Single-name funding conditions also exist as DSL leaves
+        # (funding_level / funding_zscore); the canonical carry expression is
+        # the cross-sectional basket.
+        "representability": _rep(True, "cross_sectional_factor",
+                                 leaves=["funding_level", "funding_zscore"],
+                                 factor="funding_avg"),
+        "example": {"factor_spec": {
+            "factor": {"name": "funding_avg", "params": {"period": 21}},
+            "top_n": 3, "bottom_n": 3, "rebalance_bars": 24}},
+    },
+    "perp_basis_arb": {
+        "family_id": "carry_funding",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["spot_perp_basis"]),
+        "example": {"none": "no leaf or factor carries the perp-vs-spot basis; "
+                            "the hedged two-leg structure is also outside the "
+                            "single-instrument engine"},
+    },
+    "xs_momentum_majors": {
+        "family_id": "cross_sectional_ranking",
+        "strategy_shape": "cross_sectional_factor",
+        "representability": _rep(True, "cross_sectional_factor",
+                                 factor="momentum"),
+        "example": {"factor_spec": {
+            "factor": {"name": "momentum", "params": {"period": 30}},
+            "top_n": 4, "bottom_n": 4, "rebalance_bars": 21}},
+    },
+    "xs_reversal_short_term": {
+        "family_id": "cross_sectional_ranking",
+        "strategy_shape": "cross_sectional_factor",
+        "representability": _rep(True, "cross_sectional_factor",
+                                 factor="reversal"),
+        "example": {"factor_spec": {
+            "factor": {"name": "reversal", "params": {"period": 3}},
+            "top_n": 4, "bottom_n": 4, "rebalance_bars": 3}},
+    },
+    "btc_beta_neutralization": {
+        "family_id": "stat_arb",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["btc_beta_residual"]),
+        "example": {"none": "no factor computes rolling-beta residuals vs BTC; "
+                            "raw signals cannot be beta-neutralized in the "
+                            "current engine"},
+    },
+    "pairs_cointegration": {
+        "family_id": "stat_arb",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["pair_spread_zscore"]),
+        "example": {"none": "multi-leg spread trades are outside the "
+                            "single-instrument DSL and basket engine"},
+    },
+    "garch_vol_regime": {
+        "family_id": "volatility_modeling",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["vol_forecast"]),
+        "example": {"none": "a sizing/risk overlay, not a boolean entry/exit "
+                            "condition; no vol-forecast leaf exists"},
+    },
+    "hmm_regime": {
+        "family_id": "regime_detection",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["regime_state"]),
+        "example": {"none": "no leaf exposes a fitted latent regime state or "
+                            "regime probability"},
+    },
+    "exchange_flow_signal": {
+        "family_id": "flow_institutional",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["exchange_netflow"]),
+        "example": {"none": "data-gated: no on-chain exchange-flow feed is "
+                            "wired, so no leaf can carry it"},
+    },
+    "oi_liquidation_cascade": {
+        "family_id": "positioning_leverage",
+        "strategy_shape": "unimplemented_concept",
+        # funding_level/funding_zscore capture only the funding fragment of the
+        # thesis — OI/liquidation data itself is unavailable (Binance caps OI
+        # history), so an honest example cannot exist yet.
+        "representability": _rep(False, missing=["open_interest",
+                                                 "liquidation_volume"]),
+        "example": {"none": "open-interest and liquidation data are not wired "
+                            "(no historical OI feed); the funding leaves alone "
+                            "do not express the cascade thesis"},
+    },
+    "cross_sectional_ic": {
+        "family_id": "validation_methodology",
+        "strategy_shape": "methodology",
+        "representability": _rep(False),
+        "example": {"none": "a validation gate applied to other strategies, "
+                            "not a tradable signal"},
+    },
+    "deflated_sharpe": {
+        "family_id": "validation_methodology",
+        "strategy_shape": "methodology",
+        "representability": _rep(False),
+        "example": {"none": "a multiple-testing hurdle applied to backtest "
+                            "results, not a tradable signal"},
+    },
+}
+
+for _key, _v2 in _CRYPTO_ARSENAL_V2.items():
+    CRYPTO_TECHNIQUE_LIBRARY[_key].update(_v2)  # KeyError = typo'd overlay key

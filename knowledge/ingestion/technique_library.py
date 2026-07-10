@@ -14,6 +14,7 @@ Each technique entry describes:
 """
 
 from __future__ import annotations
+import json
 from typing import Optional
 
 # ── Technique definitions ─────────────────────────────────────────────────────
@@ -530,6 +531,186 @@ BURSA_TECHNIQUE_LIBRARY: dict[str, dict] = {
     },
 }
 
+# ── Arsenal v2 fields (signature-DB slim adoption, 2026-07-11) ───────────────
+# Every entry carries: family_id (taxonomy, free-form), strategy_shape
+# (dsl_tree | cross_sectional_factor | methodology | unimplemented_concept),
+# representability (what the live registries can/can't express — missing_leaves
+# names honest not-yet-vocabulary, validated by tests/test_arsenal_v2.py against
+# signal_dsl.LEAVES and factors.FACTORS so implementing a leaf later FORCES the
+# entry update), and example: a machine-validated canonical DSL tree / factor
+# spec, or an honest {"none": <reason>} — never a fabricated tree. Examples are
+# surfaced in full-detail views only, NEVER injected into the cold parser
+# (anchoring); the parser gets structure-only shape cards instead.
+
+def _rep(representable, rep_type=None, leaves=(), factor=None, missing=()):
+    return {"is_representable": representable, "representation_type": rep_type,
+            "required_leaves": list(leaves), "required_factor": factor,
+            "missing_leaves": list(missing)}
+
+
+_BURSA_ARSENAL_V2: dict[str, dict] = {
+    "kalman_filter": {
+        "family_id": "signal_filtering",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["kalman_smoothed_level"]),
+        "example": {"none": "no leaf computes a Kalman-filtered price level; "
+                            "substituting an SMA/EMA would misrepresent the technique"},
+    },
+    "hidden_markov_model": {
+        "family_id": "regime_detection",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["regime_state"]),
+        "example": {"none": "no leaf exposes a fitted latent regime state or "
+                            "regime probability"},
+    },
+    "garch": {
+        "family_id": "volatility_modeling",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["vol_forecast"]),
+        "example": {"none": "a position-sizing overlay, not a boolean entry/exit "
+                            "condition; no vol-forecast leaf exists"},
+    },
+    "information_coefficient": {
+        "family_id": "validation_methodology",
+        "strategy_shape": "methodology",
+        "representability": _rep(False),
+        "example": {"none": "a validation gate applied to other strategies "
+                            "(Stage 3 cross-sectional IC), not a tradable signal"},
+    },
+    "sma_crossover": {
+        "family_id": "trend_following",
+        "strategy_shape": "dsl_tree",
+        "representability": _rep(True, "dsl_tree", leaves=["sma_cross"]),
+        "example": {"dsl": {"entry": {"leaf": "sma_cross", "fast": 20, "slow": 50,
+                                      "direction": "above"}}},
+    },
+    "rsi_mean_reversion": {
+        "family_id": "mean_reversion_price",
+        "strategy_shape": "dsl_tree",
+        "representability": _rep(True, "dsl_tree", leaves=["rsi"]),
+        "example": {"dsl": {"entry": {"leaf": "rsi", "period": 14, "below": 30},
+                            "exit": {"leaf": "rsi", "period": 14, "above": 55}}},
+    },
+    "bollinger_squeeze": {
+        "family_id": "volatility_breakout",
+        "strategy_shape": "dsl_tree",
+        # The breakout-confirmation leg is representable; the squeeze-width
+        # (band compression) PREcondition is not — band_width names the gap.
+        "representability": _rep(True, "dsl_tree",
+                                 leaves=["bollinger", "volume_ratio"],
+                                 missing=["band_width"]),
+        "example": {"dsl": {"entry": {"op": "AND", "children": [
+            {"leaf": "bollinger", "period": 20, "std": 2.0, "band": "above_upper"},
+            {"leaf": "volume_ratio", "period": 20, "min_ratio": 1.5}]}}},
+    },
+    "event_study": {
+        "family_id": "event_window",
+        "strategy_shape": "methodology",
+        "representability": _rep(False),
+        "example": {"none": "an analysis framework, not a signal; announcement-"
+                            "window data beyond the ex-dividend calendar "
+                            "(div_days_to_ex) has no leaves"},
+    },
+    "pead": {
+        "family_id": "event_window",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["earnings_surprise"]),
+        "example": {"none": "no leaf carries earnings-surprise data; "
+                            "approximating PEAD with price momentum is the "
+                            "historical genericization failure mode"},
+    },
+    "pca_factor_model": {
+        "family_id": "factor_models",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["pca_loading"]),
+        "example": {"none": "no factor computes PCA loadings over the universe"},
+    },
+    "fama_french_3factor": {
+        "family_id": "factor_models",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["book_to_market", "size_factor"]),
+        "example": {"none": "fundamental factor loadings are not leaves; simple "
+                            "ROE/PB/PE/DY screens route via fundamental_screen "
+                            "instead"},
+    },
+    "epf_flow_tracker": {
+        "family_id": "flow_institutional",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["institutional_flow"]),
+        "example": {"none": "no leaf carries EPF/institutional holdings or flow "
+                            "data"},
+    },
+    "cpo_correlation": {
+        "family_id": "commodity_linkage",
+        "strategy_shape": "dsl_tree",
+        "representability": _rep(True, "dsl_tree", leaves=["cpo_change"]),
+        "example": {"dsl": {"entry": {"leaf": "cpo_change", "period": 5,
+                                      "min_pct": 0.03}}},
+    },
+    "opr_banking_signal": {
+        "family_id": "macro_rates",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["opr_decision"]),
+        "example": {"none": "no leaf carries BNM OPR decisions or a rate-cycle "
+                            "state"},
+    },
+    "cross_sectional_momentum": {
+        "family_id": "cross_sectional_ranking",
+        "strategy_shape": "cross_sectional_factor",
+        "representability": _rep(True, "cross_sectional_factor",
+                                 factor="momentum"),
+        "example": {"factor_spec": {
+            "factor": {"name": "momentum", "params": {"period": 126}},
+            "top_n": 6, "bottom_n": 0, "rebalance_bars": 21}},
+    },
+    "short_term_reversal": {
+        "family_id": "mean_reversion_price",
+        "strategy_shape": "dsl_tree",
+        "representability": _rep(True, "dsl_tree", leaves=["reversal"]),
+        "example": {"dsl": {"entry": {"leaf": "reversal", "period": 5,
+                                      "max_return": -0.06}}},
+    },
+    "low_volatility_anomaly": {
+        "family_id": "cross_sectional_ranking",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["realized_vol"]),
+        "example": {"none": "no realized-volatility ranking factor exists in the "
+                            "cross-sectional registry yet"},
+    },
+    "gap_fill": {
+        "family_id": "mean_reversion_price",
+        "strategy_shape": "dsl_tree",
+        "representability": _rep(True, "dsl_tree", leaves=["gap"]),
+        "example": {"dsl": {"entry": {"leaf": "gap", "direction": "down",
+                                      "min_pct": 0.02}}},
+    },
+    "opening_range_breakout": {
+        "family_id": "volatility_breakout",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["intraday_opening_range"]),
+        "example": {"none": "needs sub-daily first-session-window data this "
+                            "system does not ingest for Bursa"},
+    },
+    "garch_volatility_overlay": {
+        "family_id": "volatility_modeling",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["vol_forecast"]),
+        "example": {"none": "a position-sizing overlay, not a boolean entry/exit "
+                            "condition; no vol-forecast leaf exists"},
+    },
+    "hmm_regime_detector": {
+        "family_id": "regime_detection",
+        "strategy_shape": "unimplemented_concept",
+        "representability": _rep(False, missing=["regime_state"]),
+        "example": {"none": "no leaf exposes a fitted latent regime state or "
+                            "regime probability"},
+    },
+}
+
+for _key, _v2 in _BURSA_ARSENAL_V2.items():
+    BURSA_TECHNIQUE_LIBRARY[_key].update(_v2)   # KeyError = typo'd overlay key
+
+
 # ── Market selection ──────────────────────────────────────────────────────────
 # The active market's technique set. Bursa uses the equity library above; crypto
 # uses a purpose-authored perp/spot set. Everything below (indices, class methods)
@@ -676,6 +857,24 @@ class TechniqueLibrary:
                 lines.append(f"  • {item}")
         if tech.get("ic_improvement_vs_sma"):
             lines.append(f"\nIC BENCHMARK: {tech['ic_improvement_vs_sma']}")
+        example = tech.get("example")
+        if example:
+            if "dsl" in example:
+                lines.append(
+                    "\nVALIDATED EXAMPLE (passes the live signal registry — "
+                    "adapt parameters to the idea, don't copy blindly):\n  "
+                    + json.dumps({"dsl": example["dsl"]}, separators=(",", ":")))
+            elif "factor_spec" in example:
+                lines.append(
+                    "\nVALIDATED EXAMPLE (passes the live factor registry — "
+                    "adapt parameters to the idea, don't copy blindly):\n  "
+                    + json.dumps({"factor_spec": example["factor_spec"]},
+                                 separators=(",", ":")))
+            else:
+                missing = tech.get("representability", {}).get("missing_leaves") or []
+                suffix = f" (missing vocabulary: {', '.join(missing)})" if missing else ""
+                lines.append(f"\nNO EXECUTABLE EXAMPLE: {example.get('none', '?')}"
+                             f"{suffix}")
         return "\n".join(lines)
 
     def format_telegram_summary(self, key: Optional[str] = None) -> str:
@@ -748,5 +947,9 @@ class TechniqueLibrary:
                 "strategy_types":       tech.get("strategy_types", []),
                 "holding_periods":      tech.get("holding_periods", []),
                 "signal_types":         tech.get("signal_types", []),
+                "family_id":            tech.get("family_id", ""),
+                "strategy_shape":       tech.get("strategy_shape", ""),
+                "representability":     tech.get("representability", {}),
+                "example":              tech.get("example", {}),
             })
         return result
