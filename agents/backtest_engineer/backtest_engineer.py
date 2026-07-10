@@ -1490,8 +1490,10 @@ Rules:
         psr_trainval = _psr(_tv_sr,
                             deflated_sr_star(n_trials, max(len(_tv_ret), 2), _ann),
                             len(_tv_ret), _ann, _tv_sk, _tv_ku)
-        gate2_pass = (psr_trainval >= GATE_CONFIG.psr_confidence_trainval
-                      and train_r["max_dd"] <= dd_threshold
+        # Same discipline as the DSL path: psr_trainval is DIAGNOSTIC only
+        # (gating it would double-charge the evidence the full-window PSR
+        # already weighs); gate2 carries the risk-mandate guards.
+        gate2_pass = (train_r["max_dd"] <= dd_threshold
                       and val_r["max_dd"] <= dd_threshold
                       and train_val_gap <= _max_tvg)
         gate3_pass = (gate2_pass
@@ -1507,9 +1509,7 @@ Rules:
 
         verdict = "PASS" if overall_pass else "REJECTED"
         verdict_reason = " | ".join(filter(None, [
-            "" if gate2_pass else (f"Gate2: train+val PSR {psr_trainval:.2f} < "
-                                   f"{GATE_CONFIG.psr_confidence_trainval} vs SR* "
-                                   f"{deflated_hurdle:.2f}, or DD/gap"),
+            "" if gate2_pass else "Gate2: train/val DD cap or train-val gap",
             "" if gate3_pass else (f"Gate3: test PSR {psr_test:.2f} < "
                                    f"{GATE_CONFIG.psr_confidence_test} "
                                    f"({n_trials} trials), or DD"),
