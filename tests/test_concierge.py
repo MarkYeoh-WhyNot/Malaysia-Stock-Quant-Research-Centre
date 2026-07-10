@@ -21,6 +21,8 @@ def _clean():
 
 def _cleanup():
     with db_session() as conn:
+        conn.execute("DELETE FROM backtest_runs WHERE idea_id IN "
+                     "(SELECT id FROM alpha_ideas WHERE title LIKE 'CCX %')")
         conn.execute("DELETE FROM alpha_ideas WHERE title LIKE 'CCX %'")
         conn.execute("DELETE FROM concierge_idea_links WHERE session_id IN "
                      "(SELECT id FROM concierge_sessions WHERE label='test')")
@@ -39,10 +41,57 @@ def _session():
 def test_toolset_has_no_live_or_destructive_tools():
     names = {t["name"] for t in TOOLS}
     assert names == {"submit_strategy_idea", "get_idea_status", "list_session_ideas",
-                     "search_knowledge_base", "resolve_tickers", "suggest_techniques"}
+                     "search_knowledge_base", "resolve_tickers", "suggest_techniques",
+                     "get_pine_script"}
     blob = " ".join(names).lower()
     for forbidden in ("live", "approve", "delete", "promote", "stage4b"):
         assert forbidden not in blob
+
+
+# ── Pine Script tool ──────────────────────────────────────────────────────────
+def test_pine_script_not_ready_before_backtest():
+    agent = ConciergeAgent()
+    with db_session() as conn:
+        cur = conn.execute(
+            "INSERT INTO alpha_ideas (slug, title, hypothesis, ticker, timeframe, "
+            "factor_formula, stage, status, novelty_score, logic_score, "
+            "feasibility_score) VALUES ('ccx-ps-pending','CCX pine pending','h',"
+            "'1155.KL','1d','f','stage2','pending',0.8,0.8,0.8)")
+        idea_id = cur.lastrowid
+    r = agent._tool_get_pine_script(idea_id)
+    assert r["ok"] is False and r["status"] == "not_backtested_yet"
+
+
+def test_pine_script_returns_code_when_present():
+    agent = ConciergeAgent()
+    with db_session() as conn:
+        cur = conn.execute(
+            "INSERT INTO alpha_ideas (slug, title, hypothesis, ticker, timeframe, "
+            "factor_formula, stage, status, novelty_score, logic_score, "
+            "feasibility_score) VALUES ('ccx-ps-ready','CCX pine ready','h',"
+            "'1155.KL','1d','f','stage2','rejected',0.8,0.8,0.8)")
+        idea_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO backtest_runs (idea_id, run_type, pinescript) "
+            "VALUES (?, 'klse_daily', ?)", (idea_id, "//@version=5\nstrategy(\"x\")\n"))
+    r = agent._tool_get_pine_script(idea_id)
+    assert r["ok"] is True and "strategy(" in r["pinescript"]
+
+
+def test_pine_script_not_applicable_for_basket():
+    agent = ConciergeAgent()
+    with db_session() as conn:
+        cur = conn.execute(
+            "INSERT INTO alpha_ideas (slug, title, hypothesis, ticker, timeframe, "
+            "factor_formula, stage, status, novelty_score, logic_score, "
+            "feasibility_score) VALUES ('ccx-ps-basket','CCX pine basket','h',"
+            "'UNIVERSE','1d','f','stage3','active',0.8,0.8,0.8)")
+        idea_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO backtest_runs (idea_id, run_type, pinescript) "
+            "VALUES (?, 'cross_sectional', NULL)", (idea_id,))
+    r = agent._tool_get_pine_script(idea_id)
+    assert r["ok"] is False and r["status"] == "not_applicable"
 
 
 # ── Technique Arsenal wiring ──────────────────────────────────────────────────

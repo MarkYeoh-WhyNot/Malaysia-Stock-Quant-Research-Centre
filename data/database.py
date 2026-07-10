@@ -350,6 +350,11 @@ def init_db(db_path: Path = DB_PATH):
             # deflated benchmark) per slice; n_trials is the WINDOWED count.
             "psr_test REAL",
             "psr_trainval REAL",
+            # Concierge Pine Script generation (2026-07-10): deterministic
+            # translation of the EXACT DSL tree this run backtested — NULL for
+            # non-DSL routes (cross_sectional/fundamental_screen_portfolio) or
+            # trees using a leaf Pine can't express (funding/dividends/CPO).
+            "pinescript TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")

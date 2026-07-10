@@ -2528,6 +2528,7 @@ Return JSON only:
         # verification step cannot validate fundamental factor logic from price data
         # alone and always flags needs_review. Skip it for this signal type.
         verification = {"verified": False, "confidence": 0.0, "issue": ""}
+        pinescript = None   # only the dsl branch below can populate this
         if params.get("signal_type") == "fundamental_screen":
             needs_review      = 0
             verification_note = ("Constant signal expected for fundamental screen "
@@ -2563,6 +2564,24 @@ Return JSON only:
             verification_note = (f"DSL deterministic verify passed: long "
                                  f"{_fire_frac:.1%} of bars")
             verification = {"verified": True, "confidence": 1.0, "issue": ""}
+
+            # Concierge Pine Script export: generated from this EXACT verified
+            # tree, independent of whether the idea later clears gate3 — a
+            # legitimately executable signal is worth showing even if its
+            # Sharpe/DD don't pass. Declines (pinescript stays None) for a
+            # leaf Pine can't express (funding/dividends/CPO) — never a
+            # fabricated approximation.
+            pinescript = None
+            try:
+                from agents.backtest_engineer.pinescript_gen import generate_pinescript
+                from config.settings import ALLOW_SHORT as _allow_short_ps
+                _ps = generate_pinescript(params["dsl"], row["title"], interval,
+                                          _allow_short_ps)
+                if _ps.get("ok"):
+                    pinescript = _ps["code"]
+            except Exception as _ps_exc:
+                self.log_daemon("WARN", f"[{idea_id}] Pine Script generation "
+                                        f"failed (non-blocking): {_ps_exc}")
         else:
             verification      = self.verify_formula(params, row["factor_formula"] or "", df)
             needs_review      = 0 if (verification["verified"] and verification["confidence"] >= 0.7) else 1
@@ -2974,8 +2993,8 @@ Return JSON only:
                        sharpe_is, sharpe_oos, oos_sharpe, oos_degradation,
                        sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
                        regimes_positive, sanity_flags, max_dd,
-                       verdict, verdict_reason)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       verdict, verdict_reason, pinescript)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """, (
                     idea_id, "klse_daily", symbol, interval, row["factor_formula"],
                     train_r["sharpe_net"], val_r["sharpe_net"], test_sharpe_net,
@@ -2993,7 +3012,7 @@ Return JSON only:
                     regimes_positive,
                     json.dumps(sanity_flags) if sanity_flags else None,
                     test_r["max_dd"],
-                    verdict, verdict_reason,
+                    verdict, verdict_reason, pinescript,
                 ))
                 _stamp_versions(conn)
                 run_id = conn.execute(

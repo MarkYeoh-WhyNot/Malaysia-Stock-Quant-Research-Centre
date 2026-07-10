@@ -114,6 +114,26 @@ TOOLS = [
         },
     },
     {
+        "name": "get_pine_script",
+        "description": "Get TradingView Pine Script for a submitted idea. Generated "
+                       "deterministically from the EXACT condition tree the pipeline "
+                       "backtested — never written independently from the chat "
+                       "description, so it always matches what was actually tested. "
+                       "Only available once the pipeline has parsed and verified the "
+                       "idea (may not be ready right after submission — say so and "
+                       "offer to check again). Not available for basket/cross-sectional "
+                       "ideas, or ideas whose conditions use data TradingView charts "
+                       "don't carry (funding rate, dividends, CPO futures) — explain "
+                       "why in that case rather than fabricating code. Call this after "
+                       "a successful submission if the user asked for code, or whenever "
+                       "they ask for 'the code'/'pine script'/'tradingview'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"idea_id": {"type": "integer"}},
+            "required": ["idea_id"],
+        },
+    },
+    {
         "name": "suggest_techniques",
         "description": "Look up the Technique Arsenal before refining or submitting an "
                        "idea. Pass a technique key (from the arsenal index in your "
@@ -195,6 +215,13 @@ HARD RULES — never violate:
   explain that you can get an idea paper-trading-ready but the human makes the
   live call.
 - If an idea is infeasible, say so plainly instead of forcing it through.
+- When the user asks for "the code"/"pine script"/"tradingview" for a submitted
+  idea, or right after a submission if they'd asked for code up front, call
+  get_pine_script(idea_id) and present the result as a fenced code block. It
+  may say the backtest hasn't run yet (ask again shortly) or that this idea
+  type/leaf isn't exportable — say so plainly rather than writing Pine Script
+  yourself; it is only ever generated from the exact tree that was actually
+  backtested, never freehand from the chat description.
 - When the user wants to DISCOVER where a strategy family works best (best
   parameters, timeframe, or pair) rather than test one fixed setup, submit with
   optimize=true — a ~300-config parameter sweep runs asynchronously and the
@@ -283,6 +310,40 @@ class ConciergeAgent(BaseAgent):
                 "ORDER BY l.id DESC", (session_id,)).fetchall()
         return {"ideas": [dict(r) for r in rows]}
 
+    def _tool_get_pine_script(self, idea_id: int) -> dict:
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT run_type, params, pinescript FROM backtest_runs "
+                "WHERE idea_id=? ORDER BY id DESC LIMIT 1", (idea_id,)
+            ).fetchone()
+        if not row:
+            return {"ok": False, "status": "not_backtested_yet",
+                    "message": "This idea hasn't been backtested yet — ask me "
+                              "again in a bit once the pipeline processes it."}
+        if row["pinescript"]:
+            return {"ok": True, "idea_id": idea_id, "pinescript": row["pinescript"],
+                    "note": "Generated from the exact signal tree this idea was "
+                           "backtested with — not independently written."}
+        if row["run_type"] in ("cross_sectional", "fundamental_screen_portfolio"):
+            return {"ok": False, "status": "not_applicable",
+                    "message": "This is a basket/portfolio strategy across multiple "
+                              "names — there's no single-chart signal to export as "
+                              "Pine Script."}
+        # DSL run exists but declined at generation time — recompute the reason
+        # defensively (cheap, deterministic, no LLM) rather than storing it.
+        try:
+            params = json.loads(row["params"] or "{}")
+            if params.get("signal_type") == "dsl" and params.get("dsl"):
+                from agents.backtest_engineer.pinescript_gen import generate_pinescript
+                r = generate_pinescript(params["dsl"], "strategy", "1d", ALLOW_SHORT)
+                if not r.get("ok"):
+                    return {"ok": False, "status": "unsupported",
+                            "message": f"Pine Script isn't available: {r['reason']}."}
+        except Exception:
+            pass
+        return {"ok": False, "status": "unavailable",
+                "message": "Pine Script isn't available for this idea."}
+
     def _tool_suggest_techniques(self, args: dict) -> dict:
         try:
             from knowledge.ingestion.technique_library import TechniqueLibrary
@@ -319,6 +380,8 @@ class ConciergeAgent(BaseAgent):
             return self._tool_search_kb(args.get("query", ""))
         if name == "resolve_tickers":
             return self._tool_resolve_tickers(args.get("names", []))
+        if name == "get_pine_script":
+            return self._tool_get_pine_script(int(args.get("idea_id")))
         if name == "suggest_techniques":
             return self._tool_suggest_techniques(args)
         return {"error": f"unknown tool {name}"}
