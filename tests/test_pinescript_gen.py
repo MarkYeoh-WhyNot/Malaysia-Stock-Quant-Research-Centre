@@ -165,3 +165,23 @@ def test_entry_only_no_exit():
     code = _gen({"entry": {"leaf": "sma_cross", "fast": 20, "slow": 50}})
     assert 'strategy.entry("Long"' in code
     assert 'strategy.close("Long"' not in code
+
+
+def test_ma_level_leaf_sma_dedup():
+    code = _gen({"entry": {"leaf": "ma_level", "ma_type": "sma", "period": 50,
+                           "direction": "above"},
+                 "exit": {"leaf": "ma_level", "ma_type": "sma", "period": 50,
+                          "direction": "below"}})
+    assert "ta.sma(close, 50)" in code
+    var = _assigned_var(code, "ta.sma(close, 50)")
+    assert f"close > {var}" in code and f"close < {var}" in code
+    # same (ma_type, period) reused in entry+exit -> ONE setup line
+    assert code.count("ta.sma(close, 50)") == 1
+
+
+def test_ma_level_leaf_ema_variant():
+    code = _gen({"entry": {"leaf": "ma_level", "ma_type": "ema", "period": 21,
+                           "direction": "below"}})
+    assert "ta.ema(close, 21)" in code
+    var = _assigned_var(code, "ta.ema(close, 21)")
+    assert f"close < {var}" in code

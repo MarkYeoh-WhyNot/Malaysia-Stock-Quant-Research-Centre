@@ -178,6 +178,52 @@ def test_perturb_actually_changes_params():
     assert changed
 
 
+# ── ma_level leaf ─────────────────────────────────────────────────────────────
+
+def test_ma_level_sma_matches_manual():
+    df = _df()
+    got = dsl.evaluate(df, {"leaf": "ma_level", "ma_type": "sma", "period": 20,
+                            "direction": "above"})
+    want = df["close"] > df["close"].rolling(20).mean()
+    assert (got == want).all()
+
+
+def test_ma_level_ema_below_matches_manual():
+    df = _df()
+    got = dsl.evaluate(df, {"leaf": "ma_level", "ma_type": "ema", "period": 50,
+                            "direction": "below"})
+    want = df["close"] < df["close"].ewm(span=50, adjust=False).mean()
+    assert (got == want).all()
+
+
+def test_ma_level_validation_contract():
+    clean = {"entry": {"leaf": "ma_level", "ma_type": "ema", "period": 50,
+                       "direction": "above"}}
+    assert dsl.validate(clean) == []
+    # ma_type is a REQUIRED choice — "50-day EMA" must never silently become SMA
+    no_type = dsl.validate({"entry": {"leaf": "ma_level", "period": 50,
+                                      "direction": "above"}})
+    assert any("missing required choice ma_type" in e for e in no_type)
+    bad_type = dsl.validate({"entry": {"leaf": "ma_level", "ma_type": "wma",
+                                       "period": 50}})
+    assert any("ma_type" in e for e in bad_type)
+    out_of_range = dsl.validate({"entry": {"leaf": "ma_level", "ma_type": "sma",
+                                           "period": 500}})
+    assert any("outside" in e for e in out_of_range)
+
+
+def test_ma_level_perturb_keeps_choices_and_range():
+    tree = {"entry": {"leaf": "ma_level", "ma_type": "ema", "period": 50,
+                      "direction": "above"}}
+    rng = np.random.RandomState(5)
+    for _ in range(20):
+        p = dsl.perturb_tree(tree, rng)
+        assert dsl.validate(p) == [], dsl.validate(p)
+        node = p["entry"]
+        assert node["ma_type"] == "ema" and node["direction"] == "above"
+        assert 2 <= node["period"] <= 300
+
+
 # ── Catalog ───────────────────────────────────────────────────────────────────
 
 def test_catalog_has_no_default_values():
@@ -186,3 +232,25 @@ def test_catalog_has_no_default_values():
         assert name in text
     # ranges shown, but no "default" anchoring anywhere
     assert "default" not in text.lower()
+
+
+# ── Shape cards (parser prompt structure guide) ───────────────────────────────
+
+def test_shape_cards_cover_all_leaves_no_defaults():
+    text = dsl.shape_cards_text()
+    for name in dsl.LEAVES:
+        assert f"- {name}:" in text
+    # structure-only: slot placeholders, never values or the word "default"
+    assert "<EXTRACTED_" in text
+    assert "default" not in text.lower()
+    # the load-bearing negative mappings both directions
+    assert "NOT sma_cross/ema_cross" in text        # ma_level card
+    assert "that is ma_level" in text               # cross cards point back
+
+
+def test_parser_negative_example_pins_the_ema_failure():
+    ex = dsl.PARSER_NEGATIVE_EXAMPLE
+    assert '"leaf": "ema_cross", "fast": 2, "slow": 50' in ex
+    assert '"leaf": "ma_level", "ma_type": "ema", "period": 50' in ex
+    assert "representable" in ex
+    assert "default" not in ex.lower()

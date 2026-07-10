@@ -14,8 +14,8 @@ from __future__ import annotations
 
 # Leaves backed only by OHLCV — safely translatable to Pine's built-in ta.*.
 _SUPPORTED_LEAVES = {
-    "rsi", "sma_cross", "ema_cross", "momentum", "reversal", "bollinger",
-    "macd", "volume_ratio", "gap", "rolling_rank", "zscore",
+    "rsi", "sma_cross", "ema_cross", "ma_level", "momentum", "reversal",
+    "bollinger", "macd", "volume_ratio", "gap", "rolling_rank", "zscore",
 }
 
 # Leaves needing data no TradingView chart carries — decline, don't guess.
@@ -94,6 +94,18 @@ def _leaf_to_pine(node: dict, ctx: _Ctx) -> str:
         fvar, svar = pair
         direction = node.get("direction", "above")
         return f"{fvar} > {svar}" if direction == "above" else f"{fvar} < {svar}"
+
+    if leaf == "ma_level":
+        period, ma_type = int(node["period"]), node["ma_type"]
+        fn = "ta.ema" if ma_type == "ema" else "ta.sma"
+        key = ("ma_level", ma_type, period)
+        var = ctx.cached(key)
+        if var is None:
+            var = ctx.fresh("maLevel")
+            ctx.lines.append(f"{var} = {fn}(close, {period})")
+            ctx.store(key, var)
+        direction = node.get("direction", "above")
+        return f"close > {var}" if direction == "above" else f"close < {var}"
 
     if leaf == "momentum":
         period = int(node["period"])

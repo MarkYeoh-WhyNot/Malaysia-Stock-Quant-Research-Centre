@@ -43,6 +43,18 @@ def test_zscore_in_catalog_and_perturbable():
     assert -4.0 <= p["entry"]["below"] <= 0.0
 
 
+def test_ma_level_randomize_preserves_choices():
+    tree = {"entry": {"leaf": "ma_level", "ma_type": "ema", "period": 50,
+                      "direction": "above"}}
+    rng = np.random.RandomState(3)
+    for _ in range(20):
+        r = randomize_tree(tree, rng)
+        assert signal_dsl.validate(r) == []
+        node = r["entry"]
+        assert node["ma_type"] == "ema" and node["direction"] == "above"
+        assert 2 <= node["period"] <= 300
+
+
 # ── config generation ─────────────────────────────────────────────────────────
 
 def test_generate_configs_deterministic_and_in_range():

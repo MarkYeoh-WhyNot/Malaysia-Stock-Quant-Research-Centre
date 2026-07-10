@@ -57,6 +57,20 @@ def _leaf_ma_cross(df, node, ema: bool):
     return fast > slow if node.get("direction", "above") == "above" else fast < slow
 
 
+def _leaf_ma_level(df, node):
+    """Close price vs ONE moving average of itself (price above/below its
+    N-bar SMA/EMA) — distinct from sma_cross/ema_cross, which compare TWO
+    moving averages. ma_type is a required choice: "50-day EMA" must never
+    silently become an SMA."""
+    close = df["close"]
+    period = int(node["period"])
+    if node["ma_type"] == "ema":
+        ma = close.ewm(span=period, adjust=False).mean()
+    else:
+        ma = close.rolling(period).mean()
+    return close > ma if node.get("direction", "above") == "above" else close < ma
+
+
 def _leaf_momentum(df, node):
     return df["close"].pct_change(int(node["period"])) > float(node["min_return"])
 
@@ -178,51 +192,126 @@ LEAVES = {
         "columns": ["close"],
         "params": {"period": ("int", 2, 50)},
         "one_of": [("below", ("float", 1, 99)), ("above", ("float", 1, 99))],
+        "shape_card": (
+            'USE WHEN the text thresholds the RSI oscillator itself ("RSI below X", '
+            '"RSI rises above Y"). Shape: {"leaf":"rsi","period":<EXTRACTED_PERIOD>,'
+            '"below":<EXTRACTED_THRESHOLD>} (or "above"). '
+            'NOT for price-vs-moving-average language, and do not add an RSI exit '
+            'unless the text asks for one.'
+        ),
     },
     "sma_cross": {
         "compute": lambda df, n: _leaf_ma_cross(df, n, ema=False),
         "columns": ["close"],
         "params": {"fast": ("int", 2, 100), "slow": ("int", 5, 300)},
         "choices": {"direction": ["above", "below"]},
+        "shape_card": (
+            'USE WHEN TWO simple moving averages of DIFFERENT periods are compared '
+            '("fast SMA crosses above slow SMA", "golden cross"). Shape: '
+            '{"leaf":"sma_cross","fast":<EXTRACTED_FAST>,"slow":<EXTRACTED_SLOW>,'
+            '"direction":"above"|"below"}. NOT for price vs a single moving average '
+            '— that is ma_level; NEVER encode the price itself as a tiny fast period.'
+        ),
     },
     "ema_cross": {
         "compute": lambda df, n: _leaf_ma_cross(df, n, ema=True),
         "columns": ["close"],
         "params": {"fast": ("int", 2, 100), "slow": ("int", 5, 300)},
         "choices": {"direction": ["above", "below"]},
+        "shape_card": (
+            'USE WHEN TWO exponential moving averages of DIFFERENT periods are '
+            'compared ("fast EMA above slow EMA"). Shape: {"leaf":"ema_cross",'
+            '"fast":<EXTRACTED_FAST>,"slow":<EXTRACTED_SLOW>,'
+            '"direction":"above"|"below"}. NOT for "price/close above an EMA" — '
+            'that is ma_level; NEVER invent a tiny fast period to stand in for '
+            'the price.'
+        ),
+    },
+    "ma_level": {
+        # Price vs ONE moving average ("close above its 50-day EMA").
+        # ma_type is REQUIRED (required_choices) — an omitted ma_type must
+        # fail validation, never silently pick SMA vs EMA.
+        "compute": _leaf_ma_level,
+        "columns": ["close"],
+        "params": {"period": ("int", 2, 300)},
+        "choices": {"ma_type": ["sma", "ema"], "direction": ["above", "below"]},
+        "required_choices": ["ma_type"],
+        "shape_card": (
+            'USE WHEN the PRICE/close is compared to ONE moving average of itself '
+            '("closes above its N-day EMA", "price under the long-term SMA"). '
+            'Shape: {"leaf":"ma_level","ma_type":"sma"|"ema",'
+            '"period":<EXTRACTED_PERIOD>,"direction":"above"|"below"}. '
+            'NOT sma_cross/ema_cross — those compare TWO moving averages. '
+            'ma_type must match the text (EMA vs SMA), never guess.'
+        ),
     },
     "momentum": {
         "compute": _leaf_momentum,
         "columns": ["close"],
         "params": {"period": ("int", 2, 252), "min_return": ("float", -0.5, 0.5)},
+        "shape_card": (
+            'USE WHEN the trailing return over a lookback must EXCEED a level '
+            '("up more than X percent over N days"). Shape: {"leaf":"momentum",'
+            '"period":<EXTRACTED_PERIOD>,"min_return":<EXTRACTED_FRACTION>}. '
+            'NOT for percentile-rank-vs-own-history language — that is rolling_rank.'
+        ),
     },
     "reversal": {
         "compute": _leaf_reversal,
         "columns": ["close"],
         "params": {"period": ("int", 2, 30), "max_return": ("float", -0.5, 0.0)},
+        "shape_card": (
+            'USE WHEN a recent DROP is the contrarian trigger ("fell more than X '
+            'percent over N days, buy the dip"). Shape: {"leaf":"reversal",'
+            '"period":<EXTRACTED_PERIOD>,"max_return":<EXTRACTED_NEGATIVE_FRACTION>}.'
+        ),
     },
     "bollinger": {
         "compute": _leaf_bollinger,
         "columns": ["close"],
         "params": {"period": ("int", 5, 60), "std": ("float", 0.5, 4.0)},
         "choices": {"band": ["below_lower", "above_upper"]},
+        "shape_card": (
+            'USE WHEN the text names Bollinger BANDS ("below the lower band", '
+            '"breaks above the upper band"). Shape: {"leaf":"bollinger",'
+            '"period":<EXTRACTED_PERIOD>,"std":<EXTRACTED_STD_MULT>,'
+            '"band":"below_lower"|"above_upper"}. NOT for plain "standard '
+            'deviations from the mean" with no band language — that is zscore.'
+        ),
     },
     "macd": {
         "compute": _leaf_macd,
         "columns": ["close"],
         "params": {"fast": ("int", 2, 50), "slow": ("int", 5, 100), "signal": ("int", 2, 30)},
         "choices": {"condition": ["bullish", "bearish"]},
+        "shape_card": (
+            'USE WHEN the MACD line vs its signal line is the condition ("MACD '
+            'turns bullish/bearish"). Shape: {"leaf":"macd","fast":<EXTRACTED_FAST>,'
+            '"slow":<EXTRACTED_SLOW>,"signal":<EXTRACTED_SIGNAL_PERIOD>,'
+            '"condition":"bullish"|"bearish"}. Only when the text actually says MACD.'
+        ),
     },
     "volume_ratio": {
         "compute": _leaf_volume_ratio,
         "columns": ["close", "volume"],
         "params": {"period": ("int", 5, 60), "min_ratio": ("float", 1.0, 10.0)},
+        "shape_card": (
+            'USE WHEN volume is compared to its own average ("volume spikes to X '
+            'times normal"). Shape: {"leaf":"volume_ratio",'
+            '"period":<EXTRACTED_PERIOD>,"min_ratio":<EXTRACTED_MULTIPLE>}. '
+            'Do not add a volume filter the text never asked for.'
+        ),
     },
     "gap": {
         "compute": _leaf_gap,
         "columns": ["close"],
         "params": {"min_pct": ("float", 0.001, 0.2)},
         "choices": {"direction": ["up", "down"]},
+        "shape_card": (
+            'USE WHEN the open gaps vs the prior close ("gaps up/down more than X '
+            'percent"). Shape: {"leaf":"gap","min_pct":<EXTRACTED_FRACTION>,'
+            '"direction":"up"|"down"}.'
+        ),
     },
     "rolling_rank": {
         "compute": _leaf_rolling_rank,
@@ -230,16 +319,34 @@ LEAVES = {
         "params": {"formation": ("int", 20, 252), "skip": ("int", 0, 30),
                    "window": ("int", 60, 504)},
         "one_of": [("min_pct", ("float", 0.5, 1.0)), ("max_pct", ("float", 0.0, 0.5))],
+        "shape_card": (
+            'USE WHEN momentum is expressed as a PERCENTILE RANK vs its own '
+            'history ("in the top decile of its trailing returns"). Shape: '
+            '{"leaf":"rolling_rank","formation":<EXTRACTED_FORMATION>,'
+            '"skip":<EXTRACTED_SKIP>,"window":<EXTRACTED_WINDOW>,'
+            '"min_pct":<EXTRACTED_PERCENTILE>} (or "max_pct" for the bottom). '
+            'NOT for a simple "return above X" — that is momentum.'
+        ),
     },
     "div_days_to_ex": {
         "compute": _leaf_div_days_to_ex,
         "columns": ["dividends"],
         "params": {"max_days": ("int", 1, 30)},
+        "shape_card": (
+            'USE WHEN proximity to a dividend ex-date is the trigger ("within N '
+            'trading days of the ex-date"). Shape: {"leaf":"div_days_to_ex",'
+            '"max_days":<EXTRACTED_DAYS>}.'
+        ),
     },
     "cpo_change": {
         "compute": _leaf_cpo_change,
         "columns": ["cpo_close"],
         "params": {"period": ("int", 1, 30), "min_pct": ("float", -0.2, 0.2)},
+        "shape_card": (
+            'USE WHEN crude palm oil futures movement drives the signal ("CPO up '
+            'more than X percent over N days"). Shape: {"leaf":"cpo_change",'
+            '"period":<EXTRACTED_PERIOD>,"min_pct":<EXTRACTED_FRACTION>}.'
+        ),
     },
     "zscore": {
         # Rolling z-score of price ("standard deviations from the N-bar mean").
@@ -248,6 +355,12 @@ LEAVES = {
         "columns": ["close"],
         "params": {"period": ("int", 10, 200)},
         "one_of": [("below", ("float", -4.0, 0.0)), ("above", ("float", 0.0, 4.0))],
+        "shape_card": (
+            'USE WHEN price distance from its own mean is measured in standard '
+            'deviations / z-score ("two sigma below the N-day mean"). Shape: '
+            '{"leaf":"zscore","period":<EXTRACTED_PERIOD>,"below":<EXTRACTED_Z>} '
+            '(or "above"). NOT Bollinger-band language — that is bollinger.'
+        ),
     },
     "funding_level": {
         # Perp funding vs absolute per-8h threshold (crypto only — the
@@ -257,6 +370,12 @@ LEAVES = {
         "columns": ["funding_rate"],
         "params": {},
         "one_of": [("below", ("float", -0.005, 0.0)), ("above", ("float", 0.0, 0.005))],
+        "shape_card": (
+            'USE WHEN perp funding is compared to an ABSOLUTE per-interval '
+            'threshold ("funding above X percent per interval"). Shape: '
+            '{"leaf":"funding_level","above":<EXTRACTED_RATE>} (or "below"). '
+            'NOT for "funding extreme vs its own history" — that is funding_zscore.'
+        ),
     },
     "funding_zscore": {
         # How extreme is funding now vs its own rolling history (in bars).
@@ -265,6 +384,13 @@ LEAVES = {
         "columns": ["funding_rate"],
         "params": {"period": ("int", 10, 200)},
         "one_of": [("below", ("float", -4.0, 0.0)), ("above", ("float", 0.0, 4.0))],
+        "shape_card": (
+            'USE WHEN funding is measured vs its OWN rolling history in standard '
+            'deviations ("funding two sigma above normal"). Shape: '
+            '{"leaf":"funding_zscore","period":<EXTRACTED_PERIOD>,'
+            '"above":<EXTRACTED_Z>} (or "below"). NOT an absolute funding '
+            'threshold — that is funding_level.'
+        ),
     },
 }
 
@@ -338,6 +464,9 @@ def validate(tree: dict) -> list[str]:
         for cname, choices in spec.get("choices", {}).items():
             if cname in node and node[cname] not in choices:
                 errors.append(f"{leaf}.{cname}={node[cname]!r} not in {choices}")
+        for cname in spec.get("required_choices", []):
+            if cname not in node:
+                errors.append(f"{leaf}: missing required choice {cname}")
 
     # A tree needs at least one side: entry (long) or short_entry (short —
     # crypto perps only, WS3). A short-only tree is valid where ALLOW_SHORT.
@@ -561,3 +690,29 @@ def leaf_catalog_text() -> str:
             parts.append(f"{cname}: one of {choices}")
         lines.append(f"- {name}({', '.join(parts)})")
     return "\n".join(lines)
+
+
+def shape_cards_text() -> str:
+    """Leaf-level SHAPE CARDS for the parser prompt: structure-only worked
+    guidance (use-when phrasing, slot placeholders, negative mappings) with
+    deliberately NO parameter values — structure teaching without the value
+    anchoring that per-technique numeric examples caused. Kept as a separate
+    function so leaf_catalog_text() (and its pin test) stays byte-identical.
+
+    Every leaf MUST carry a shape_card — a KeyError here is the drift alarm
+    for a leaf added without one."""
+    return "\n".join(f"- {name}: {spec['shape_card']}"
+                     for name, spec in LEAVES.items())
+
+
+# The one worked negative example for the parser prompt. The numeric values
+# are tied to the quoted phrase (extraction, not anchoring) — this is the
+# real observed failure (idea #73), kept verbatim as a structural vaccine.
+PARSER_NEGATIVE_EXAMPLE = """\
+WRONG-vs-RIGHT (structural — memorize the distinction):
+Text: "buy when close is above its 50-day EMA"
+BAD (never do this): {"leaf": "ema_cross", "fast": 2, "slow": 50, "direction": "above"}
+  — ema_cross compares TWO EMAs; a fast=2 EMA is NOT the price. Silent semantic error.
+CORRECT: {"leaf": "ma_level", "ma_type": "ema", "period": 50, "direction": "above"}
+If no leaf expresses the text exactly, return {"representable": false, "reason": "..."} —
+never approximate with the nearest leaf."""
