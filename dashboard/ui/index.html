@@ -2748,14 +2748,21 @@ function btlRenderCharts(series) {
   const bmPct    = series.map(s => (s.benchmark_pct || 0) * 100);
   const ddPct    = series.map(s => (s.drawdown_pct  || 0) * 100);
 
+  // series.date spans the FULL backtest window (train+val+test) — labels are
+  // trading dates, not evenly-spaced calendar days.
+  const axisTitle = (text) => ({
+    display: true, text, color: '#94a3b8', font: { size: 11 },
+  });
+  const scaleOpts = (xTitle, yTitle) => ({
+    x: { ticks: { color: '#94a3b8', maxTicksLimit: 12, font: { size: 11 } },
+         grid: { color: '#24365a' }, title: axisTitle(xTitle) },
+    y: { ticks: { color: '#94a3b8', font: { size: 11 } },
+         grid: { color: '#24365a' }, title: axisTitle(yTitle) },
+  });
   const baseOpts = {
     responsive: true, maintainAspectRatio: false,
     animation: false,
     plugins: { legend: { labels: { color: '#cbd5e1', font: { size: 12 }, boxWidth: 12 } } },
-    scales: {
-      x: { ticks: { color: '#94a3b8', maxTicksLimit: 12, font: { size: 11 } }, grid: { color: '#24365a' } },
-      y: { ticks: { color: '#94a3b8', font: { size: 11 } }, grid: { color: '#24365a' } },
-    },
   };
 
   _btlCharts.equity = new Chart(document.getElementById('btl-canvas-equity'), {
@@ -2763,21 +2770,31 @@ function btlRenderCharts(series) {
     data: { labels, datasets: [
       { label: 'Strategy %',  data: stratPct, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,.08)', borderWidth: 1.5, pointRadius: 0, fill: true },
       { label: 'Benchmark %', data: bmPct,    borderColor: '#64748b', backgroundColor: 'transparent',          borderWidth: 1,   pointRadius: 0, borderDash: [4,4] },
-    ]}, options: baseOpts,
+    ]}, options: { ...baseOpts, scales: scaleOpts('Trading date (backtest window)', 'Cumulative return (%)') },
   });
 
-  // Monthly: compound daily % by YYYY-MM
-  const monthly = {};
-  series.forEach((s, i) => { const mo = s.date.slice(0,7); monthly[mo] = (monthly[mo]||0) + stratPct[i]; });
-  const moLabels = Object.keys(monthly).sort();
-  const moValues = moLabels.map(m => +monthly[m].toFixed(2));
+  // Monthly: each month's OWN return = change in the cumulative curve over
+  // that month (last day's cumulative % minus the prior month's last day's
+  // cumulative % — NOT a sum of the cumulative curve's daily snapshots,
+  // which double/triple-counts every day's running total).
+  const moDelta = {};
+  let prevCum = 0;
+  series.forEach((s, i) => {
+    const mo = s.date.slice(0, 7);
+    if (!(mo in moDelta)) moDelta[mo] = { start: prevCum, end: stratPct[i] };
+    else moDelta[mo].end = stratPct[i];
+    prevCum = stratPct[i];
+  });
+  const moLabels = Object.keys(moDelta).sort();
+  const moValues = moLabels.map(m => +(moDelta[m].end - moDelta[m].start).toFixed(2));
   _btlCharts.monthly = new Chart(document.getElementById('btl-canvas-monthly'), {
     type: 'bar',
     data: { labels: moLabels.map(m => m.slice(5)), datasets: [{
       label: 'Monthly Return %', data: moValues, borderRadius: 3,
       backgroundColor: moValues.map(v => v >= 0 ? 'rgba(16,185,129,.7)' : 'rgba(239,68,68,.7)'),
     }]},
-    options: { ...baseOpts, plugins: { ...baseOpts.plugins, legend: { display: false } } },
+    options: { ...baseOpts, plugins: { ...baseOpts.plugins, legend: { display: false } },
+              scales: scaleOpts('Month', 'Return within that month (%)') },
   });
 
   _btlCharts.drawdown = new Chart(document.getElementById('btl-canvas-drawdown'), {
@@ -2786,7 +2803,7 @@ function btlRenderCharts(series) {
       label: 'Drawdown %', data: ddPct, borderColor: '#ef4444',
       backgroundColor: 'rgba(239,68,68,.12)', borderWidth: 1.5, pointRadius: 0, fill: true,
     }]},
-    options: baseOpts,
+    options: { ...baseOpts, scales: scaleOpts('Trading date (backtest window)', 'Drawdown from peak (%)') },
   });
 }
 
