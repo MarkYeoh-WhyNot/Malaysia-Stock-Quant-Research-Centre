@@ -142,3 +142,26 @@ def test_legacy_params_still_work(idea):
     slow = df["close"].rolling(50).mean()
     want = pd.Series(np.where(fast > slow, 1.0, 0.0), index=df.index)
     assert (sig == want).all()
+
+
+def test_parse_factor_prompt_carries_shape_guide(monkeypatch):
+    """Prompt-pin: the parser prompt must carry the leaf catalog, the
+    structure-only shape cards, and the idea-#73 WRONG-vs-RIGHT negative
+    example — and still never contain the word 'default' (anchoring)."""
+    captured = {}
+
+    def fake_call(self, system, messages, **kw):
+        captured["prompt"] = messages[0]["content"]
+        return {"representable": False, "reason": "capture only"}
+
+    monkeypatch.setattr(BacktestEngineer, "call_claude_json", fake_call)
+    be = BacktestEngineer.__new__(BacktestEngineer)
+    out = be._parse_factor("close above its 50-day EMA", "EMA level", "uptrend filter")
+    assert out["representable"] is False
+    p = captured["prompt"]
+    assert "CONDITION SHAPE GUIDE" in p
+    assert "ma_level" in p
+    assert '"leaf": "ema_cross", "fast": 2, "slow": 50' in p     # BAD example
+    assert '"leaf": "ma_level", "ma_type": "ema", "period": 50' in p  # CORRECT
+    assert "NEVER approximate" in p
+    assert "default" not in p.lower()

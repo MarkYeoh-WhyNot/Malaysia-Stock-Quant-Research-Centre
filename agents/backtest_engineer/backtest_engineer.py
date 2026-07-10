@@ -191,6 +191,11 @@ Hypothesis: {hypothesis}
 AVAILABLE CONDITIONS (parameters MUST come from the strategy text; ranges are hard limits):
 {signal_dsl.leaf_catalog_text()}
 
+CONDITION SHAPE GUIDE (structure only — every parameter VALUE must come from the strategy text):
+{signal_dsl.shape_cards_text()}
+
+{signal_dsl.PARSER_NEGATIVE_EXAMPLE}
+
 Combinators: {{"op": "AND"|"OR", "children": [<node>, <node>, ...]}} and {{"op": "NOT", "child": <node>}}.
 A leaf node looks like {{"leaf": "<name>", <params>}}.
 
