@@ -198,6 +198,16 @@ svg text{font-family:var(--font-mono)}
 .tc-use-when{font-size:12px;color:#4ade80;line-height:1.5}
 .tc-avoid-when{font-size:12px;color:#ef4444;line-height:1.5}
 .tc-ic-bench-full{font-size:12px;color:var(--purple);font-style:italic;line-height:1.4;margin-top:4px}
+/* ── Arsenal v2: signature panel ── */
+.tc-shape-badge{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:bold;white-space:nowrap;text-transform:uppercase;letter-spacing:.3px}
+.tc-shape-badge.dsl_tree{background:#064e3b;color:#4ade80}
+.tc-shape-badge.cross_sectional_factor{background:#1e3a5f;color:#60a5fa}
+.tc-shape-badge.methodology{background:#3b2d5f;color:#c4b5fd}
+.tc-shape-badge.unimplemented_concept{background:var(--bg3);color:var(--muted)}
+.tc-sig-code{background:var(--bg4);border-radius:4px;padding:8px;font-family:monospace;font-size:11px;color:#a5f3fc;overflow-x:auto;white-space:pre;margin:4px 0}
+.tc-sig-none{font-size:12px;color:var(--muted2);font-style:italic;line-height:1.5}
+.tc-sig-missing{font-size:11px;color:var(--red);margin-top:4px}
+.tc-sig-leaves{font-size:11px;color:var(--muted2);font-family:monospace;margin-top:2px}
 
 /* ── System Direction ── */
 .dir-section{margin-bottom:14px}
@@ -3956,6 +3966,58 @@ function renderArsenal() {
     const stockTypes = (t.stock_types||[]).join(', ');
     const holdingPeriods = (t.holding_periods||[]).join(', ');
 
+    // ── Arsenal v2: Signature Panel ─────────────────────────────────────────
+    const shapeLabel = {
+      dsl_tree: 'DSL Tree', cross_sectional_factor: 'Cross-Sectional Factor',
+      methodology: 'Methodology', unimplemented_concept: 'No Vocabulary Yet',
+    };
+    const shapeBadge = t.strategy_shape
+      ? `<span class="tc-shape-badge ${t.strategy_shape}">${shapeLabel[t.strategy_shape] || t.strategy_shape}</span>`
+      : '';
+
+    let signaturePanel = '';
+    if (t.strategy_shape) {
+      const rep = t.representability || {};
+      const ex  = t.example || {};
+      const reqBits = [];
+      if ((rep.required_leaves||[]).length) reqBits.push(`leaves: ${rep.required_leaves.join(', ')}`);
+      if (rep.required_factor) reqBits.push(`factor: ${rep.required_factor}`);
+      const repLine = rep.is_representable
+        ? `<div class="tc-sig-leaves">✅ Representable (${esc(rep.representation_type||'')})${reqBits.length ? ' — requires ' + esc(reqBits.join('; ')) : ''}</div>`
+        : `<div class="tc-sig-leaves" style="color:var(--red)">🚫 Not representable with the current leaf/factor registry</div>`;
+      const missingLine = (rep.missing_leaves||[]).length
+        ? `<div class="tc-sig-missing">Missing vocabulary: ${esc(rep.missing_leaves.join(', '))}</div>` : '';
+
+      let exampleBlock;
+      if (ex.dsl) {
+        exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.dsl, null, 2))}</div>`;
+      } else if (ex.factor_spec) {
+        exampleBlock = `<div class="tc-sig-code">${esc(JSON.stringify(ex.factor_spec, null, 2))}</div>`;
+      } else {
+        exampleBlock = `<div class="tc-sig-none">No executable example: ${esc(ex.none || '—')}</div>`;
+      }
+
+      signaturePanel = `
+        <button class="tc-profile-toggle" onclick="toggleProfile('sig-${t.key}',this)">
+          ▸ Signature — ${shapeBadge}
+        </button>
+        <div id="sig-${t.key}" class="tc-profile-panel">
+          ${t.family_id ? `<div class="tc-profile-section">
+            <div class="tc-profile-label">Family</div>
+            <div class="tc-profile-text">${esc(t.family_id)}</div>
+          </div>` : ''}
+          <div class="tc-profile-section">
+            <div class="tc-profile-label">Representability</div>
+            ${repLine}
+            ${missingLine}
+          </div>
+          <div class="tc-profile-section">
+            <div class="tc-profile-label">Validated Example</div>
+            ${exampleBlock}
+          </div>
+        </div>`;
+    }
+
     // ── Strategy Profile Panel ──────────────────────────────────────────────
     let profilePanel = '';
     if (t.exit_type || t.phenomenon) {
@@ -4022,6 +4084,7 @@ function renderArsenal() {
         </div>
         <div class="tc-badges">
           ${implBadge}
+          ${shapeBadge}
           <span class="tc-badge ${cplxClass}">${t.complexity}</span>
           <span class="tc-badge ${cplxClass}" title="Overfitting risk">${riskLabels[t.overfitting_risk]||t.overfitting_risk}</span>
         </div>
@@ -4035,6 +4098,7 @@ function renderArsenal() {
            <div class="tc-use-label" style="color:var(--red)">Avoid when</div>
            <ul class="tc-use-list tc-avoid-list">${avoidItems}</ul>
          </div>` : ''}
+      ${signaturePanel}
       ${profilePanel}
       ${stockTypes ? `<div style="font-size:11px;color:var(--muted);margin-top:6px">Stocks: ${esc(stockTypes)} &nbsp;|&nbsp; Horizon: ${esc(holdingPeriods)}</div>` : ''}
     </div>`;
