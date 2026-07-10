@@ -647,6 +647,26 @@ live/approve/delete): `submit_strategy_idea`, `get_idea_status`, `list_session_i
 - Endpoints: `POST /api/concierge/chat`, `GET /api/concierge/sessions/{id}`. Dashboard: 🤖
   Concierge nav item + chat panel in `dashboard/ui/index.html`.
 
+### ARSENAL V2 / SIGNATURE DB — SLIM ADOPTION (2026-07-11)
+From the external signature-DB consultation (docs/arsenal_v2_decision.md has the
+full adopt/defer record):
+- **`ma_level` DSL leaf** — price vs ONE moving average (the idea-#73 vocabulary
+  gap: "close > 50-day EMA" was mis-approximated as ema_cross(2,50)). `ma_type`
+  is a REQUIRED choice (new `required_choices` registry key in signal_dsl.py).
+  Pine mapping included.
+- **Parser shape cards** — every leaf in signal_dsl.LEAVES carries a
+  structure-only `shape_card` (slots, negative mappings, no values);
+  `shape_cards_text()` + `PARSER_NEGATIVE_EXAMPLE` (the WRONG-vs-RIGHT idea-#73
+  case) are injected into `_parse_factor`'s prompt. Validated numeric examples
+  are NEVER parser-injected (anchoring).
+- **Arsenal v2 fields on all 33 technique entries** (keys unchanged):
+  family_id / strategy_shape / representability / example (validated DSL tree,
+  factor spec, or honest `{"none": reason}`), machine-validated against the live
+  registries by tests/test_arsenal_v2.py — implementing a leaf named in an
+  entry's missing_leaves fails the disjointness test and forces the update.
+- **Concierge quotes verdict_reason VERBATIM** when explaining rejections
+  (hard rule in _system_prompt; never narrates an invented mechanism).
+
 ### MINIMUM TRADE COUNTS BY HOLDING PERIOD
 | Class | Min Trades |
 |-------|-----------|

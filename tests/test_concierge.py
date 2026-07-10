@@ -115,6 +115,34 @@ def test_suggest_techniques_by_key_and_by_shape():
     assert "not found" in unknown["techniques"]
 
 
+def test_suggest_techniques_full_detail_carries_arsenal_v2_example():
+    # market-aware: picks keys from whichever library is active this MARKET_MODE
+    from knowledge.ingestion.technique_library import TECHNIQUE_LIBRARY
+    c = ConciergeAgent()
+    # validated example for a representable technique
+    with_key = next(k for k, t in TECHNIQUE_LIBRARY.items()
+                    if "dsl" in t["example"] or "factor_spec" in t["example"])
+    detail = c._tool_suggest_techniques({"key": with_key})["techniques"]
+    assert "VALIDATED EXAMPLE" in detail
+    # honest no-example for an unimplemented concept, naming the gap
+    none_key, none_tech = next(
+        (k, t) for k, t in TECHNIQUE_LIBRARY.items()
+        if "none" in t["example"] and t["representability"]["missing_leaves"])
+    detail = c._tool_suggest_techniques({"key": none_key})["techniques"]
+    assert "NO EXECUTABLE EXAMPLE" in detail
+    assert none_tech["representability"]["missing_leaves"][0] in detail
+
+
+def test_system_prompt_pins_verbatim_verdict_rule():
+    from agents.concierge.concierge_agent import _system_prompt
+    p = _system_prompt()
+    assert "VERBATIM" in p
+    assert "rejection_reason" in p and "verdict_reason" in p
+    assert "was not recorded" in p
+    # ma_level leaf catalog inheritance — the concierge sees the new vocabulary
+    assert "ma_level" in p
+
+
 # ── Tool implementations ──────────────────────────────────────────────────────
 def test_resolve_tickers_maps_names_and_sectors():
     c = ConciergeAgent()

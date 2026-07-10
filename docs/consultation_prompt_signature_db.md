@@ -1,5 +1,8 @@
 # Consultation Request: Designing a Strategy-Signature Database / Technique Arsenal for an Autonomous Quant Research Pipeline
 
+> **STATUS (2026-07-11): consultation returned (OpenAI); slim subset adopted and
+> implemented — see `arsenal_v2_decision.md` for what was adopted vs deferred.**
+
 You are being consulted as a senior quantitative-research systems architect. Below is a
 precise description of a working production system, its core purpose, its current
 "Technique Arsenal" knowledge base, and a concrete failure that motivated this
