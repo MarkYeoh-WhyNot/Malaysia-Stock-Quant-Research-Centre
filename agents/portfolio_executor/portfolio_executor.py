@@ -457,9 +457,27 @@ class PortfolioExecutor(BaseAgent):
             or completed_trades >= GATE_CONFIG.stage4a_min_trades
         )
 
+        # Statistical honesty (gate audit, 2026-07-10): a Sharpe computed on
+        # ~29 daily NAV marks has an annualized standard error ≈ 3 — pure
+        # coin-flip. Below 45 marks the Sharpe is RECORDED but not GATING
+        # (drawdown + duration/trades carry the gate); from 45 marks the
+        # Sharpe gates as a PSR statement (≥90% confident true Sharpe > 0 —
+        # paper trading validates execution, the backtest PSR is the edge
+        # evidence).
+        n_marks = len(series)
+        if n_marks >= 45:
+            from agents.backtest_engineer.stats import psr as _psr, moments as _m
+            _rets = np.diff(navs) / navs[:-1]
+            _sk, _ku = _m(_rets)
+            _ann_paper = ann_factor  # same annualization used for `sharpe`
+            sharpe_evidence_pass = _psr(float(sharpe), 0.0, len(_rets),
+                                        _ann_paper, _sk, _ku) >= 0.90
+        else:
+            sharpe_evidence_pass = True   # too few marks to say anything
+
         gate4a_pass = (
             duration_pass
-            and sharpe >= GATE_CONFIG.stage4a_min_sharpe
+            and sharpe_evidence_pass
             and dd <= GATE_CONFIG.stage4a_max_drawdown
         )
 
@@ -501,6 +519,8 @@ class PortfolioExecutor(BaseAgent):
             "holding_period_class": hp_class,
             "min_days_required": min_days,
             "duration_pass": duration_pass,
+            "sharpe_evidence_pass": sharpe_evidence_pass,
+            "n_marks": n_marks,
             "gate4a_pass": gate4a_pass,
         }
 

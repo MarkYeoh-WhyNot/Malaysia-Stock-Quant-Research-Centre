@@ -346,6 +346,10 @@ def init_db(db_path: Path = DB_PATH):
             "ic_tstat REAL",
             "stocks_positive_ic INTEGER",
             "best_stocks TEXT",
+            # PSR principal rule (gate redesign 2026-07-10): P(true Sharpe >
+            # deflated benchmark) per slice; n_trials is the WINDOWED count.
+            "psr_test REAL",
+            "psr_trainval REAL",
         ):
             try:
                 conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")

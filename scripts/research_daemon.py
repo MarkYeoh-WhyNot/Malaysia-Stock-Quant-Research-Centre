@@ -411,9 +411,23 @@ class ResearchDaemon:
                 # ── Cross-sectional validation gate ───────────────────────────
                 if result.get("gate3_pass"):
                     await asyncio.sleep(1)
-                    cs = self.backtest_engineer.cross_sectional_test(
-                        result.get("factor_formula", ""), row["id"]
-                    )
+                    try:
+                        cs = self.backtest_engineer.cross_sectional_test(
+                            result.get("factor_formula", ""), row["id"]
+                        )
+                    except Exception as _cs_exc:
+                        # Parse/data failure must not masquerade as "factor is
+                        # not real" — skip the veto this cycle, keep stage3
+                        # (retry parity with the other LLM-dependent gates).
+                        logger.warning(
+                            f"[Stage2-CS] veto SKIPPED for [{row['id']}] — "
+                            f"test errored, not rejecting: {_cs_exc}")
+                        continue
+                    if cs.get("error"):
+                        logger.warning(
+                            f"[Stage2-CS] veto SKIPPED for [{row['id']}] — "
+                            f"{cs['error']} (data issue, not a verdict)")
+                        continue
                     logger.info(
                         f"[Stage2-CS] idea={row['id']} "
                         f"mean_IC={cs.get('mean_ic', 0):.3f} "
@@ -609,11 +623,27 @@ class ResearchDaemon:
         import json as _json
         from agents.portfolio_executor.portfolio_executor import equity_slot
 
+        # Kill-switch ENFORCEMENT (gate audit, 2026-07-10): these were
+        # alert-only before. A triggered idea (DD breach / data-confidence
+        # collapse / unresolved suspected corp action) is now SKIPPED for the
+        # cycle — no new marks or entries — instead of just Telegram-alerted.
+        # Fail-open on checker errors (an outage must not freeze paper).
+        _paused_ids: set = set()
+        try:
+            _ks = self.risk_monitor.check_kill_switches()
+            _paused_ids = {t["idea_id"] for t in (_ks or {}).get("triggered", [])}
+            if _paused_ids:
+                logger.warning(f"[Paper] kill-switch pause this cycle for "
+                               f"ideas {sorted(_paused_ids)}")
+        except Exception as _ks_exc:
+            logger.debug(f"[Paper] kill-switch check unavailable: {_ks_exc}")
+
         with db_session() as conn:
             ideas = conn.execute(
                 "SELECT id, title, ticker, timeframe FROM alpha_ideas "
                 "WHERE stage='stage4a' AND status='active' LIMIT 5"
             ).fetchall()
+        ideas = [r for r in ideas if r["id"] not in _paused_ids]
 
         for row in ideas:
             try:

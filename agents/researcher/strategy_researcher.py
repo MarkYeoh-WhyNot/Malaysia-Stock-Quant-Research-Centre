@@ -910,12 +910,14 @@ Return JSON only:
         # contradicted the pipeline's purpose. Redundant/data-mined ideas are
         # punished statistically downstream (deflated Sharpe hurdle,
         # parameter robustness, cross-sectional IC) where the evidence is.
+        # Thresholds live in GateConfig (audit hygiene 2026-07-10 — they were
+        # hardcoded here while UNRELATED dead constants sat in the config).
         passed = (
-            logic       >= 0.65
-            and claude_feas >= 0.70
-            and data_qual   >= 0.70
-            and overfit     <= 0.40
-            and feasibility >= 0.60   # deterministic pre-score
+            logic       >= GATE_CONFIG.gate0_min_logic_score
+            and claude_feas >= GATE_CONFIG.gate0_min_claude_feasibility
+            and data_qual   >= GATE_CONFIG.gate0_min_data_quality
+            and overfit     <= GATE_CONFIG.gate0_max_overfitting_risk
+            and feasibility >= 0.60   # deterministic pre-score (sandbox MIN_FEASIBILITY)
         )
 
         # Log exit quality with a hint if it's low
@@ -1175,12 +1177,23 @@ Return JSON only (use exactly this schema):
   "pass":                    true
 }}"""
 
-        result = self.call_claude_json(
-            SYSTEM,
-            [{"role": "user", "content": prompt}],
-            max_tokens=8192,
-            task_label="deep_research",
-        )
+        # Retry parity with Gate 0 (gate audit, 2026-07-10): a malformed LLM
+        # response must not hard-reject the idea as score=0 — leave it at
+        # stage1/active so the next daemon cycle retries. Same guard
+        # score_gate0 has carried since the "scored 0.00" bug.
+        try:
+            result = self.call_claude_json(
+                SYSTEM,
+                [{"role": "user", "content": prompt}],
+                max_tokens=8192,
+                task_label="deep_research",
+                raise_on_error=True,
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"[research_idea] LLM call/parse failed for idea {idea_id} — "
+                f"leaving at stage1 for retry: {exc}")
+            return {"error": str(exc), "pass": False, "retry": True}
 
         # Debug: log raw response so we can verify Claude is evaluating each idea
         import logging as _log

@@ -415,6 +415,21 @@ Return JSON:
                 "JSON parse failure — scores unavailable — recommend manual review"
                 if any_parse_failed else ""
             )
+            # A CONDITIONAL advance must carry its conditions visibly (audit
+            # 2026-07-10: they were logged to pipeline_events but the
+            # gate_decisions row looked identical to a clean advance, so the
+            # conditions were never seen again).
+            if verdict_str == "conditional":
+                _conds = verdict.get("key_conditions") or []
+                _safes = verdict.get("required_safeguards") or []
+                rationale = ("CONDITIONAL ADVANCE — conditions: "
+                             + ("; ".join(map(str, _conds)) or "unspecified")
+                             + (" | safeguards: " + "; ".join(map(str, _safes))
+                                if _safes else "")
+                             + " || " + rationale)[:900]
+                self.log_daemon(
+                    "WARN", f"Red-Blue [{idea_id}] CONDITIONAL advance — "
+                            f"conditions: {_conds} safeguards: {_safes}")
             conn.execute("""
                 INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
                 VALUES (?, 'gate3_rb', ?, 'RedBlueTeam', ?)

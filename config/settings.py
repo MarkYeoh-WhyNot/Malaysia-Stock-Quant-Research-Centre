@@ -189,15 +189,23 @@ DB_PATH = RUNTIME_DIR / "openclaw.db"
 # ── Pipeline gate / stage thresholds ─────────────────────────────────────────
 @dataclass
 class GateConfig:
-    # Gate 0 — initial idea quality
-    gate0_min_novelty_score: float      = 0.6
-    gate0_min_logic_score: float        = 0.7
+    # Gate 0 — initial idea quality. Values match what score_gate0 ACTUALLY
+    # enforces (audit 2026-07-10: the old 0.6/0.7 constants here were DEAD —
+    # never read — while the code hardcoded 0.65). Novelty is ADVISORY by
+    # design (recorded, never gates: LLM novelty scores are too noisy and a
+    # simple genuine alpha always scores low) — the field is kept only as
+    # documentation of that intent.
+    gate0_min_novelty_score: float      = 0.6   # ADVISORY — not enforced
+    gate0_min_logic_score: float        = 0.65
     # Stage 1 — deep research (score is 0.0–10.0; 6.5 ≈ "solid KLSE evidence")
     stage1_min_research_score: float    = 6.5
     # Stage 2/3 — backtesting (slightly relaxed vs FX — equities have lower Sharpe norms)
+    # stage3_min_test_sharpe was deleted 2026-07-10 (dead — never read; the
+    # PSR principal rule replaced fixed Sharpe thresholds entirely).
+    # stage3_min_sharpe survives only as the .get() fallback for unknown
+    # holding-period classes in the fundamental-screen path.
     stage3_min_sharpe: float            = 0.8
     stage3_max_train_val_gap: float     = 0.35
-    stage3_min_test_sharpe: float       = 0.7
     stage3_max_drawdown: float          = 0.25
     stage3_data_split_train: float      = 0.60
     stage3_data_split_val: float        = 0.20
@@ -264,6 +272,29 @@ class GateConfig:
     xs_min_mean_ic: float               = 0.05
     xs_min_ic_tstat: float              = 1.5
     xs_min_positive_names: int          = 15   # of the 30-name KLCI universe
+    # ── Principal pass rule (gate redesign 2026-07-10): deflated PSR ────────
+    # Pass iff P(true net Sharpe > SR*) ≥ confidence on the FULL-window
+    # evidence, where SR* is the expected max Sharpe of the recent search's
+    # noise trials (deflated benchmark — already a high bar: beating the BEST
+    # of N noise strategies, not beating zero). Replaces the fixed per-class
+    # Sharpe thresholds + the separate deflation binary.
+    # 0.70 is CALIBRATED, not arbitrary: harness strength tiers demand noise
+    # ≤5%, strong(SR~2.6) ≥90%, moderate(SR~1.4) ≥60% on 2000 bars. Single-
+    # strategy noise at 0.70 vs SR*≈1.0 still needs an observed Sharpe ≥1.2
+    # (≈0.2% FPR) BEFORE the OOS/regime/robustness/gap guards also fire —
+    # joint noise pass rate is pinned at ~0% by the harness.
+    psr_confidence_test: float          = 0.70
+    # Pooled train+val PSR is DIAGNOSTIC (reported, not gated — gating it
+    # would double-charge the same evidence the full-window PSR weighs).
+    psr_confidence_trainval: float      = 0.90
+    # Deflation trial count = distinct ideas backtested in this window (not
+    # all history — an ever-growing N silently raised the bar forever).
+    deflation_window_days: int          = 90
+    # Gate 0 thresholds — the values score_gate0 ACTUALLY enforces (novelty
+    # is advisory by design: LLM novelty scores are too noisy to gate on).
+    gate0_min_claude_feasibility: float = 0.70
+    gate0_min_data_quality: float       = 0.70
+    gate0_max_overfitting_risk: float   = 0.40
 
 # Profile-specific threshold overrides (e.g. crypto's wider drawdown norms).
 # Bursa's overrides are {} — defaults ARE the Bursa values.

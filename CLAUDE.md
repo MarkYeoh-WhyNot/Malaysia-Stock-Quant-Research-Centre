@@ -578,15 +578,34 @@ Every KB document and every alpha idea must map to one:
 - OPR sensitivity: banking stocks move with BNM rate decisions
 - CPO correlation: plantation stocks follow palm oil futures
 
-### GATE THRESHOLDS (current, may be tuned over time)
-- **Gate 0:** novelty >= 0.60 AND logic >= 0.70 AND feasibility >= 0.60
-- **Gate DQ (Phase 1.3):** Data Confidence Score >= 80/100 before backtest (price/volume completeness, stale-price + missing-day + suspected-corp-action penalties). Config: `GATE_CONFIG.dq_*`.
-- **Stage 2:** Sharpe >= 1.1 (MEDIUM_TERM), train/val gap <= 30%
-- **Benchmark gate (Phase 3.2):** strategy net annual return must beat equal-weight KLCI. Config: `GATE_CONFIG.benchmark_*`.
-- **Capacity gate (Phase 3.4):** <= 5% of ADV/day, days-to-enter <= 5. Config: `GATE_CONFIG.capacity_*`.
-- **Cross-sectional:** mean IC > 0.05, IC t-stat > 1.5, positive IC on > 15/30 KLCI stocks
-- **Stage 4A (Phase 3.5):** class-aware promotion — Sharpe/DD plus day-floor-by-class (INTRADAY/SHORT 30, MEDIUM 60, LONG 120) OR enough completed trades. Config: `GATE_CONFIG.stage4a_*`.
-- **Production-eligibility (Phase 2.3):** current-constituent-only backtests over pre-`UNIVERSE_ASOF` windows are research-grade, not production-eligible.
+### GATE THRESHOLDS (redesigned 2026-07-10 — one principal rule + orthogonal guards)
+- **Gate 0** (Haiku-scored; retry on parse failure): logic >= 0.65 AND claude_feasibility >= 0.70
+  AND data_quality >= 0.70 AND overfitting_risk <= 0.40 AND deterministic feasibility >= 0.60.
+  **Novelty is ADVISORY** (recorded, never gates). Config: `GATE_CONFIG.gate0_*`.
+- **Gate DQ (Phase 1.3):** Data Confidence Score >= 80/100 before backtest. Corp-action gap
+  penalty is Bursa-only (`HAS_CORPORATE_ACTIONS` — crypto's big bars are real moves).
+- **PRINCIPAL RULE (Gates 2-3):** deflated Probabilistic Sharpe Ratio — pass iff
+  PSR >= `GATE_CONFIG.psr_confidence_test` (0.70, calibrated) that the TRUE full-window net
+  Sharpe beats SR* = expected max Sharpe of the last `deflation_window_days` (90d) of noise
+  trials. Replaces the fixed per-class Sharpe thresholds + separate deflation binary.
+  Calibration pinned by scripts/calibration_harness.py: noise <=5%, strong(SR~2.6) >=90%,
+  moderate(SR~1.4, within risk mandate) >=60% — currently 0%/100%/67-100%.
+- **Orthogonal guards** (each tests a DIFFERENT failure mode): DD caps (train/val/test <=
+  stage3_max_drawdown 25%/35%), noise-aware train/val-gap tolerance, OOS walk-forward
+  (deg <= 0.50, OOS >= 0.30), regime terciles (>= 2/3 positive), robustness (>= 60% of ±20%
+  param perturbations keep > 50% Sharpe), cost drag (gross-net <= 0.8), full-window
+  trade-count minimums by class, liquidity floor, capacity.
+- **Benchmark gate (Phase 3.2, risk-adjusted):** full-window net Sharpe must beat the
+  equal-weight universe Sharpe (raw-return excess is report-only).
+- **Cross-sectional:** mean IC > `xs_min_mean_ic` (0.05), NW t-stat > 1.5, positive IC on
+  > 15/30 Bursa (12/20 crypto). Continuous-factor mode for basket ideas; binary legacy
+  mode as the single-name veto (skipped, not rejected, on errors).
+- **Stage 4A (Phase 3.5):** duration by class (INTRADAY/SUBDAILY/SHORT 30d, MEDIUM 60,
+  LONG 120) OR >= 20 trades, plus DD cap. Paper Sharpe gates only from 45 NAV marks
+  (as PSR vs 0 at 90% — below that it's statistical noise, recorded not gated).
+  Kill-switch triggers now PAUSE the affected idea's paper trading, not just alert.
+- **Production-eligibility (Phase 2.3):** current-constituent-only backtests over
+  pre-`UNIVERSE_ASOF` windows are research-grade, not production-eligible.
 
 ### AUDIT-DRIVEN TABLES (2026-07-09, from external system audit)
 `fee_schedules` (date-versioned costs), `data_quality_checks`, `corporate_actions`,

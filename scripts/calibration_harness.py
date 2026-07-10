@@ -165,8 +165,14 @@ def _insert_idea(ticker: str, tree: dict) -> int:
 # standard error, so a point-estimate pass/fail is itself noisy. The honest
 # measure is the PASS RATE over many independent seeds: a calibrated gate
 # stack passes a genuine edge most of the time and passes pure noise rarely.
-WIN_PASS_MIN = 0.70   # genuine edge should clear the gates ≥70% of the time
-LOSE_PASS_MAX = 0.10  # pure noise should clear them ≤10% of the time
+WIN_PASS_MIN = 0.90   # STRONG edge (SR~2.6) should clear the gates ≥90%
+LOSE_PASS_MAX = 0.05  # pure noise should clear them ≤5% of the time
+# PSR-redesign target (2026-07-10): a MODERATE edge (SR~1.4) must pass ≥60%
+# of the time AMONG trials that satisfy the risk mandate — rejections caused
+# purely by the drawdown cap are the risk policy working, not gate noise, so
+# they're excluded from the statistical-calibration denominator (and reported
+# separately).
+MODERATE_PASS_MIN = 0.60
 
 
 def _which_gate_failed(result: dict) -> str:
@@ -183,7 +189,16 @@ def _which_gate_failed(result: dict) -> str:
             return g.replace("_pass", "")
     if result.get("error"):
         return "data_or_parse"
-    # all named sub-gates passed → the train/val gap / gate2 consistency check
+    # Distinguish the DD risk cap from the statistical gap check — a
+    # risk-mandate rejection is intentional policy, not calibration noise.
+    try:
+        from config.settings import GATE_CONFIG
+        _cap = GATE_CONFIG.stage3_max_drawdown
+        for _slice in ("train", "val", "test"):
+            if (result.get(_slice) or {}).get("max_dd", 0) > _cap:
+                return "risk_dd_cap"
+    except Exception:
+        pass
     return "train_val_gap"
 
 
@@ -194,9 +209,20 @@ def _run_case(kind: str, tree: dict, seeds: list[int], n_bars: int) -> list[Tria
     ticker = TICKER_EXAMPLE.split()[0]          # "1155.KL" / "BTC/USDT"
 
     trials: list[Trial] = []
+    from config.settings import ALLOW_SHORT as _allow_short
     for seed in seeds:
-        close = (ou_series(n_bars, seed) if kind == "winner"
-                 else random_walk(n_bars, seed))
+        if kind == "winner":
+            close = ou_series(n_bars, seed)                   # SR ≈ 2.6 (strong)
+        elif kind == "moderate":
+            # Market-fair moderate tier: the tier is defined by the planted
+            # strategy's TRUE net Sharpe (~1.4 median), not by kappa. A
+            # long-only tree captures only half the OU reversion, so Bursa
+            # needs faster reversion to plant the same edge strength
+            # (measured: L/S kappa 0.07 ≈ long-only kappa 0.13 ≈ SR 1.4).
+            close = ou_series(n_bars, seed,
+                              kappa=0.07 if _allow_short else 0.13)
+        else:
+            close = random_walk(n_bars, seed)                 # zero true edge
         case_df = _ohlcv(close, index, daily_value)
         # Benchmark basket: independent low-drift random walks → a fair neutral
         # bar. Re-seeded off the same seed so each trial is self-contained.
@@ -248,16 +274,32 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
 
     win = _run_case("winner", tree, seeds, n_bars)
     lose = _run_case("loser", tree, seeds, n_bars)
+    # Strength tier (PSR redesign, 2026-07-10): a MODERATE genuine edge
+    # (kappa 0.07 → true net Sharpe ≈ 1.4 median). Makes the stack's
+    # operating point VISIBLE on every run instead of only "strong passes".
+    moderate = _run_case("moderate", tree, seeds, n_bars)
 
     win_rate = sum(t.passed for t in win) / len(win)
     lose_rate = sum(t.passed for t in lose) / len(lose)
+    # Moderate pass rate is computed among trials that satisfy the risk
+    # mandate: DD-cap rejections are the risk policy working (excluded from
+    # the statistical denominator, reported separately).
+    _mod_eligible = [t for t in moderate if t.failing_gate != "risk_dd_cap"]
+    mod_rate = (sum(t.passed for t in _mod_eligible) / len(_mod_eligible)
+                if _mod_eligible else 1.0)
+    mod_dd_rejects = sum(1 for t in moderate if t.failing_gate == "risk_dd_cap")
     # Attribute winner rejections to the gate that stopped them.
     gate_hist: dict = {}
     for t in win:
         if not t.passed:
             gate_hist[t.failing_gate] = gate_hist.get(t.failing_gate, 0) + 1
+    mod_hist: dict = {}
+    for t in moderate:
+        if not t.passed:
+            mod_hist[t.failing_gate] = mod_hist.get(t.failing_gate, 0) + 1
 
-    calibrated = win_rate >= WIN_PASS_MIN and lose_rate <= LOSE_PASS_MAX
+    calibrated = (win_rate >= WIN_PASS_MIN and lose_rate <= LOSE_PASS_MAX
+                  and mod_rate >= MODERATE_PASS_MIN)
     report = {
         "market_mode": MARKET_MODE,
         "calibrated": calibrated,
@@ -265,17 +307,22 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
         "n_bars": n_bars,
         "winner_pass_rate": round(win_rate, 3),
         "loser_pass_rate": round(lose_rate, 3),
+        "moderate_pass_rate": round(mod_rate, 3),
+        "moderate_dd_cap_rejects": mod_dd_rejects,
+        "moderate_reject_by_gate": mod_hist,
         "winner_reject_by_gate": gate_hist,
-        "diagnosis": _diagnose(win_rate, lose_rate, gate_hist),
+        "diagnosis": _diagnose(win_rate, lose_rate, gate_hist, mod_rate),
         "winner_trials": [t.__dict__ for t in win],
         "loser_trials": [t.__dict__ for t in lose],
+        "moderate_trials": [t.__dict__ for t in moderate],
     }
     if verbose:
         _print_report(report)
     return report
 
 
-def _diagnose(win_rate: float, lose_rate: float, gate_hist: dict) -> str:
+def _diagnose(win_rate: float, lose_rate: float, gate_hist: dict,
+              mod_rate: float = 1.0) -> str:
     parts = []
     if lose_rate > LOSE_PASS_MAX:
         parts.append(
@@ -290,10 +337,17 @@ def _diagnose(win_rate: float, lose_rate: float, gate_hist: dict) -> str:
             f"blocker: the '{top}' gate ({gate_hist.get(top, 0)}/{sum(gate_hist.values())} "
             "rejections). Real-world rejections are partly gate noise, not just "
             "absence of edge.")
+    if mod_rate < MODERATE_PASS_MIN:
+        parts.append(
+            f"OVER-STRICT AT MODERATE STRENGTH — a genuine ~Sharpe-1.4 edge "
+            f"(within the risk mandate) passed only {mod_rate:.0%} "
+            f"(< {MODERATE_PASS_MIN:.0%} target). The stack only certifies "
+            "near-exceptional edges; realistic ones are being rejected.")
     if not parts:
         parts.append(
-            f"GATES TRUSTWORTHY — genuine edge passes {win_rate:.0%}, noise passes "
-            f"{lose_rate:.0%}. Real rejections can be read as 'no edge found'.")
+            f"GATES TRUSTWORTHY — strong edge passes {win_rate:.0%}, moderate "
+            f"{mod_rate:.0%}, noise {lose_rate:.0%}. Real rejections can be "
+            "read as 'no edge found'.")
     return " | ".join(parts)
 
 
@@ -303,12 +357,17 @@ def _print_report(report: dict) -> None:
     print(f"GATE CALIBRATION — MARKET_MODE={report['market_mode']}  "
           f"seeds={report['n_seeds']}  bars={report['n_bars']}")
     print(line)
-    print(f"  winner (genuine edge) pass rate : {report['winner_pass_rate']:.0%}  "
+    print(f"  strong   (SR~2.6) pass rate : {report['winner_pass_rate']:.0%}  "
           f"(target ≥ {WIN_PASS_MIN:.0%})")
-    print(f"  loser  (pure noise)   pass rate : {report['loser_pass_rate']:.0%}  "
+    print(f"  moderate (SR~1.4) pass rate : {report['moderate_pass_rate']:.0%}  "
+          f"(target ≥ {MODERATE_PASS_MIN:.0%}, excl. "
+          f"{report['moderate_dd_cap_rejects']} DD-cap risk rejections)")
+    print(f"  noise    (SR 0.0) pass rate : {report['loser_pass_rate']:.0%}  "
           f"(target ≤ {LOSE_PASS_MAX:.0%})")
     if report["winner_reject_by_gate"]:
-        print(f"  winner rejections by gate       : {report['winner_reject_by_gate']}")
+        print(f"  strong rejections by gate   : {report['winner_reject_by_gate']}")
+    if report["moderate_reject_by_gate"]:
+        print(f"  moderate rejections by gate : {report['moderate_reject_by_gate']}")
     print(line)
     print(("CALIBRATED [OK]  " if report["calibrated"] else "MISCALIBRATED [XX]  ")
           + report["diagnosis"])
@@ -320,5 +379,6 @@ if __name__ == "__main__":
     print(json.dumps({"calibrated": rep["calibrated"],
                       "market_mode": rep["market_mode"],
                       "winner_pass_rate": rep["winner_pass_rate"],
+                      "moderate_pass_rate": rep["moderate_pass_rate"],
                       "loser_pass_rate": rep["loser_pass_rate"]}))
     sys.exit(0 if rep["calibrated"] else 1)

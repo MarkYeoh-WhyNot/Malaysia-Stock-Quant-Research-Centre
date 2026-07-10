@@ -579,6 +579,7 @@ Rules:
             "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0,
             "total_trades": 0, "ann_return": 0.0,
             "leverage_used": leverage, "funding_drag_pct": round(funding_drag_pct, 4),
+            "n_obs": n, "skew": 0.0, "kurt": 3.0,
         }
         if n < 20 or np.std(net_returns) < 1e-10:
             return _empty
@@ -588,6 +589,9 @@ Rules:
         n_std       = float(np.std(net_returns))
         sharpe_gross = round(float(np.mean(gross_returns) / g_std * np.sqrt(ann)), 3) if g_std > 1e-10 else 0.0
         sharpe_net   = round(float(np.mean(net_returns)   / n_std * np.sqrt(ann)), 3) if n_std > 1e-10 else 0.0
+        # Return moments for the PSR pass rule (kurt non-excess; normal = 3)
+        from agents.backtest_engineer.stats import moments as _moments
+        ret_skew, ret_kurt = _moments(net_returns)
 
         # Max drawdown (on net equity curve)
         cum    = np.cumprod(1 + np.clip(net_returns, -0.5, 0.5))
@@ -616,6 +620,9 @@ Rules:
             "ann_return":    round(float(np.mean(net_returns)) * ann, 4),
             "leverage_used": leverage,
             "funding_drag_pct": round(funding_drag_pct, 4),
+            "n_obs":         n,
+            "skew":          round(ret_skew, 3),
+            "kurt":          round(ret_kurt, 3),
         }
 
     # ── QC2: Walk-forward IS / OOS validation ────────────────────────────────
@@ -1425,19 +1432,34 @@ Rules:
                                        interval=interval)
         ic_pass = bool(ic.get("factor_is_real"))
 
-        # Benchmark gate — beat the do-nothing equal-weight universe
+        # Benchmark gate — RISK-ADJUSTED (2026-07-10): the basket's net Sharpe
+        # must beat holding the universe equal-weight. Raw ann returns are
+        # computed for the report only — comparing raw return punished
+        # market-neutral books in bull markets (category error).
         _ew = self._equal_weight_klci_returns(interval)
         _ew = _ew.reindex(close_p.index).fillna(0.0)
         _yrs = max(n_bars / _ann, 1e-9)
         strat_ann = float(nav.iloc[-1] ** (1.0 / _yrs) - 1.0)
         ew_ann = float((1.0 + _ew).prod() ** (1.0 / _yrs) - 1.0)
+        _ew_std = float(np.std(_ew.values))
+        ew_sharpe = (float(np.mean(_ew.values) / _ew_std * np.sqrt(_ann))
+                     if _ew_std > 1e-12 else 0.0)
+        _pr_std = float(np.std(port_ret.values))
+        full_window_sharpe_net = (float(np.mean(port_ret.values) / _pr_std
+                                        * np.sqrt(_ann))
+                                  if _pr_std > 1e-12 else 0.0)
+        # Like-for-like: full-window basket Sharpe vs full-window EW Sharpe.
         benchmark_pass = ((not GATE_CONFIG.benchmark_gate_enabled)
-                          or strat_ann - ew_ann >= GATE_CONFIG.benchmark_min_excess_ann)
+                          or full_window_sharpe_net >= ew_sharpe
+                                                + GATE_CONFIG.benchmark_min_excess_ann)
 
-        # Deflated-Sharpe multiple-testing hurdle (same machinery as DSL path)
+        # Principal pass rule: deflated PSR (same machinery as the DSL path).
+        from agents.backtest_engineer.stats import psr as _psr, deflated_sr_star
         with db_session() as conn:
             n_trials = conn.execute(
-                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs"
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs "
+                "WHERE created_at >= datetime('now', ?)",
+                (f"-{int(GATE_CONFIG.deflation_window_days)} days",),
             ).fetchone()["n"] + 1
             try:
                 _sw = conn.execute(
@@ -1446,39 +1468,57 @@ Rules:
                 n_trials += int(_sw or 0)
             except Exception:
                 pass
-        deflated_hurdle = float(np.sqrt(2.0 * np.log(max(n_trials, 2)) / n_bars)
-                                * np.sqrt(_ann))
-        deflation_pass = test_sharpe_net >= deflated_hurdle
+        deflated_hurdle = deflated_sr_star(n_trials, n_bars, _ann)   # = SR*
 
         hp_class = "MEDIUM_TERM"
-        sharpe_threshold = self._SHARPE_THRESHOLDS.get(hp_class, GATE_CONFIG.stage3_min_sharpe)
         dd_threshold = GATE_CONFIG.stage3_max_drawdown
         min_rebals = self._MIN_TRADES.get(hp_class, 30)
         trade_count_pass = n_rebalances >= min_rebals
-        gate2_pass = (train_r["sharpe_net"] >= sharpe_threshold
-                      and val_r["sharpe_net"] >= sharpe_threshold
+        from agents.backtest_engineer.stats import moments as _moments
+        # Principal rule on the FULL-WINDOW NAV evidence (same reasoning as
+        # the DSL path: the test slice alone lacks statistical power; the OOS
+        # walk-forward + regime guards enforce out-of-sample honesty).
+        _fw_sk, _fw_ku = _moments(port_ret.values)
+        psr_test = _psr(full_window_sharpe_net, deflated_hurdle,
+                        len(port_ret), _ann, _fw_sk, _fw_ku)
+        _tv_ret = port_ret.iloc[:len(train_df) + len(val_df)].values
+        _tv_sk, _tv_ku = _moments(_tv_ret)
+        _tv_std = float(np.std(_tv_ret))
+        _tv_sr = (float(np.mean(_tv_ret) / _tv_std * np.sqrt(_ann))
+                  if _tv_std > 1e-12 else 0.0)
+        # diagnostic, not gated
+        psr_trainval = _psr(_tv_sr,
+                            deflated_sr_star(n_trials, max(len(_tv_ret), 2), _ann),
+                            len(_tv_ret), _ann, _tv_sk, _tv_ku)
+        gate2_pass = (psr_trainval >= GATE_CONFIG.psr_confidence_trainval
                       and train_r["max_dd"] <= dd_threshold
                       and val_r["max_dd"] <= dd_threshold
                       and train_val_gap <= _max_tvg)
-        gate3_pass = (gate2_pass and test_sharpe_net >= sharpe_threshold
+        gate3_pass = (gate2_pass
+                      and psr_test >= GATE_CONFIG.psr_confidence_test
                       and test_r["max_dd"] <= dd_threshold)
-        cost_pass = test_sharpe_net >= 0.4
+        # (the old cost_pass = net >= 0.4 was dominated by the Sharpe gate —
+        # subsumed by PSR; XS costs are embedded per leg in the NAV already)
         oos_pass = sharpe_oos >= 0.30 and oos_deg <= 0.50
         regime_pass = regimes_positive >= 2
-        overall_pass = (gate3_pass and trade_count_pass and cost_pass and oos_pass
-                        and regime_pass and deflation_pass and benchmark_pass
+        overall_pass = (gate3_pass and trade_count_pass and oos_pass
+                        and regime_pass and benchmark_pass
                         and ic_pass)
 
         verdict = "PASS" if overall_pass else "REJECTED"
         verdict_reason = " | ".join(filter(None, [
-            "" if gate2_pass else "Gate2 (train/val Sharpe/DD/gap)",
-            "" if gate3_pass else f"Gate3: test net {test_sharpe_net:.2f} < {sharpe_threshold}",
+            "" if gate2_pass else (f"Gate2: train+val PSR {psr_trainval:.2f} < "
+                                   f"{GATE_CONFIG.psr_confidence_trainval} vs SR* "
+                                   f"{deflated_hurdle:.2f}, or DD/gap"),
+            "" if gate3_pass else (f"Gate3: test PSR {psr_test:.2f} < "
+                                   f"{GATE_CONFIG.psr_confidence_test} "
+                                   f"({n_trials} trials), or DD"),
             "" if trade_count_pass else f"rebalances {n_rebalances} < {min_rebals}",
-            "" if cost_pass else f"net after costs {test_sharpe_net:.2f} < 0.40",
             "" if oos_pass else f"OOS {sharpe_oos:.2f} (deg {oos_deg:.2f})",
             "" if regime_pass else f"regimes {regimes_positive}/3",
-            "" if deflation_pass else f"deflation: {test_sharpe_net:.2f} < {deflated_hurdle:.2f} ({n_trials} trials)",
-            "" if benchmark_pass else f"benchmark: {strat_ann:.1%} vs EW {ew_ann:.1%}",
+            "" if benchmark_pass else (f"benchmark: net Sharpe {test_sharpe_net:.2f} "
+                                       f"< EW Sharpe {ew_sharpe:.2f} "
+                                       f"(returns {strat_ann:.1%} vs {ew_ann:.1%}, report-only)"),
             "" if ic_pass else f"IC gate: mean_ic={ic.get('mean_ic')} t={ic.get('ic_tstat')} pos={ic.get('stocks_positive_ic')}",
         ]))
 
@@ -1578,14 +1618,15 @@ Rules:
                 "sharpe_is": sharpe_is, "sharpe_oos": sharpe_oos,
                 "train_val_gap": round(train_val_gap, 3),
                 "n_rebalances": n_rebalances,
+                "psr_test": round(psr_test, 4), "psr_trainval": round(psr_trainval, 4),
                 "deflated_hurdle": round(deflated_hurdle, 3), "n_trials": n_trials,
                 "ic": result_data["ic"], "benchmark_pass": benchmark_pass,
                 "strat_ann_return": strat_ann, "ew_ann_return": ew_ann,
+                "ew_sharpe": round(ew_sharpe, 3),
                 "parked": bool(overall_pass),
                 "gates": {"gate2_pass": gate2_pass, "gate3_pass": gate3_pass,
-                          "trade_count_pass": trade_count_pass, "cost_pass": cost_pass,
+                          "trade_count_pass": trade_count_pass,
                           "oos_pass": oos_pass, "regime_pass": regime_pass,
-                          "deflation_pass": deflation_pass,
                           "benchmark_pass": benchmark_pass, "ic_pass": ic_pass}}
 
     # ── Per-strategy exit profiles ────────────────────────────────────────────
@@ -2636,27 +2677,93 @@ Return JSON only:
                 len(train_df), len(val_df),
                 BARS_PER_YEAR.get(interval, 252),
                 GATE_CONFIG.stage3_max_train_val_gap)
+        # ── Principal pass rule (2026-07-10 redesign): deflated PSR ──────────
+        # ONE statistically grounded rule replaces the fixed per-class Sharpe
+        # thresholds and the separate deflation binary: pass iff we are
+        # confident the TRUE net Sharpe beats SR*, the expected max Sharpe of
+        # the recent search's noise trials, given this sample's length and
+        # return moments. Evidence-scaled: a moderate edge with years of data
+        # can qualify; a strong-looking short fluke cannot. Confidence levels
+        # live in GateConfig and are calibrated by the harness strength tiers.
+        from agents.backtest_engineer.stats import psr as _psr, deflated_sr_star
+        _ann_qc6 = BARS_PER_YEAR.get(interval, 252)
+        _n_bars = max(len(train_df) + len(val_df) + len(test_df), 2)
+        with db_session() as conn:
+            # Trial count over a ROLLING window (not all history — a forever-
+            # growing N silently raised the bar for every future idea
+            # regardless of its own quality; audit finding, 2026-07-10).
+            n_trials = conn.execute(
+                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs "
+                "WHERE created_at >= datetime('now', ?)",
+                (f"-{int(GATE_CONFIG.deflation_window_days)} days",),
+            ).fetchone()["n"] + 1
+            # Honest multiple-testing accounting: if this idea's params were
+            # chosen by a parameter sweep, every swept config was a trial.
+            try:
+                _sweep_trials = conn.execute(
+                    "SELECT COALESCE(SUM(n_configs), 0) AS n FROM optimizer_runs "
+                    "WHERE idea_id=? AND status='done'", (idea_id,)
+                ).fetchone()["n"]
+                n_trials += int(_sweep_trials or 0)
+            except Exception:
+                pass
+        deflated_hurdle = deflated_sr_star(n_trials, _n_bars, _ann_qc6)  # = SR*
+
         if params.get("signal_type") == "fundamental_screen":
             gate2_pass = (
                 train_r["max_dd"] <= max_dd_threshold
                 and val_r["max_dd"]   <= max_dd_threshold
                 and train_val_gap     <= _max_tvg
             )
+            gate3_pass = (
+                gate2_pass
+                and test_sharpe_net   >= sharpe_threshold
+                and test_r["max_dd"]  <= max_dd_threshold
+            )
+            psr_test = psr_trainval = None
+            full_window_sharpe_net = test_sharpe_net
         else:
+            # The principal rule weighs the FULL WINDOW's evidence: that is
+            # where a moderate true edge has statistical power (a 20% test
+            # slice alone has SE ≈ 1 annualized — no realistic edge can be
+            # 95%-confident on it, and its noise-max benchmark is huge).
+            # Test-slice honesty is enforced by the ORTHOGONAL guards: the
+            # OOS walk-forward gate (fresh-30% Sharpe floor + degradation
+            # cap) and the regime/robustness checks. Parameter selection
+            # never touches the test slice (optimizer scores train+val only),
+            # so the full-window Sharpe is evaluated once per idea.
+            _full_sig2 = self._compute_signals(df, params, symbol=symbol)
+            _full_r = self._compute_performance(df, _full_sig2, interval)
+            full_window_sharpe_net = _full_r["sharpe_net"]
+            psr_test = _psr(full_window_sharpe_net, deflated_hurdle,
+                            _full_r["n_obs"], _ann_qc6,
+                            _full_r["skew"], _full_r["kurt"])
+            # Pooled train+val PSR — reported for diagnostics, not gated
+            # (gating it would double-charge the same evidence).
+            _tv_df = pd.concat([train_df, val_df])
+            _tv_sig = self._compute_signals(_tv_df, params, symbol=symbol)
+            _tv_r = self._compute_performance(_tv_df, _tv_sig, interval)
+            psr_trainval = _psr(_tv_r["sharpe_net"],
+                                deflated_sr_star(n_trials, max(_tv_r["n_obs"], 2), _ann_qc6),
+                                _tv_r["n_obs"], _ann_qc6,
+                                _tv_r["skew"], _tv_r["kurt"])
             gate2_pass = (
-                train_r["sharpe_net"] >= sharpe_threshold
-                and val_r["sharpe_net"]   >= sharpe_threshold
-                and train_r["max_dd"] <= max_dd_threshold
+                train_r["max_dd"] <= max_dd_threshold
                 and val_r["max_dd"]   <= max_dd_threshold
                 and train_val_gap     <= _max_tvg
             )
-
-        # Gate 3 — out-of-sample test
-        gate3_pass = (
-            gate2_pass
-            and test_sharpe_net   >= sharpe_threshold
-            and test_r["max_dd"]  <= max_dd_threshold
-        )
+            gate3_pass = (
+                gate2_pass
+                and psr_test >= GATE_CONFIG.psr_confidence_test
+                and test_r["max_dd"]  <= max_dd_threshold
+            )
+            if not gate3_pass:
+                self.log_daemon(
+                    "WARN",
+                    f"Backtest [{idea_id}] PSR gate: full-window PSR "
+                    f"{psr_test:.2f} (need {GATE_CONFIG.psr_confidence_test}) "
+                    f"vs SR*={deflated_hurdle:.2f} ({n_trials} trials/"
+                    f"{GATE_CONFIG.deflation_window_days}d), or DD/gap")
 
         # QC4: minimum trade count (per holding-period class)
         trade_count_pass = actual_trades >= min_trades
@@ -2677,17 +2784,15 @@ Return JSON only:
             except Exception:
                 pass
 
-        # QC3: cost sensitivity gate
+        # QC3: cost sensitivity gate — the DRAG arm only. (The old
+        # "net < 0.4" arm was dominated by the Sharpe gate and is now
+        # subsumed by PSR; audit finding, 2026-07-10.)
         cost_pass = True
         cost_note = ""
-        if test_sharpe_net < 0.4:
-            cost_pass = False
-            cost_note = (f"Net Sharpe after Bursa transaction costs too low: "
-                         f"{test_sharpe_net:.2f} < 0.40 minimum")
-        elif test_sharpe_gross - test_sharpe_net > 0.8:
+        if test_sharpe_gross - test_sharpe_net > 0.8:
             cost_pass = False
             cost_note = (f"Strategy is cost-sensitive — gross Sharpe {test_sharpe_gross:.2f} "
-                         f"degrades to net {test_sharpe_net:.2f} after Bursa transaction costs")
+                         f"degrades to net {test_sharpe_net:.2f} after transaction costs")
         if not cost_pass:
             self.log_daemon("WARN", f"Backtest [{idea_id}] cost gate FAILED: {cost_note}")
 
@@ -2717,39 +2822,11 @@ Return JSON only:
                            f"— not robust enough")
             self.log_daemon("WARN", f"Backtest [{idea_id}] regime gate FAILED: {regime_note}")
 
-        # QC6: multiple-testing deflation — the best of N random strategies looks
-        # good by chance; require the net Sharpe to beat the expected maximum
-        # Sharpe of n_trials pure-noise strategies on this sample length
-        # (E[max SR of N iid trials] ≈ √(2·ln N / T), annualized).
-        with db_session() as conn:
-            n_trials = conn.execute(
-                "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs"
-            ).fetchone()["n"] + 1
-            # Honest multiple-testing accounting: if this idea's params were
-            # chosen by a parameter sweep, every swept config was a trial —
-            # the winner must clear the hurdle those trials imply.
-            try:
-                _sweep_trials = conn.execute(
-                    "SELECT COALESCE(SUM(n_configs), 0) AS n FROM optimizer_runs "
-                    "WHERE idea_id=? AND status='done'", (idea_id,)
-                ).fetchone()["n"]
-                n_trials += int(_sweep_trials or 0)
-            except Exception:
-                pass
-        _ann_qc6 = BARS_PER_YEAR.get(interval, 252)
-        _n_bars = max(len(train_df) + len(val_df) + len(test_df), 2)
-        deflated_hurdle = float(
-            np.sqrt(2.0 * np.log(max(n_trials, 2)) / _n_bars) * np.sqrt(_ann_qc6)
-        )
-        deflation_pass = test_sharpe_net >= deflated_hurdle
+        # QC6: multiple-testing deflation — SUBSUMED by the PSR principal rule
+        # above (SR* IS the deflated benchmark inside PSR); no separate binary.
+        # deflated_hurdle and n_trials were computed there and are persisted
+        # for traceability.
         deflation_note = ""
-        if not deflation_pass:
-            deflation_note = (
-                f"Multiple-testing gate: net Sharpe {test_sharpe_net:.2f} below the "
-                f"expected max of {n_trials} noise trials ({deflated_hurdle:.2f}) — "
-                f"consistent with selection bias, not alpha"
-            )
-            self.log_daemon("WARN", f"Backtest [{idea_id}] deflation gate FAILED: {deflation_note}")
 
         # QC7: parameter robustness (DSL signals) — a real edge survives ±20%
         # parameter jitter; a knife-edge fit does not. Pure numpy, no LLM cost.
@@ -2785,10 +2862,12 @@ Return JSON only:
         except Exception as _bench_exc:
             self.log_daemon("WARN", f"Backtest [{idea_id}] benchmark fetch failed: {_bench_exc}")
 
-        # ── Benchmark gate (Phase 3.2): must beat equal-weight KLCI after costs ─
-        # Equal-weight KLCI is the harder of the audit's two baselines. A strategy
-        # whose net annual return can't beat simply holding the index equal-weight
-        # is not earning its complexity, so it is rejected.
+        # ── Benchmark gate (Phase 3.2, RISK-ADJUSTED since 2026-07-10): the
+        # strategy's net Sharpe must beat simply holding the universe equal-
+        # weight. The old raw-return comparison punished market-neutral /
+        # long-short books in bull markets (a Sharpe-2 neutral strategy would
+        # fail against a levered-beta rally) — a category error. Raw ann-return
+        # excess is still computed and stored, REPORT-ONLY.
         equal_weight_sharpe, excess_vs_ew_ann_return = 0.0, 0.0
         benchmark_pass = True
         benchmark_note = ""
@@ -2799,20 +2878,30 @@ Return JSON only:
                     np.mean(ew_ret) / np.std(ew_ret) * np.sqrt(_ann_qc6)
                 )
                 ew_ann = float(np.mean(ew_ret) * _ann_qc6)
-                excess_vs_ew_ann_return = float(strat_ann - ew_ann)
+                excess_vs_ew_ann_return = float(strat_ann - ew_ann)  # report-only
                 if GATE_CONFIG.benchmark_gate_enabled:
+                    # Like-for-like evidence: FULL-WINDOW strategy Sharpe vs
+                    # full-window EW Sharpe (the test slice alone is too noisy
+                    # to compare against a diversified-basket Sharpe).
                     benchmark_pass = (
-                        excess_vs_ew_ann_return > GATE_CONFIG.benchmark_min_excess_ann
+                        full_window_sharpe_net >= equal_weight_sharpe
+                                           + GATE_CONFIG.benchmark_min_excess_ann
                     )
                     if not benchmark_pass:
                         benchmark_note = (
-                            f"Benchmark gate: strategy ann {strat_ann:.1%} does not beat "
-                            f"equal-weight KLCI {ew_ann:.1%} "
-                            f"(excess {excess_vs_ew_ann_return:+.1%})"
+                            f"Benchmark gate: full-window net Sharpe "
+                            f"{full_window_sharpe_net:.2f} does not beat "
+                            f"equal-weight universe Sharpe {equal_weight_sharpe:.2f} "
+                            f"(raw-return excess {excess_vs_ew_ann_return:+.1%}, report-only)"
                         )
+            else:
+                self.log_daemon(
+                    "WARN", f"Backtest [{idea_id}] benchmark gate SKIPPED — "
+                            f"insufficient equal-weight data (fail-open, disclosed)")
         except Exception as _ew_exc:
             # Benchmark data unavailable → do not block on it (fail-open, warn).
-            self.log_daemon("WARN", f"Backtest [{idea_id}] equal-weight benchmark failed: {_ew_exc}")
+            self.log_daemon("WARN", f"Backtest [{idea_id}] equal-weight benchmark failed "
+                                    f"(fail-open, disclosed): {_ew_exc}")
 
         # ── Sanity flags (warn but do not auto-reject) ────────────────────────
         sanity_flags = self._detect_sanity_flags(
@@ -2822,7 +2911,7 @@ Return JSON only:
             self.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
 
         overall_pass = (gate3_pass and trade_count_pass and cost_pass
-                        and oos_pass and regime_pass and deflation_pass
+                        and oos_pass and regime_pass
                         and robustness_pass and benchmark_pass and capacity_pass)
 
         # ── Verdict string ────────────────────────────────────────────────────
@@ -2836,19 +2925,30 @@ Return JSON only:
         elif overall_pass:
             verdict = "pass"
             verdict_reason = (
-                f"Active strategy passes all gates: net Sharpe {test_sharpe_net:.2f}, "
+                f"Active strategy passes all gates: net Sharpe {test_sharpe_net:.2f} "
+                f"(PSR {psr_test:.2f} vs SR* {deflated_hurdle:.2f}, {n_trials} trials), "
                 f"OOS={sharpe_oos:.2f}, regimes={regimes_positive}/3"
             )
         else:
             verdict = "reject"
+            _psr_note = ""
+            if psr_trainval is not None and not gate2_pass:
+                _psr_note = (f"Gate2: train+val PSR {psr_trainval:.2f} < "
+                             f"{GATE_CONFIG.psr_confidence_trainval} vs SR* "
+                             f"{deflated_hurdle:.2f} ({n_trials} trials/"
+                             f"{GATE_CONFIG.deflation_window_days}d), or DD/gap")
+            elif psr_test is not None and not gate3_pass:
+                _psr_note = (f"Gate3: test PSR {psr_test:.2f} < "
+                             f"{GATE_CONFIG.psr_confidence_test} vs SR* "
+                             f"{deflated_hurdle:.2f} — not confidently above "
+                             f"the {n_trials}-trial noise benchmark, or DD")
             verdict_reason = " | ".join(filter(None, [
-                "" if gate2_pass   else "Gate2 failed (Sharpe or DD)",
-                "" if gate3_pass   else "Gate3 failed (test Sharpe or DD)",
+                _psr_note or ("" if gate2_pass else "Gate2 failed (Sharpe or DD)"),
+                "" if _psr_note or gate3_pass else "Gate3 failed (test Sharpe or DD)",
                 "" if cost_pass    else cost_note,
                 "" if oos_pass     else oos_note,
                 "" if regime_pass  else regime_note,
                 "" if trade_count_pass else trade_count_note,
-                "" if deflation_pass else deflation_note,
                 "" if robustness_pass else robustness_note,
                 "" if benchmark_pass else benchmark_note,
                 "" if capacity_pass else capacity_note,
@@ -2907,7 +3007,8 @@ Return JSON only:
                         equal_weight_sharpe=?, excess_vs_ew_ann_return=?, benchmark_pass=?,
                         capacity_pct_adv=?, days_to_enter=?, capacity_pass=?,
                         production_eligible=?, universe_asof=?,
-                        leverage_used=?, funding_drag_pct=?
+                        leverage_used=?, funding_drag_pct=?,
+                        psr_test=?, psr_trainval=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
@@ -2921,6 +3022,8 @@ Return JSON only:
                       # WS3: leverage/funding traceability — 1.0/0.0 on Bursa,
                       # test_r carries the real values on crypto (see _compute_performance).
                       test_r.get("leverage_used"), test_r.get("funding_drag_pct"),
+                      None if psr_test is None else round(psr_test, 4),
+                      None if psr_trainval is None else round(psr_trainval, 4),
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -3058,7 +3161,12 @@ Return JSON only:
             "cost_pass":           cost_pass,
             "oos_pass":            oos_pass,
             "regime_pass":         regime_pass,
-            "deflation_pass":      deflation_pass,
+            # PSR principal rule (subsumes the old deflation binary — kept as
+            # a derived key for callers/harness that attribute failures)
+            "psr_test":            None if psr_test is None else round(psr_test, 4),
+            "psr_trainval":        None if psr_trainval is None else round(psr_trainval, 4),
+            "deflation_pass":      (psr_test is None
+                                    or psr_test >= GATE_CONFIG.psr_confidence_test),
             "benchmark_pass":      benchmark_pass,
             "capacity_pass":       capacity_pass,
             "capacity_pct_adv":    None if capacity_pct_adv == float("inf") else round(capacity_pct_adv, 4),
