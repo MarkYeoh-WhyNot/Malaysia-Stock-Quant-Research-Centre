@@ -902,6 +902,12 @@ def get_backtest_detail(idea_id: int):
             "FROM backtest_series WHERE idea_id=? ORDER BY date", (idea_id,)
         ).fetchall()
         series = [dict(r) for r in series]
+        trades = conn.execute(
+            "SELECT seq, direction, entry_date, exit_date, entry_price, exit_price, "
+            "bars_held, gross_pct, cost_pct, net_pct, is_oos "
+            "FROM backtest_trades WHERE idea_id=? ORDER BY seq", (idea_id,)
+        ).fetchall()
+        trades = [dict(r) for r in trades]
     latest = runs[0] if runs else {}
     verdict = latest.get("verdict") or ""
     verdict_reason = latest.get("verdict_reason") or ""
@@ -909,7 +915,8 @@ def get_backtest_detail(idea_id: int):
         verdict, verdict_reason = _build_bt_verdict(latest)
     return {
         "idea": idea, "runs": runs, "latest": latest,
-        "series": series, "verdict": verdict, "verdict_reason": verdict_reason,
+        "series": series, "trades": trades,
+        "verdict": verdict, "verdict_reason": verdict_reason,
     }
 
 

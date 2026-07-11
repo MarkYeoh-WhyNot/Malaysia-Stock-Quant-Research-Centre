@@ -41,6 +41,11 @@ Output only valid JSON."""
 from config.settings import PROGRESS_FILE as _PROGRESS_FILE_PATH
 _PROGRESS_FILE = str(_PROGRESS_FILE_PATH)
 
+# Capacity-adjusted-Sharpe impact coefficient (disclosed rough estimate, used
+# ONLY for the reported capacity haircut — never the gated number): market
+# impact per side ≈ this × ADV participation. 5% ADV participation ⇒ ~0.5%/side.
+_CAPACITY_IMPACT_COEF = 0.10
+
 
 def _funding_bar_sum(funding: pd.DataFrame, bar_index: pd.DatetimeIndex) -> pd.Series:
     """Resample 8h funding settlements onto a bar index with NO smearing.
@@ -490,13 +495,161 @@ Rules:
             "fee_as_of": as_of,
         }
 
+    def _net_return_series(self, df: pd.DataFrame, signals: pd.Series, interval: str,
+                           leverage: float | None = None, lag: int = 1,
+                           extra_cost_per_side: float = 0.0) -> dict:
+        """SINGLE SOURCE OF TRUTH for per-bar net returns.
+
+        Every consumer of "what did this strategy earn each bar" — the gated
+        metrics (_compute_performance), the regime stress test
+        (_compute_regimes), and the persisted equity curve — MUST route
+        through here, so the drawdown curve shown on the dashboard is the same
+        series behind the gated Sharpe (previously they were re-derived
+        independently and omitted funding/leverage/liquidation → diverged on
+        crypto). Returns date-indexed Series (bar 0 = 0.0, no position at
+        start) so callers keep date alignment.
+
+        Encapsulates the full model: QC1 one-bar signal lag, QC3 per-side
+        costs on position deltas, WS3 signed positions + real/modeled funding
+        + leverage + bounded per-bar liquidation. Each WS3 term is a
+        documented no-op on Bursa (FUNDING_INTERVAL_HOURS=None, leverage 1.0).
+
+        Returns {net, gross, signal_shifted (all indexed Series),
+        leverage_used, funding_drag_pct}.
+        """
+        close = df["close"]
+        sig   = signals.fillna(0)
+
+        # QC1: strict signal delay (signal_shifted[t] = signal[t-lag]). lag=1 is
+        # the research convention (fill at the signal-generating close); lag=2
+        # is the conservative fill-robustness variant (cede a full bar — if the
+        # edge dies at lag=2 it was living on the signal bar's own move).
+        signal_shifted = sig.shift(lag).fillna(0)
+        assert float(signal_shifted.iloc[0]) == 0.0, \
+            "Lookahead guard failure: signal_shifted[0] != 0"
+
+        bar_returns = close.pct_change().fillna(0)
+        gross_bar   = signal_shifted * bar_returns   # sign-correct for shorts
+
+        # QC3: per-side costs on every position change (bar 0 cost = 0).
+        rates  = self._cost_rates(df, interval)
+        deltas = np.diff(signal_shifted.values)
+        cost   = pd.Series(0.0, index=df.index)
+        # extra_cost_per_side: optional size-aware market-impact haircut for the
+        # REPORTED capacity-adjusted variant — 0.0 in the gated path so the
+        # gated Sharpe is never touched.
+        cost.iloc[1:] = (np.clip(deltas, 0, None) * rates["buy"]
+                         + np.clip(-deltas, 0, None) * rates["sell"]
+                         + np.abs(deltas) * extra_cost_per_side)
+
+        # WS3: funding accrual (crypto only; charged on the LAGGED position,
+        # never used to form the signal — no lookahead). Real per-bar
+        # settlements when the caller attached funding_bar_sum, else the
+        # disclosed modeled constant scaled by settlements-per-bar.
+        leverage = min(leverage if leverage else DEFAULT_LEVERAGE, MAX_LEVERAGE)
+        bar_days = 365.0 / BARS_PER_YEAR.get(interval, 252)
+        settlements_per_bar = (bar_days * 24.0 / FUNDING_INTERVAL_HOURS) if FUNDING_INTERVAL_HOURS else 0.0
+        if "funding_bar_sum" in df.columns and FUNDING_INTERVAL_HOURS:
+            funding = signal_shifted * df["funding_bar_sum"].fillna(0.0)
+        else:
+            funding = signal_shifted * AVG_FUNDING_RATE_PER_INTERVAL * settlements_per_bar
+
+        # WS3: leverage + bounded per-bar liquidation (inert at leverage 1.0).
+        net = (gross_bar - cost - funding) * leverage
+        if leverage > 1.0:
+            liq_floor = -(1.0 / leverage) * (1.0 - LIQUIDATION_BUFFER)
+            net = net.clip(lower=liq_floor)
+        # Funding PnL contribution sign: funding is SUBTRACTED above, so its
+        # contribution is the negative of the summed drag.
+        funding_drag_pct = float(-(funding * leverage).sum())
+
+        return {
+            "net": net, "gross": gross_bar, "signal_shifted": signal_shifted,
+            "cost": cost, "funding": (funding if isinstance(funding, pd.Series)
+                                      else pd.Series(funding, index=df.index)),
+            "leverage_used": leverage, "funding_drag_pct": funding_drag_pct,
+        }
+
+    def _reconstruct_trades(self, df: pd.DataFrame, signals: pd.Series,
+                            interval: str) -> list[dict]:
+        """Reconstruct the discrete trade blotter from the vectorized position
+        series. A trade is a maximal run of constant non-zero (lagged)
+        position; PnL is attributed from the SAME net-return series behind the
+        gated Sharpe, so summed net_pct reconciles to the backtest return.
+        The backtest never places orders — this is faithful to the math, not
+        an independent order log."""
+        r = self._net_return_series(df, signals, interval)
+        pos     = r["signal_shifted"].values
+        gross   = r["gross"].values
+        funding = r["funding"].values
+        cost    = r["cost"].values
+        close   = df["close"].values
+        dates   = df.index
+        n = len(pos)
+        oos_start = int(n * 0.70)
+
+        # Split each transition cost (charged at the bar the position CHANGES)
+        # into the portion that CLOSES the prior position and the portion that
+        # OPENS the new one, proportional to the units on each side. So every
+        # bar's gross/funding and every cost fragment is attributed to exactly
+        # one trade → summed trade net reconciles to the net-return series.
+        open_cost  = np.zeros(n)
+        close_cost = np.zeros(n)
+        prev = 0.0
+        for b in range(1, n):
+            c = cost[b]
+            if c:
+                a_prev, a_new = abs(prev), abs(pos[b])
+                denom = a_prev + a_new
+                if denom > 0:
+                    close_cost[b] = c * a_prev / denom
+                    open_cost[b]  = c * a_new / denom
+            prev = pos[b]
+
+        trades: list[dict] = []
+        i, seq = 1, 0   # bar 0 is always flat
+        while i < n:
+            if pos[i] == 0:
+                i += 1
+                continue
+            sign = pos[i]
+            j = i
+            while j < n and pos[j] == sign:
+                j += 1
+            # Held bars i..j-1 (entry filled at close[i-1], exit at close[j-1]).
+            gseg = float(np.sum(gross[i:j]))
+            fseg = float(np.sum(funding[i:j]))
+            entry_cost = float(open_cost[i])
+            exit_cost  = float(close_cost[j]) if j < n else 0.0
+            cseg = entry_cost + exit_cost
+            nseg = gseg - fseg - cseg
+            seq += 1
+            trades.append({
+                "seq": seq,
+                "direction": "long" if sign > 0 else "short",
+                "entry_date": str(dates[i - 1])[:19],
+                "exit_date":  str(dates[j - 1])[:19],
+                "entry_price": round(float(close[i - 1]), 6),
+                "exit_price":  round(float(close[j - 1]), 6),
+                "bars_held":   int(j - i),
+                "gross_pct":   round(gseg * 100.0, 4),
+                "cost_pct":    round(cseg * 100.0, 4),
+                "net_pct":     round(nseg * 100.0, 4),
+                "is_oos":      1 if i >= oos_start else 0,
+            })
+            i = j
+        return trades
+
     def _compute_performance(self, df: pd.DataFrame, signals: pd.Series, interval: str,
-                             leverage: float | None = None) -> dict:
+                             leverage: float | None = None, lag: int = 1,
+                             extra_cost_per_side: float = 0.0) -> dict:
         """Compute performance with QC1 lookahead guard and QC3 realistic costs.
 
         QC1 — Lookahead bias guard:
-          Signal computed on day T may only trigger a trade at T+1 open.
-          Enforced by pd.Series.shift(1) — signal_shifted[t] = signal[t-1].
+          The position at bar t earns the return from bar t. `signals` is
+          delayed `lag` bars (default 1 — the signal computed on close t-1 is
+          traded at that close, earning close t-1 -> close t; close-to-close,
+          no lookahead). lag=2 is the conservative fill-robustness variant.
           signal_shifted[0] is forced to 0 (no position at start).
 
         QC3 — Realistic transaction costs (see _cost_rates):
@@ -527,62 +680,21 @@ Rules:
           modelable; a single daily bar breaching the threshold is the
           realistic granularity available).
         """
-        close = df["close"]
-        sig   = signals.fillna(0)
-
-        # ── QC1: strict 1-bar signal delay ────────────────────────────────────
-        signal_shifted = sig.shift(1).fillna(0)
-        assert float(signal_shifted.iloc[0]) == 0.0, \
-            "Lookahead guard failure: signal_shifted[0] != 0"
-
-        bar_returns    = close.pct_change().fillna(0)
-
-        # Gross returns (no costs): position held at T earns return from T→T+1.
-        # Sign-correct for short positions (signal_shifted == -1) with no
-        # special-casing — a short earns the negative of the bar return.
-        gross_bar     = signal_shifted * bar_returns
-        gross_returns = gross_bar.values[1:]   # drop bar 0 (always 0 after shift)
-
-        # ── QC3: per-side costs on every position change ──────────────────────
-        rates          = self._cost_rates(df, interval)
-        deltas         = np.diff(signal_shifted.values)
-        buys           = np.clip(deltas, 0, None)
-        sells          = np.clip(-deltas, 0, None)
-        signal_changes = np.abs(deltas)
-        cost_adj_returns = gross_returns - buys * rates["buy"] - sells * rates["sell"]
-
-        # ── WS3: funding accrual (crypto only) ─────────────────────────────────
-        leverage = min(leverage if leverage else DEFAULT_LEVERAGE, MAX_LEVERAGE)
-        bar_days = 365.0 / BARS_PER_YEAR.get(interval, 252)
-        settlements_per_bar = (bar_days * 24.0 / FUNDING_INTERVAL_HOURS) if FUNDING_INTERVAL_HOURS else 0.0
-        if "funding_bar_sum" in df.columns and FUNDING_INTERVAL_HOURS:
-            # REAL settlements realized inside each bar's holding window,
-            # charged on the lagged position — no lookahead (the rate is paid
-            # during the window, never used to form the signal). Guarded on
-            # FUNDING_INTERVAL_HOURS: funding cannot exist on Bursa even if a
-            # stray column appears.
-            funding_drag_bar = (signal_shifted.values[1:]
-                                * df["funding_bar_sum"].values[1:])
-        else:
-            funding_drag_bar = (signal_shifted.values[1:] * AVG_FUNDING_RATE_PER_INTERVAL
-                               * settlements_per_bar)
-        pre_leverage_returns = cost_adj_returns - funding_drag_bar
-
-        # ── WS3: leverage + bounded per-bar liquidation ────────────────────────
-        net_returns = pre_leverage_returns * leverage
-        if leverage > 1.0:
-            liq_floor = -(1.0 / leverage) * (1.0 - LIQUIDATION_BUFFER)
-            net_returns = np.where(net_returns < liq_floor, liq_floor, net_returns)
-        # PnL CONTRIBUTION sign (negative = funding cost/drag, positive = funding
-        # income) — funding_drag_bar is SUBTRACTED from returns above, so the
-        # contribution is its negative, not the raw subtracted amount.
-        funding_drag_pct = float(-np.sum(funding_drag_bar) * leverage)
+        # Route through the single source of truth so the gated Sharpe, the
+        # regime test, and the persisted equity curve are the SAME series.
+        r = self._net_return_series(df, signals, interval, leverage, lag, extra_cost_per_side)
+        net_returns      = r["net"].values[1:]     # drop bar 0 (always 0)
+        gross_returns    = r["gross"].values[1:]
+        signal_changes   = np.abs(np.diff(r["signal_shifted"].values))
+        leverage         = r["leverage_used"]
+        funding_drag_pct = r["funding_drag_pct"]
 
         n = len(net_returns)
         _empty = {
             "sharpe": 0.0, "sharpe_gross": 0.0, "sharpe_net": 0.0,
             "max_dd": 1.0, "win_rate": 0.0, "profit_factor": 0.0,
-            "total_trades": 0, "ann_return": 0.0,
+            "total_trades": 0, "ann_return": 0.0, "cagr": 0.0,
+            "ulcer_index": 0.0, "avg_drawdown": 0.0, "dd_duration_bars": 0,
             "leverage_used": leverage, "funding_drag_pct": round(funding_drag_pct, 4),
             "n_obs": n, "skew": 0.0, "kurt": 3.0,
         }
@@ -604,6 +716,25 @@ Rules:
         dd     = (peak - cum) / np.where(peak != 0, peak, 1e-9)
         max_dd = float(dd.max())
 
+        # CAGR — compounded (geometric) annual return, unlike the arithmetic
+        # ann_return below. This is the figure an investor actually realizes;
+        # ann_return is kept because gates / benchmark excess read it.
+        cagr = float(cum[-1] ** (ann / n) - 1.0) if cum[-1] > 0 else -1.0
+
+        # Drawdown QUALITY (two books at the same max_dd are not equal):
+        #   ulcer_index   = RMS of the drawdown path (penalises deep + long)
+        #   avg_drawdown  = mean depth while underwater
+        #   dd_duration   = longest consecutive underwater run, in bars
+        ulcer_index  = float(np.sqrt(np.mean(dd ** 2)))
+        _underwater  = dd > 1e-9
+        avg_drawdown = float(dd[_underwater].mean()) if _underwater.any() else 0.0
+        _max_run = _run = 0
+        for _u in _underwater:
+            _run = _run + 1 if _u else 0
+            if _run > _max_run:
+                _max_run = _run
+        dd_duration_bars = int(_max_run)
+
         # Win rate / profit factor
         pos           = net_returns[net_returns > 0]
         neg           = net_returns[net_returns < 0]
@@ -623,6 +754,10 @@ Rules:
             "profit_factor": round(float(profit_factor), 3),
             "total_trades":  total_trades,
             "ann_return":    round(float(np.mean(net_returns)) * ann, 4),
+            "cagr":          round(cagr, 4),
+            "ulcer_index":   round(ulcer_index, 4),
+            "avg_drawdown":  round(avg_drawdown, 4),
+            "dd_duration_bars": dd_duration_bars,
             "leverage_used": leverage,
             "funding_drag_pct": round(funding_drag_pct, 4),
             "n_obs":         n,
@@ -676,18 +811,14 @@ Rules:
             }
 
         close      = df["close"]
-        daily_ret  = close.pct_change()
-        rolling_vol = daily_ret.rolling(60).std() * np.sqrt(BARS_PER_YEAR.get(interval, 252))  # annualised
+        rolling_vol = close.pct_change().rolling(60).std() * np.sqrt(BARS_PER_YEAR.get(interval, 252))  # annualised
 
-        # Signals on full series (so MAs etc. have full context)
-        sig          = self._compute_signals(df, params)
-        sig_shifted  = sig.shift(1).fillna(0)
-
-        # Per-bar net return (same cost model as _compute_performance)
-        rates        = self._cost_rates(df, interval)
-        deltas       = sig_shifted.diff().fillna(0)
-        cost_bar     = deltas.clip(lower=0) * rates["buy"] + (-deltas).clip(lower=0) * rates["sell"]
-        net_bar      = (sig_shifted * daily_ret - cost_bar).fillna(0)
+        # Signals on full series (so MAs etc. have full context), then per-bar
+        # NET return via the single source of truth — regime attribution now
+        # uses the same funding/leverage-aware series as the gated Sharpe
+        # (previously it re-derived returns and omitted funding on crypto).
+        sig     = self._compute_signals(df, params)
+        net_bar = self._net_return_series(df, sig, interval)["net"]
 
         valid_vol = rolling_vol.dropna()
         if len(valid_vol) < 30:
@@ -2978,6 +3109,37 @@ Return JSON only:
                 "" if capacity_pass else capacity_note,
             ]))
 
+        # ── Fidelity reports (NOT gated): fill robustness + capacity haircut ──
+        # Headline metrics on the full window, plus (a) the same edge under a
+        # 2-bar conservative fill — if the Sharpe collapses the "edge" was
+        # living on the signal bar's own move, and (b) a capacity-adjusted
+        # Sharpe that adds a size-aware market-impact haircut proportional to
+        # ADV participation. Both are reported alongside the untouched gated
+        # numbers so we can see whether the edge survives realistic execution.
+        cagr_full = ulcer_full = fill_robustness = capacity_adjusted_sharpe = None
+        dd_dur_full = None
+        sharpe_net_conservative = None
+        try:
+            _hs = self._compute_signals(df, params, symbol=symbol)
+            if _has_custom_exit:
+                _hs = self._compute_signal_with_exits(df, _hs, _exit_profile)
+            _head = self._compute_performance(df, _hs, interval)               # research fill (lag 1)
+            _cons = self._compute_performance(df, _hs, interval, lag=2)        # conservative fill
+            cagr_full   = _head.get("cagr")
+            ulcer_full  = _head.get("ulcer_index")
+            dd_dur_full = _head.get("dd_duration_bars")
+            _sh, _shc = _head.get("sharpe_net", 0.0), _cons.get("sharpe_net", 0.0)
+            sharpe_net_conservative = _shc
+            fill_robustness = round(_shc / _sh, 3) if abs(_sh) > 1e-9 else 0.0
+            # Capacity impact: linear in participation (notional/ADV). Disclosed
+            # rough estimate — 0.10 × participation per side (5% ADV ⇒ ~0.5%/side).
+            _partic = capacity_pct_adv if capacity_pct_adv not in (None, float("inf")) else 0.0
+            _impact = _CAPACITY_IMPACT_COEF * _partic
+            capacity_adjusted_sharpe = self._compute_performance(
+                df, _hs, interval, extra_cost_per_side=_impact).get("sharpe_net")
+        except Exception as _fid_exc:
+            self.log_daemon("WARN", f"[{idea_id}] fidelity reports failed: {_fid_exc}")
+
         self._log_progress(idea_id, 90, "Running cross-sectional IC check")
 
         run_id = None
@@ -3032,7 +3194,10 @@ Return JSON only:
                         capacity_pct_adv=?, days_to_enter=?, capacity_pass=?,
                         production_eligible=?, universe_asof=?,
                         leverage_used=?, funding_drag_pct=?,
-                        psr_test=?, psr_trainval=?
+                        psr_test=?, psr_trainval=?,
+                        cagr=?, ulcer_index=?, dd_duration_bars=?,
+                        sharpe_net_conservative=?, fill_robustness=?,
+                        capacity_adjusted_sharpe=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
@@ -3048,6 +3213,9 @@ Return JSON only:
                       test_r.get("leverage_used"), test_r.get("funding_drag_pct"),
                       None if psr_test is None else round(psr_test, 4),
                       None if psr_trainval is None else round(psr_trainval, 4),
+                      cagr_full, ulcer_full, dd_dur_full,
+                      sharpe_net_conservative, fill_robustness,
+                      capacity_adjusted_sharpe,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -3114,14 +3282,13 @@ Return JSON only:
             sig_full = self._compute_signals(df, params)
             if _has_custom_exit:
                 sig_full = self._compute_signal_with_exits(df, sig_full, _exit_profile)
-            sig_shifted = sig_full.shift(1).fillna(0)
-            bar_returns = df["close"].pct_change().fillna(0)
-            _rates      = self._cost_rates(df)
-            _deltas     = sig_shifted.diff().fillna(0)
-            _cost_bar   = (_deltas.clip(lower=0) * _rates["buy"]
-                           + (-_deltas).clip(lower=0) * _rates["sell"])
-            net_bar     = sig_shifted * bar_returns - _cost_bar
-            equity      = (1 + net_bar.clip(-0.5, 0.5)).cumprod()
+            # Same single-source series as the gated Sharpe. Fixes the prior
+            # divergence: this block used to omit funding/leverage AND default
+            # costs to "1d" regardless of the run's real interval, so the
+            # dashboard drawdown curve did not match the gated max_dd on crypto
+            # / sub-daily runs.
+            net_bar = self._net_return_series(df, sig_full, interval)["net"]
+            equity  = (1 + net_bar.clip(-0.5, 0.5)).cumprod()
             oos_start   = int(len(df) * 0.70)
             peak        = equity.expanding().max()
             dd_series   = (equity - peak) / peak.clip(lower=1e-9)
@@ -3133,6 +3300,7 @@ Return JSON only:
                     bench_curve = (1 + _bret).cumprod()
             except Exception:
                 bench_curve = None
+            trades = self._reconstruct_trades(df, sig_full, interval)
             with db_session() as conn:
                 conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
                 rows_eq = [
@@ -3147,8 +3315,19 @@ Return JSON only:
                     "(idea_id, date, strategy_pct, benchmark_pct, drawdown_pct, is_oos) "
                     "VALUES (?,?,?,?,?,?)", rows_eq,
                 )
+                conn.execute("DELETE FROM backtest_trades WHERE idea_id=?", (idea_id,))
+                conn.executemany(
+                    "INSERT INTO backtest_trades "
+                    "(idea_id, seq, direction, entry_date, exit_date, entry_price, "
+                    " exit_price, bars_held, gross_pct, cost_pct, net_pct, is_oos) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [(idea_id, t["seq"], t["direction"], t["entry_date"], t["exit_date"],
+                      t["entry_price"], t["exit_price"], t["bars_held"], t["gross_pct"],
+                      t["cost_pct"], t["net_pct"], t["is_oos"]) for t in trades],
+                )
             self.log_daemon("INFO",
-                f"Backtest [{idea_id}] saved {len(rows_eq)} equity curve points to backtest_series")
+                f"Backtest [{idea_id}] saved {len(rows_eq)} equity points + "
+                f"{len(trades)} reconstructed trades")
         except Exception as _eq_exc:
             self.log_daemon("WARN",
                 f"Backtest [{idea_id}] could not save equity series: {_eq_exc}")

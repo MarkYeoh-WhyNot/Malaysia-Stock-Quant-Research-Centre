@@ -403,6 +403,21 @@ def init_db(db_path: Path = DB_PATH):
             except Exception:
                 pass
 
+        # Fidelity metrics (2026-07-11): compounded CAGR (vs arithmetic
+        # ann_return in result_data), drawdown-quality (ulcer index + longest
+        # underwater run), conservative-fill robustness (Sharpe under a 2-bar
+        # delayed fill and its ratio to the research Sharpe), and a
+        # capacity-adjusted Sharpe (size-aware impact haircut — a report, the
+        # gated Sharpe is unchanged).
+        for _col in ("cagr REAL", "ulcer_index REAL", "dd_duration_bars INTEGER",
+                     "sharpe_net_conservative REAL", "fill_robustness REAL",
+                     "capacity_adjusted_sharpe REAL"):
+            try:
+                conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {_col}")
+                logger.info(f"Migration applied: backtest_runs.{_col.split()[0]} added")
+            except Exception:
+                pass
+
         # Phase 1.1: versioned transaction-cost schedules (audit §3.2). Costs are
         # date-dependent on Bursa (stamp-duty remission 0.15%→0.10% from
         # 2023-07-13). Store schedules by effective date so a backtest spanning
@@ -740,6 +755,34 @@ def init_db(db_path: Path = DB_PATH):
         """)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bs_idea ON backtest_series(idea_id)"
+        )
+
+        # Backtest Lab: reconstructed trade blotter. The backtest is vectorized
+        # (no discrete orders) — each row here is a trade RECONSTRUCTED from the
+        # position series (a maximal run of constant non-zero position), priced
+        # at the fill convention, with PnL attributed from the SAME net-return
+        # series behind the gated Sharpe (so summed net_pct reconciles to the
+        # backtest return). Faithful to the math, not an independent order log.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS backtest_trades (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                idea_id     INTEGER NOT NULL,
+                seq         INTEGER,
+                direction   TEXT,
+                entry_date  TEXT,
+                exit_date   TEXT,
+                entry_price REAL,
+                exit_price  REAL,
+                bars_held   INTEGER,
+                gross_pct   REAL,
+                cost_pct    REAL,
+                net_pct     REAL,
+                is_oos      INTEGER DEFAULT 0,
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bt_idea ON backtest_trades(idea_id)"
         )
 
         # GraphRAG knowledge layer: node registry over the existing kb_* tables.
