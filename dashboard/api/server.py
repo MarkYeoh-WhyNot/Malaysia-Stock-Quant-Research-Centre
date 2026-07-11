@@ -908,7 +908,12 @@ def get_backtest_detail(idea_id: int):
             "FROM backtest_trades WHERE idea_id=? ORDER BY seq", (idea_id,)
         ).fetchall()
         trades = [dict(r) for r in trades]
+        _dq = conn.execute(
+            "SELECT confidence_score FROM data_quality_checks WHERE idea_id=? "
+            "ORDER BY id DESC LIMIT 1", (idea_id,)).fetchone()
     latest = runs[0] if runs else {}
+    if latest and _dq:
+        latest["data_confidence"] = _dq["confidence_score"]
     verdict = latest.get("verdict") or ""
     verdict_reason = latest.get("verdict_reason") or ""
     if not verdict and latest:

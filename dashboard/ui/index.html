@@ -931,6 +931,28 @@ svg text{font-family:var(--font-mono)}
         <div class="val" id="btl-wr">—</div><div class="lbl">Win Rate</div></div>
     </div>
 
+    <!-- 3b. FIDELITY & EXECUTION (reports — the gated numbers above are unchanged) -->
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-head"><span class="panel-title">Fidelity &amp; Execution</span>
+        <span style="font-size:11px;color:var(--muted)">how the edge holds up under realistic execution — reports, not gates</span>
+      </div>
+      <div class="stat-grid" style="grid-template-columns:repeat(6,1fr);gap:8px">
+        <div class="stat-card" data-tip="Compounded (geometric) annual return — what an investor actually realizes. Differs from the arithmetic annualised return.">
+          <div class="val" id="btl-cagr" style="font-size:20px">—</div><div class="lbl">CAGR</div></div>
+        <div class="stat-card" data-tip="Net Sharpe under a conservative 2-bar-delayed fill ÷ research Sharpe. Near 1.0 = robust; low = the edge lived on the signal bar's own move.">
+          <div class="val" id="btl-fillrob" style="font-size:20px">—</div><div class="lbl">Fill Robustness</div></div>
+        <div class="stat-card" data-tip="Net Sharpe after a size-aware market-impact haircut (0.10 × ADV participation per side). Shows whether the edge survives at deployable size.">
+          <div class="val" id="btl-capsharpe" style="font-size:20px">—</div><div class="lbl">Capacity-Adj Sharpe</div></div>
+        <div class="stat-card" data-tip="Ulcer index — RMS of the drawdown path. Penalises deep AND long drawdowns, unlike max drawdown alone.">
+          <div class="val" id="btl-ulcer" style="font-size:20px">—</div><div class="lbl">Ulcer Index</div></div>
+        <div class="stat-card" data-tip="Longest consecutive underwater stretch, in bars. Two books at the same max drawdown are not equal if one recovers far slower.">
+          <div class="val" id="btl-ddur" style="font-size:20px">—</div><div class="lbl">Underwater (bars)</div></div>
+        <div class="stat-card" data-tip="Data Confidence Score (0–100). A backtest can pass because the alpha is real or because the data is wrong — this separates them.">
+          <div class="val" id="btl-dq" style="font-size:20px">—</div><div class="lbl">Data Quality</div></div>
+      </div>
+      <div id="btl-prodelig" style="margin-top:8px;font-size:11px"></div>
+    </div>
+
     <!-- 4. IS/OOS SPLIT BAR -->
     <div class="panel" style="margin-bottom:10px">
       <div class="panel-head"><span class="panel-title">Walk-Forward IS / OOS Split (70 / 30)</span></div>
@@ -1015,6 +1037,25 @@ svg text{font-family:var(--font-mono)}
           <th>Regimes</th><th>HP Class</th><th>Passed</th><th>Date</th>
         </tr></thead>
         <tbody id="btl-runs-table"></tbody>
+      </table></div>
+    </div>
+
+    <!-- 8b. RECONSTRUCTED TRADE BLOTTER -->
+    <div class="panel" style="margin-bottom:10px">
+      <div class="panel-head"><span class="panel-title">Trade History</span>
+        <span id="btl-trades-summary" style="font-size:11px;color:var(--muted)"></span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">
+        The backtest is vectorized (no live orders) — each row is a trade reconstructed from the
+        position series, priced at the fill convention, PnL attributed from the same net-return
+        series behind the Sharpe above.
+      </div>
+      <div class="tbl-wrap-lg" style="max-height:340px;overflow:auto"><table class="run-table">
+        <thead><tr>
+          <th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Entry px</th><th>Exit px</th>
+          <th>Bars</th><th>Gross %</th><th>Cost %</th><th>Net %</th><th>Slice</th>
+        </tr></thead>
+        <tbody id="btl-trades-table"></tbody>
       </table></div>
     </div>
 
@@ -1172,6 +1213,26 @@ svg text{font-family:var(--font-mono)}
 <!-- ── Paper Trades ────────────────────────────────────────────────────────── -->
 <div id="page-paper-trades" class="page">
   <div class="stat-grid" id="pt-stats"></div>
+
+  <!-- Shadow portfolio: makes "N independent RM100k sandboxes" honest -->
+  <div class="panel" style="margin-bottom:12px">
+    <div class="panel-head"><span class="panel-title">Shadow Portfolio Risk</span>
+      <span style="font-size:11px;color:var(--muted)">the sandboxes are sized independently — this is what they'd be as one book (observability, not a live constraint)</span>
+    </div>
+    <div class="stat-grid" id="shadow-stats" style="grid-template-columns:repeat(5,1fr);gap:8px">
+      <div class="stat-card" data-tip="Distinct strategies with an open paper position right now.">
+        <div class="val" id="shadow-nstrat" style="font-size:20px">—</div><div class="lbl">Active Strategies</div></div>
+      <div class="stat-card" data-tip="Combined paper exposure ÷ ONE real book's capital. 4.8× means the sandboxes together are ~5× the size you'd actually deploy.">
+        <div class="val" id="shadow-mult" style="font-size:20px">—</div><div class="lbl">Capital Multiplier</div></div>
+      <div class="stat-card" data-tip="Symbols held by more than one strategy at once — hidden crowding across 'independent' sandboxes.">
+        <div class="val" id="shadow-overlap" style="font-size:20px">—</div><div class="lbl">Same-Symbol Overlap</div></div>
+      <div class="stat-card" data-tip="Signed net exposure (long − short). Gross exposure counts both sides.">
+        <div class="val" id="shadow-net" style="font-size:20px">—</div><div class="lbl">Net Exposure</div></div>
+      <div class="stat-card" data-tip="Disclosed heuristic (0–100): capital multiplier + same-symbol crowding + any concentration breach.">
+        <div class="val" id="shadow-score" style="font-size:20px">—</div><div class="lbl">Overlap Risk</div></div>
+    </div>
+    <div id="shadow-detail" style="font-size:11px;color:var(--muted2);margin-top:8px"></div>
+  </div>
 
   <div class="row">
     <div class="col" style="max-width:300px">
@@ -2674,6 +2735,57 @@ async function loadBtlDetail(rawId) {
   document.getElementById('btl-oos').textContent = so  != null ? so.toFixed(2)        : '—';
   document.getElementById('btl-deg').textContent = deg != null ? (deg*100).toFixed(0)+'%' : '—';
 
+  // ── 3b. Fidelity & execution (report-only) ──
+  const _set = (id, txt, color) => {
+    const el = document.getElementById(id); if (!el) return;
+    el.textContent = txt; if (color) el.style.color = color;
+  };
+  _set('btl-cagr', bt.cagr != null ? (bt.cagr*100).toFixed(1)+'%' : '—',
+       bt.cagr > 0 ? 'var(--green)' : bt.cagr != null ? 'var(--red)' : '');
+  const fr = bt.fill_robustness;
+  _set('btl-fillrob', fr != null ? fr.toFixed(2)+'×' : '—',
+       fr >= 0.7 ? 'var(--green)' : fr >= 0.4 ? 'var(--yellow)' : fr != null ? 'var(--red)' : '');
+  const cas = bt.capacity_adjusted_sharpe;
+  _set('btl-capsharpe', cas != null ? cas.toFixed(2) : '—',
+       cas >= 1 ? 'var(--green)' : cas != null ? 'var(--yellow)' : '');
+  _set('btl-ulcer', bt.ulcer_index != null ? (bt.ulcer_index*100).toFixed(1)+'%' : '—');
+  _set('btl-ddur', bt.dd_duration_bars != null ? bt.dd_duration_bars : '—');
+  const dq = bt.data_confidence;
+  _set('btl-dq', dq != null ? dq.toFixed(0)+'/100' : '—',
+       dq >= 80 ? 'var(--green)' : dq != null ? 'var(--red)' : '');
+  const pe = bt.production_eligible;
+  document.getElementById('btl-prodelig').innerHTML = pe == null ? '' : (pe
+    ? '<span style="color:var(--green)">✔ Production-eligible</span>'
+    : '<span style="color:var(--yellow)">⚠ Research-grade only — point-in-time constituents not corrected (survivorship). Backtest starts before the universe-as-of date.</span>');
+
+  // ── 8b. Reconstructed trade blotter ──
+  const trades = d.trades || [];
+  const _tb = document.getElementById('btl-trades-table');
+  const _sm = document.getElementById('btl-trades-summary');
+  if (!trades.length) {
+    _tb.innerHTML = '<tr><td colspan="11" style="color:var(--muted);text-align:center;padding:16px">No reconstructed trades — run a backtest to populate.</td></tr>';
+    _sm.textContent = '';
+  } else {
+    const nets = trades.map(t => t.net_pct);
+    const totalNet = nets.reduce((a,b) => a+b, 0);
+    const wins = nets.filter(v => v > 0).length;
+    const top5 = [...nets].map(Math.abs).sort((a,b) => b-a).slice(0,5).reduce((a,b) => a+b, 0);
+    const grossAbs = nets.map(Math.abs).reduce((a,b) => a+b, 0) || 1;
+    _sm.textContent = `${trades.length} trades · ${wins} winners · top-5 = ${(top5/grossAbs*100).toFixed(0)}% of gross PnL`;
+    _tb.innerHTML = trades.map(t => `<tr class="${t.net_pct>=0?'pass':'fail'}">
+      <td style="color:var(--muted)">${t.seq}</td>
+      <td>${t.direction==='long'?'▲ L':'▼ S'}</td>
+      <td style="font-size:11px">${esc((t.entry_date||'').slice(0,10))}</td>
+      <td style="font-size:11px">${esc((t.exit_date||'').slice(0,10))}</td>
+      <td>${t.entry_price}</td><td>${t.exit_price}</td>
+      <td>${t.bars_held}</td>
+      <td>${t.gross_pct!=null?t.gross_pct.toFixed(2):'—'}</td>
+      <td style="color:var(--muted)">${t.cost_pct!=null?t.cost_pct.toFixed(2):'—'}</td>
+      <td style="font-weight:bold">${t.net_pct!=null?t.net_pct.toFixed(2):'—'}</td>
+      <td style="font-size:10px;color:var(--muted)">${t.is_oos?'OOS':'IS'}</td>
+    </tr>`).join('');
+  }
+
   // ── 6. Regime stress ──
   const rl = bt.sharpe_low_vol; const rm = bt.sharpe_mid_vol; const rh = bt.sharpe_high_vol;
   const rp = bt.regimes_positive;
@@ -2994,6 +3106,30 @@ async function runSandbox() {
     </div>`;
 }
 
+async function loadShadowPortfolio() {
+  const resp = await apiFetch('/risk/snapshot');
+  if (!resp) return;
+  const s = resp.current || resp;
+  const cur = IS_CRYPTO ? 'USDT' : 'RM';
+  const set = (id, txt, color) => { const el = document.getElementById(id); if (el) { el.textContent = txt; if (color) el.style.color = color; } };
+  set('shadow-nstrat', s.active_strategy_count ?? 0);
+  const mult = s.paper_capital_multiplier ?? 0;
+  set('shadow-mult', mult ? mult.toFixed(1) + '×' : '—',
+      mult > 3 ? 'var(--red)' : mult > 1.5 ? 'var(--yellow)' : 'var(--green)');
+  const ov = s.same_symbol_overlap_count ?? 0;
+  set('shadow-overlap', ov, ov > 0 ? 'var(--yellow)' : 'var(--green)');
+  set('shadow-net', s.net_exposure_myr != null ? cur + (s.net_exposure_myr/1000).toFixed(0) + 'k' : '—');
+  const sc = s.overlap_risk_score ?? 0;
+  set('shadow-score', sc, sc >= 60 ? 'var(--red)' : sc >= 30 ? 'var(--yellow)' : 'var(--green)');
+  const det = document.getElementById('shadow-detail');
+  if (mult > 1.2) {
+    det.innerHTML = `⚠ Combined paper exposure is <b>${mult.toFixed(1)}×</b> a single real book — the "total NAV" elsewhere sums ${s.active_strategy_count} independent sandboxes and does not represent deployable capital.`;
+    det.style.color = 'var(--yellow)';
+  } else {
+    det.textContent = '';
+  }
+}
+
 // ── Paper Trades ────────────────────────────────────────────────────────────
 async function loadPaperTrades() {
   const d = await apiFetch('/paper-trades?limit=100');
@@ -3006,6 +3142,7 @@ async function loadPaperTrades() {
     <div class="stat-card"><div class="val" style="color:${s.total_pnl>0?'var(--green)':'var(--red)'}">${s.total_pnl?.toFixed(4)||'0'}</div><div class="lbl">Total PnL</div></div>
     <div class="stat-card"><div class="val" style="color:var(--yellow)">${winRate}</div><div class="lbl">Win Rate</div></div>
   `;
+  loadShadowPortfolio();
   const open   = d.trades.filter(t => t.status === 'open');
   const closed = d.trades.filter(t => t.status === 'closed');
   document.getElementById('pt-open-table').innerHTML = open.map(t =>

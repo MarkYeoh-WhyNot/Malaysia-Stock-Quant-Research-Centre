@@ -64,3 +64,18 @@ def test_diversified_book_passes_sector_limit(rm):
     assert snap["max_sector_pct"] == pytest.approx(1 / 3, abs=0.01)
     # single-name is 1/3 > 15% so single-name limit still trips — that's expected
     assert "sector" not in " ".join(snap["breaches"]) or snap["max_sector_pct"] <= 0.35
+
+
+def test_shadow_portfolio_overlap_and_multiplier(rm):
+    # Two separate STRATEGIES both hold Maybank → same-symbol overlap; a third
+    # holds another name. Three sandboxes, so combined exposure > one book.
+    _open_position(SENTINELS[0], "1155.KL", 1000, 10.0)   # strat A → Maybank
+    _open_position(SENTINELS[1], "1155.KL", 1000, 10.0)   # strat B → Maybank (overlap!)
+    _open_position(SENTINELS[2], "5347.KL", 1000, 10.0)   # strat C → Tenaga
+    snap = rm.portfolio_risk_snapshot()
+    assert snap["active_strategy_count"] == 3
+    assert snap["same_symbol_overlap_count"] == 1          # 1155.KL held by 2 strats
+    assert snap["same_symbol_overlap_notional"] == pytest.approx(20000.0)
+    assert snap["net_exposure_myr"] == pytest.approx(30000.0)   # all long
+    assert snap["paper_capital_multiplier"] > 0
+    assert 0 <= snap["overlap_risk_score"] <= 100

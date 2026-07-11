@@ -1,7 +1,8 @@
 import json, logging
 from datetime import datetime
 from agents.base_agent import BaseAgent
-from config.settings import MODEL_FAST, GATE_CONFIG, KLCI_BY_SYMBOL, CONCENTRATION_SECTOR
+from config.settings import (MODEL_FAST, GATE_CONFIG, KLCI_BY_SYMBOL,
+                             CONCENTRATION_SECTOR, PAPER_CAPITAL_MYR)
 from data.database import db_session
 
 # The sector whose over-concentration max_bank_pct guards — profile-driven
@@ -78,24 +79,47 @@ class RiskMonitor(BaseAgent):
         """
         with db_session() as conn:
             rows = conn.execute(
-                "SELECT pair, units, entry_price FROM paper_trades WHERE status='open'"
+                "SELECT idea_id, pair, units, entry_price FROM paper_trades WHERE status='open'"
             ).fetchall()
 
-        by_ticker, by_sector, bank_exposure, gross = {}, {}, 0.0, 0.0
+        # gross uses |exposure| (shorts count — the audit flagged that they were
+        # previously dropped); net is signed (long − short). ticker_strats tracks
+        # which STRATEGIES hold each symbol so we can see overlap: N isolated
+        # sandboxes trading the same name is hidden portfolio risk.
+        by_ticker, by_sector, bank_exposure = {}, {}, 0.0
+        gross = net = 0.0
+        strategies, ticker_strats = set(), {}
         for r in rows:
             val = float((r["units"] or 0) * (r["entry_price"] or 0))
-            if val <= 0:
+            if val == 0:
                 continue
-            gross += val
-            by_ticker[r["pair"]] = by_ticker.get(r["pair"], 0.0) + val
+            aval = abs(val)
+            gross += aval
+            net += val
+            strategies.add(r["idea_id"])
+            ticker_strats.setdefault(r["pair"], set()).add(r["idea_id"])
+            by_ticker[r["pair"]] = by_ticker.get(r["pair"], 0.0) + aval
             sector = (KLCI_BY_SYMBOL.get(r["pair"], {}) or {}).get("sector", "Unknown")
-            by_sector[sector] = by_sector.get(sector, 0.0) + val
+            by_sector[sector] = by_sector.get(sector, 0.0) + aval
             if sector == _BANK_SECTOR:
-                bank_exposure += val
+                bank_exposure += aval
+
+        # Shadow-portfolio observability (does NOT gate — it makes the "sum of
+        # N independent RM100k sandboxes" honest instead of pretending it is a
+        # deployable book). paper_capital_multiplier: combined paper exposure vs
+        # ONE real book's capital — 4.8× means you're testing at ~5× real size.
+        active_strategy_count = len(strategies)
+        overlap_syms = [s for s, st in ticker_strats.items() if len(st) > 1]
+        overlap_notional = round(sum(by_ticker[s] for s in overlap_syms), 2)
+        paper_capital_multiplier = round(gross / PAPER_CAPITAL_MYR, 2) if PAPER_CAPITAL_MYR else 0.0
+        net_exposure = round(net, 2)
 
         if gross <= 0:
             return {"open_positions": 0, "gross_exposure_myr": 0.0,
-                    "concentration_ok": True, "detail": "no open positions"}
+                    "net_exposure_myr": 0.0, "active_strategy_count": 0,
+                    "same_symbol_overlap_count": 0, "paper_capital_multiplier": 0.0,
+                    "overlap_risk_score": 0, "concentration_ok": True,
+                    "detail": "no open positions"}
 
         max_single_pct = max(by_ticker.values()) / gross
         max_sector, max_sector_val = max(by_sector.items(), key=lambda kv: kv[1])
@@ -111,11 +135,24 @@ class RiskMonitor(BaseAgent):
             breaches.append(f"bank {bank_pct:.0%} > {GATE_CONFIG.max_bank_pct:.0%}")
         concentration_ok = not breaches
 
+        # Overlap risk score (0–100, higher = riskier) — a disclosed heuristic:
+        # capital multiplier + same-symbol crowding + any concentration breach.
+        overlap_risk_score = int(min(100, round(
+            paper_capital_multiplier * 15
+            + len(overlap_syms) * 12
+            + (30 if not concentration_ok else 0))))
+
         kill = self.check_kill_switches()
         kill_active = bool(kill["triggered"])
         detail = json.dumps({
             "by_sector_pct": {k: round(v / gross, 3) for k, v in by_sector.items()},
             "breaches": breaches, "kill_switches": kill["triggered"],
+            "active_strategy_count": active_strategy_count,
+            "net_exposure_myr": net_exposure,
+            "same_symbol_overlap": {s: sorted(ticker_strats[s]) for s in overlap_syms},
+            "same_symbol_overlap_notional": overlap_notional,
+            "paper_capital_multiplier": paper_capital_multiplier,
+            "overlap_risk_score": overlap_risk_score,
         })
 
         with db_session() as conn:
@@ -139,6 +176,12 @@ class RiskMonitor(BaseAgent):
                 pass
         return {
             "open_positions": len(rows), "gross_exposure_myr": round(gross, 2),
+            "net_exposure_myr": net_exposure,
+            "active_strategy_count": active_strategy_count,
+            "same_symbol_overlap_count": len(overlap_syms),
+            "same_symbol_overlap_notional": overlap_notional,
+            "paper_capital_multiplier": paper_capital_multiplier,
+            "overlap_risk_score": overlap_risk_score,
             "max_single_pct": round(max_single_pct, 4),
             "max_sector": max_sector, "max_sector_pct": round(max_sector_pct, 4),
             "bank_pct": round(bank_pct, 4), "concentration_ok": concentration_ok,
