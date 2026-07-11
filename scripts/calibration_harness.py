@@ -155,8 +155,13 @@ def _insert_idea(ticker: str, tree: dict) -> int:
                   stage, status, novelty_score, logic_score, feasibility_score)
                VALUES (?,?,?,?,?,?, 'stage2', 'processing', 0.8, 0.8, 0.8)""",
             (f"calib-{ticker}-{np.random.randint(1_000_000)}",
-             "calibration probe", "synthetic calibration probe",
-             ticker, "1d", "z-score reversion (synthetic calibration)"),
+             "Calibration probe — z-score reversion (synthetic)",
+             "SYNTHETIC gate-calibration fixture, NOT a real strategy: z-score "
+             "mean reversion (long when price is a threshold of standard "
+             "deviations below its rolling mean, exit at the mean) run on "
+             "synthetic price data with a known answer, to verify the gate "
+             "stack passes genuine edges and rejects noise.",
+             ticker, "1d", "z-score mean reversion on synthetic calibration data"),
         )
         return cur.lastrowid
 

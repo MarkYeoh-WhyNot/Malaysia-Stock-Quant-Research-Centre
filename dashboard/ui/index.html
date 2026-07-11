@@ -2680,7 +2680,21 @@ async function loadBtlDetail(rawId) {
   document.getElementById('btl-title').textContent = r.title;
   document.getElementById('btl-meta').textContent =
     `#${r.id} · ${r.ticker||'—'} · ${r.timeframe||'—'} · ${r.stage} · ${r.status}`;
-  document.getElementById('btl-hypothesis').textContent = r.hypothesis || '—';
+  // Calibration probes: show the ACTUAL strategy being tested, with a loud
+  // synthetic-data warning so the good Sharpe is never mistaken for real alpha.
+  const _isCalib = (r.slug||'').startsWith('calib-') || (r.title||'').toLowerCase().includes('calibration probe');
+  const hypEl = document.getElementById('btl-hypothesis');
+  if (_isCalib) {
+    hypEl.innerHTML =
+      '<div style="color:var(--yellow);font-weight:bold;margin-bottom:5px">🧪 SYNTHETIC GATE-CALIBRATION FIXTURE — not a real strategy, not tradable</div>'
+      + '<div><b>Strategy under test:</b> Z-score mean reversion — go long when price falls a threshold of standard deviations below its rolling mean, exit as it reverts to the mean.</div>'
+      + '<div style="margin-top:4px"><b>Data:</b> SYNTHETIC prices with a known answer — a mean-reverting (Ornstein–Uhlenbeck) series for a genuine planted edge, or a random walk for pure noise. Used to verify the gate stack passes real edges and rejects noise.</div>'
+      + '<div style="margin-top:4px;color:var(--muted)">The Sharpe below is <b>expected by construction</b>, not discovered alpha — this row must never count toward a validated strategy.</div>';
+    hypEl.style.borderLeftColor = 'var(--yellow)';
+  } else {
+    hypEl.textContent = r.hypothesis || '—';
+    hypEl.style.borderLeftColor = 'var(--border)';
+  }
   const vb = document.getElementById('btl-verdict-badge');
   const v = d.verdict || '';
   vb.textContent = v || 'PENDING';
