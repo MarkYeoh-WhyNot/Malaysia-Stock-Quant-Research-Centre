@@ -1761,13 +1761,28 @@ def dept_overview():
         ar_in_pipe = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('gate0','stage1') AND status IN ('active','pending')").fetchone()["n"]
         ar_last    = conn.execute("SELECT created_at FROM gate_decisions WHERE gate='gate0' ORDER BY id DESC LIMIT 1").fetchone()
 
-        de_runs   = conn.execute("SELECT COUNT(*) as n FROM backtest_runs").fetchone()["n"]
+        # Every calibration-harness probe runs a REAL backtest (that's the
+        # point — it exercises the gate stack), so unfiltered backtest_runs
+        # counts/aggregates are directly polluted by ~70 synthetic runs per
+        # market. Worst case: qr_best (Best Sharpe) would show a probe's
+        # fabricated-by-construction Sharpe (2.4-3.9) instead of any real
+        # research result. Joined + filtered like every other idea metric.
+        de_runs   = conn.execute(
+            f"SELECT COUNT(*) as n FROM backtest_runs br JOIN alpha_ideas ai "
+            f"ON ai.id=br.idea_id WHERE ai.{_REAL_IDEA_FILTER}").fetchone()["n"]
         de_stage2 = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage2' AND status='active'").fetchone()["n"]
-        de_last   = conn.execute("SELECT created_at FROM backtest_runs ORDER BY id DESC LIMIT 1").fetchone()
+        de_last   = conn.execute(
+            f"SELECT br.created_at FROM backtest_runs br JOIN alpha_ideas ai "
+            f"ON ai.id=br.idea_id WHERE ai.{_REAL_IDEA_FILTER} "
+            f"ORDER BY br.id DESC LIMIT 1").fetchone()
 
         qr_total  = de_runs
-        qr_pass   = conn.execute("SELECT COUNT(*) as n FROM backtest_runs WHERE passed=1").fetchone()["n"]
-        qr_best_r = conn.execute("SELECT MAX(sharpe_net) as v FROM backtest_runs WHERE passed=1").fetchone()
+        qr_pass   = conn.execute(
+            f"SELECT COUNT(*) as n FROM backtest_runs br JOIN alpha_ideas ai "
+            f"ON ai.id=br.idea_id WHERE br.passed=1 AND ai.{_REAL_IDEA_FILTER}").fetchone()["n"]
+        qr_best_r = conn.execute(
+            f"SELECT MAX(br.sharpe_net) as v FROM backtest_runs br JOIN alpha_ideas ai "
+            f"ON ai.id=br.idea_id WHERE br.passed=1 AND ai.{_REAL_IDEA_FILTER}").fetchone()
         qr_best   = qr_best_r["v"] if qr_best_r else None
         qr_last   = de_last
 
@@ -1778,20 +1793,30 @@ def dept_overview():
         # notes JSON (notes.verdict), same source dept_red_blue() below reads.
         # Previously this queried gate_decisions.decision='advance'/'conditional',
         # which never matches — Advances/Conditionals were permanently stuck at 0.
+        # Confirmed live in production (2026-07-11): a calibration probe CAN
+        # reach a real red-blue debate — the harness sets a passing probe to
+        # stage3/active and only retires it (marks rejected) right before
+        # inserting the NEXT probe, so the daemon's own stage3 sweep can pick
+        # up a still-active probe in that window and run it through
+        # RedBlueTeam for real. Joined + filtered like every other query here.
         rb_total  = conn.execute(
-            "SELECT COUNT(*) as n FROM pipeline_events "
-            "WHERE stage='stage3' AND agent='RedBlueTeam'").fetchone()["n"]
+            f"SELECT COUNT(*) as n FROM pipeline_events pe JOIN alpha_ideas ai "
+            f"ON ai.id=pe.idea_id WHERE pe.stage='stage3' AND pe.agent='RedBlueTeam' "
+            f"AND ai.{_REAL_IDEA_FILTER}").fetchone()["n"]
         rb_adv    = conn.execute(
-            "SELECT COUNT(*) as n FROM pipeline_events WHERE stage='stage3' "
-            "AND agent='RedBlueTeam' AND json_extract(notes,'$.verdict')='advance'"
+            f"SELECT COUNT(*) as n FROM pipeline_events pe JOIN alpha_ideas ai "
+            f"ON ai.id=pe.idea_id WHERE pe.stage='stage3' AND pe.agent='RedBlueTeam' "
+            f"AND json_extract(pe.notes,'$.verdict')='advance' AND ai.{_REAL_IDEA_FILTER}"
         ).fetchone()["n"]
         rb_cond   = conn.execute(
-            "SELECT COUNT(*) as n FROM pipeline_events WHERE stage='stage3' "
-            "AND agent='RedBlueTeam' AND json_extract(notes,'$.verdict')='conditional'"
+            f"SELECT COUNT(*) as n FROM pipeline_events pe JOIN alpha_ideas ai "
+            f"ON ai.id=pe.idea_id WHERE pe.stage='stage3' AND pe.agent='RedBlueTeam' "
+            f"AND json_extract(pe.notes,'$.verdict')='conditional' AND ai.{_REAL_IDEA_FILTER}"
         ).fetchone()["n"]
         rb_last   = conn.execute(
-            "SELECT created_at FROM pipeline_events WHERE stage='stage3' "
-            "AND agent='RedBlueTeam' ORDER BY id DESC LIMIT 1").fetchone()
+            f"SELECT pe.created_at FROM pipeline_events pe JOIN alpha_ideas ai "
+            f"ON ai.id=pe.idea_id WHERE pe.stage='stage3' AND pe.agent='RedBlueTeam' "
+            f"AND ai.{_REAL_IDEA_FILTER} ORDER BY pe.id DESC LIMIT 1").fetchone()
         # "active" should mean a debate is CURRENTLY pending, not "one ever
         # happened" (rb_total>0 stays true forever after the first debate,
         # which is what made the department look permanently 'active' with
@@ -1800,10 +1825,19 @@ def dept_overview():
             f"SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage3' "
             f"AND status='active' AND {_REAL_IDEA_FILTER}").fetchone()["n"]
 
-        ex_open   = conn.execute("SELECT COUNT(*) as n FROM paper_trades WHERE status='open'").fetchone()["n"]
-        ex_s4     = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'").fetchone()["n"]
-        ex_pnl    = float(conn.execute("SELECT COALESCE(SUM(pnl),0) as v FROM paper_trades WHERE status='closed'").fetchone()["v"])
-        ex_last   = conn.execute("SELECT opened_at FROM paper_trades ORDER BY id DESC LIMIT 1").fetchone()
+        ex_open   = conn.execute(
+            f"SELECT COUNT(*) as n FROM paper_trades pt JOIN alpha_ideas ai "
+            f"ON ai.id=pt.idea_id WHERE pt.status='open' AND ai.{_REAL_IDEA_FILTER}").fetchone()["n"]
+        ex_s4     = conn.execute(
+            f"SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') "
+            f"AND status='active' AND {_REAL_IDEA_FILTER}").fetchone()["n"]
+        ex_pnl    = float(conn.execute(
+            f"SELECT COALESCE(SUM(pt.pnl),0) as v FROM paper_trades pt JOIN alpha_ideas ai "
+            f"ON ai.id=pt.idea_id WHERE pt.status='closed' AND ai.{_REAL_IDEA_FILTER}").fetchone()["v"])
+        ex_last   = conn.execute(
+            f"SELECT pt.opened_at FROM paper_trades pt JOIN alpha_ideas ai "
+            f"ON ai.id=pt.idea_id WHERE ai.{_REAL_IDEA_FILTER} "
+            f"ORDER BY pt.id DESC LIMIT 1").fetchone()
 
         mi_today  = conn.execute("SELECT COUNT(*) as n FROM market_events WHERE detected_at LIKE ?", (f"{today}%",)).fetchone()["n"]
         mi_ideas  = conn.execute("SELECT COUNT(*) as n FROM market_events WHERE action_taken='gate0_idea' AND detected_at LIKE ?", (f"{today}%",)).fetchone()["n"]
