@@ -890,6 +890,10 @@ svg text{font-family:var(--font-mono)}
       </select>
       <button class="btn btn-sm" onclick="loadBacktestLab()">↻ Refresh</button>
       <button class="btn btn-sm btn-cyan" id="btl-trigger-btn" onclick="btlTriggerBacktest()" style="display:none">▶ Re-run</button>
+      <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);white-space:nowrap;cursor:pointer;margin-left:auto">
+        <input type="checkbox" id="btl-show-synthetic" onchange="loadBacktestLab()">
+        Show gate-calibration test probes
+      </label>
     </div>
   </div>
 
@@ -2653,14 +2657,16 @@ let _btlCurrentId = null;
 let _btlCharts = {};
 
 async function loadBacktestLab() {
-  const d = await apiFetch('/backtest/list');
+  const showSynthetic = document.getElementById('btl-show-synthetic')?.checked || false;
+  const d = await apiFetch(`/backtest/list?include_synthetic=${showSynthetic}`);
   if (!d) return;
   const sel = document.getElementById('btl-select');
   const prev = sel.value;
   sel.innerHTML = '<option value="">— Select idea to inspect —</option>' +
-    d.ideas.map(r =>
-      `<option value="${r.id}">${r.id} · ${esc(r.title.slice(0,48))} [${r.stage}] ${r.passed ? '✔' : '✗'}</option>`
-    ).join('');
+    d.ideas.map(r => {
+      const tag = (r.slug || '').startsWith('calib-') ? '🧪 ' : '';
+      return `<option value="${r.id}">${tag}${r.id} · ${esc(r.title.slice(0,48))} [${r.stage}] ${r.passed ? '✔' : '✗'}</option>`;
+    }).join('');
   if (prev) { sel.value = prev; }
   if (_btlCurrentId) { sel.value = _btlCurrentId; }
 }
@@ -4575,18 +4581,52 @@ async function openDeptWorkView(deptId, ideaId) {
     knowledge_base:'Knowledge Base'
   };
   titleEl.textContent = deptNames[deptId] || deptId;
-  if (!ideaId && deptId !== 'knowledge_base' && deptId !== 'market_intelligence') {
-    content.innerHTML = '<div style="padding:20px;color:#f59e0b">⚠ Select an idea from the dropdown to view work</div>';
-    return;
-  }
   const noIdeaDepts = ['knowledge_base', 'market_intelligence'];
-  const path = (ideaId && !noIdeaDepts.includes(deptId)) ? `/departments/${deptId}/${ideaId}` : `/departments/${deptId}`;
-  const data  = await apiFetch(path);
+
+  // The pre-selected idea (from the top dropdown) very often has NO activity
+  // in the clicked department — e.g. it's an idea that never reached a
+  // red-blue debate. Rather than show a dead end, fetch it and fall back to
+  // the department's own "most recent real activity" route when empty, with
+  // a clear banner explaining the substitution.
+  let path = (ideaId && !noIdeaDepts.includes(deptId)) ? `/departments/${deptId}/${ideaId}` : `/departments/${deptId}`;
+  let data  = await apiFetch(path);
   if (!data) {
     content.innerHTML = '<div style="padding:20px;color:#ef4444">Failed to load department data</div>';
     return;
   }
-  content.innerHTML = renderDeptPanel(deptId, data);
+  let usedFallback = false;
+  if (ideaId && !noIdeaDepts.includes(deptId) && _deptIsEmpty(deptId, data)) {
+    const auto = await apiFetch(`/departments/${deptId}`);
+    if (auto && !_deptIsEmpty(deptId, auto)) {
+      data = auto;
+      usedFallback = true;
+    }
+  }
+  const banner = usedFallback
+    ? `<div style="padding:8px 12px;margin-bottom:10px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:6px;font-size:11px;color:var(--yellow)">
+         ℹ Idea #${esc(String(ideaId))} has no activity here — showing the most recent idea that does
+         (#${esc(String(data.idea_id ?? (data.idea||{}).id ?? '?'))}).
+         ${data.idea_id ? `<a onclick="viewIdeaFromDept(${data.idea_id})" style="color:var(--cyan);cursor:pointer;margin-left:4px">Jump to it →</a>` : ''}
+       </div>`
+    : '';
+  content.innerHTML = banner + renderDeptPanel(deptId, data);
+}
+
+function _deptIsEmpty(deptId, data) {
+  switch (deptId) {
+    case 'alpha_research':   return !(data.gate_history || []).length;
+    case 'data_engineering': return !(data.tickers || []).length;
+    case 'quant_research':   return !(data.runs || []).length;
+    case 'red_blue':         return !(data.debates || []).length;
+    case 'execution':        return !data.paper_trade && !(data.all_trades || []).length;
+    default:                 return false;
+  }
+}
+
+function viewIdeaFromDept(ideaId) {
+  const sel = document.getElementById('dept-idea-select');
+  if (sel && [...sel.options].some(o => o.value == ideaId)) sel.value = ideaId;
+  openIdeaModal(ideaId);
 }
 
 function renderDeptPanel(deptId, data) {

@@ -866,11 +866,18 @@ async def trigger_backtest(body: BacktestTrigger):
 # ─── Backtest Lab — Detail, List, Decision ────────────────────────────────────
 
 @app.get("/api/backtest/list")
-def backtest_list():
-    """List ideas that have at least one backtest run (most recent run per idea)."""
+def backtest_list(include_synthetic: bool = False):
+    """List ideas that have at least one backtest run (most recent run per idea).
+
+    Every calibration-harness probe runs a real backtest (that's the point —
+    it exercises the gate stack), so it always has a backtest_runs row and
+    would otherwise fill this dropdown alongside real ideas. Hidden by
+    default like the Ideas Queue; include_synthetic=true opts in.
+    """
+    synth_clause = "" if include_synthetic else f"WHERE ai.{_REAL_IDEA_FILTER}"
     with db_session() as conn:
-        rows = conn.execute("""
-            SELECT ai.id, ai.title, ai.ticker, ai.timeframe, ai.stage, ai.status,
+        rows = conn.execute(f"""
+            SELECT ai.id, ai.title, ai.slug, ai.ticker, ai.timeframe, ai.stage, ai.status,
                    br.id AS bt_id, br.sharpe_gross, br.sharpe_net,
                    br.sharpe_is, br.sharpe_oos, br.oos_degradation,
                    br.trade_count, br.regimes_positive, br.passed,
@@ -883,6 +890,7 @@ def backtest_list():
                 FROM backtest_runs GROUP BY idea_id
             ) latest ON latest.idea_id = ai.id
             JOIN backtest_runs br ON br.id = latest.latest_id
+            {synth_clause}
             ORDER BY br.id DESC
         """).fetchall()
     return {"ideas": [dict(r) for r in rows], "total": len(rows)}
@@ -1699,6 +1707,37 @@ def get_event_calendar(days_ahead: int = 30):
 
 # ─── Department Hub ──────────────────────────────────────────────────────────
 
+# Most recent REAL (non-synthetic) idea with actual activity for a given
+# department — used by the "latest" routes below so clicking a department
+# card always surfaces real recent work, instead of requiring the caller to
+# already know which idea (out of hundreds) went through that department.
+_DEPT_FALLBACK_SQL = {
+    "alpha_research": f"""
+        SELECT gd.idea_id FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id = gd.idea_id
+        WHERE gd.gate='gate0' AND ai.{_REAL_IDEA_FILTER} ORDER BY gd.id DESC LIMIT 1""",
+    "data_engineering": f"""
+        SELECT br.idea_id FROM backtest_runs br JOIN alpha_ideas ai ON ai.id = br.idea_id
+        WHERE ai.{_REAL_IDEA_FILTER} ORDER BY br.id DESC LIMIT 1""",
+    "quant_research": f"""
+        SELECT br.idea_id FROM backtest_runs br JOIN alpha_ideas ai ON ai.id = br.idea_id
+        WHERE ai.{_REAL_IDEA_FILTER} ORDER BY br.id DESC LIMIT 1""",
+    "red_blue": f"""
+        SELECT gd.idea_id FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id = gd.idea_id
+        WHERE gd.gate='gate3_rb' AND ai.{_REAL_IDEA_FILTER} ORDER BY gd.id DESC LIMIT 1""",
+    "execution": f"""
+        SELECT pt.idea_id FROM paper_trades pt JOIN alpha_ideas ai ON ai.id = pt.idea_id
+        WHERE ai.{_REAL_IDEA_FILTER} ORDER BY pt.id DESC LIMIT 1""",
+}
+
+
+def _dept_fallback_idea(conn, dept_id: str) -> Optional[int]:
+    sql = _DEPT_FALLBACK_SQL.get(dept_id)
+    if not sql:
+        return None
+    row = conn.execute(sql).fetchone()
+    return row["idea_id"] if row else None
+
+
 @app.get("/api/departments/overview")
 def dept_overview():
     now   = datetime.utcnow()
@@ -1732,10 +1771,34 @@ def dept_overview():
         qr_best   = qr_best_r["v"] if qr_best_r else None
         qr_last   = de_last
 
-        rb_total  = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb'").fetchone()["n"]
-        rb_adv    = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb' AND decision='advance'").fetchone()["n"]
-        rb_cond   = conn.execute("SELECT COUNT(*) as n FROM gate_decisions WHERE gate='gate3_rb' AND decision='conditional'").fetchone()["n"]
-        rb_last   = conn.execute("SELECT created_at FROM gate_decisions WHERE gate='gate3_rb' ORDER BY id DESC LIMIT 1").fetchone()
+        # RedBlueTeam writes gate_decisions.decision as 'approve'/'reject' only
+        # (both an 'advance' and a 'conditional' verdict get decision='approve'
+        # — see red_blue_team.py's should_advance logic); the actual
+        # advance-vs-conditional distinction only exists in pipeline_events'
+        # notes JSON (notes.verdict), same source dept_red_blue() below reads.
+        # Previously this queried gate_decisions.decision='advance'/'conditional',
+        # which never matches — Advances/Conditionals were permanently stuck at 0.
+        rb_total  = conn.execute(
+            "SELECT COUNT(*) as n FROM pipeline_events "
+            "WHERE stage='stage3' AND agent='RedBlueTeam'").fetchone()["n"]
+        rb_adv    = conn.execute(
+            "SELECT COUNT(*) as n FROM pipeline_events WHERE stage='stage3' "
+            "AND agent='RedBlueTeam' AND json_extract(notes,'$.verdict')='advance'"
+        ).fetchone()["n"]
+        rb_cond   = conn.execute(
+            "SELECT COUNT(*) as n FROM pipeline_events WHERE stage='stage3' "
+            "AND agent='RedBlueTeam' AND json_extract(notes,'$.verdict')='conditional'"
+        ).fetchone()["n"]
+        rb_last   = conn.execute(
+            "SELECT created_at FROM pipeline_events WHERE stage='stage3' "
+            "AND agent='RedBlueTeam' ORDER BY id DESC LIMIT 1").fetchone()
+        # "active" should mean a debate is CURRENTLY pending, not "one ever
+        # happened" (rb_total>0 stays true forever after the first debate,
+        # which is what made the department look permanently 'active' with
+        # nothing inspectable if the pre-selected idea wasn't the debated one).
+        rb_pending = conn.execute(
+            f"SELECT COUNT(*) as n FROM alpha_ideas WHERE stage='stage3' "
+            f"AND status='active' AND {_REAL_IDEA_FILTER}").fetchone()["n"]
 
         ex_open   = conn.execute("SELECT COUNT(*) as n FROM paper_trades WHERE status='open'").fetchone()["n"]
         ex_s4     = conn.execute("SELECT COUNT(*) as n FROM alpha_ideas WHERE stage IN ('stage4a','stage5') AND status='active'").fetchone()["n"]
@@ -1782,11 +1845,11 @@ def dept_overview():
         },
         {
             "id": "red_blue",         "name": "Red-Blue War Room",       "abbr": "RB", "color": "#ef4444",
-            "status": "active" if rb_total > 0 else "idle",
+            "status": "active" if rb_pending > 0 else "idle",
             "kpi1_value": rb_total,   "kpi1_label": "Debates",
             "kpi2_value": rb_adv,     "kpi2_label": "Advances",
             "kpi3_value": rb_cond,    "kpi3_label": "Conditionals",
-            "last_action": "Last debate",
+            "last_action": f"{rb_pending} debate(s) pending" if rb_pending else "No debate pending",
             "last_action_ago": _ago(rb_last["created_at"] if rb_last else None),
         },
         {
@@ -1818,6 +1881,20 @@ def dept_overview():
         },
     ]
     return {"departments": departments, "as_of": now.isoformat()}
+
+
+@app.get("/api/departments/alpha_research")
+def dept_alpha_research_latest():
+    """No idea specified — auto-show the most recent REAL idea with Gate 0
+    activity, so the department is always inspectable, not just when the
+    caller already happens to know the right idea_id."""
+    with db_session() as conn:
+        idea_id = _dept_fallback_idea(conn, "alpha_research")
+    if idea_id is None:
+        return {"idea": None, "auto_selected": True, "gate_history": [], "strategy_profile": None}
+    result = dept_alpha_research(idea_id)
+    result["auto_selected"] = True
+    return result
 
 
 @app.get("/api/departments/alpha_research/{idea_id}")
@@ -1853,6 +1930,18 @@ def dept_alpha_research(idea_id: int):
     }
 
 
+@app.get("/api/departments/data_engineering")
+def dept_data_engineering_latest():
+    with db_session() as conn:
+        idea_id = _dept_fallback_idea(conn, "data_engineering")
+    if idea_id is None:
+        return {"idea_id": None, "tickers": [], "auto_selected": True,
+                "fundamental_coverage": 0, "universe_size": 69, "data_sources": []}
+    result = dept_data_engineering(idea_id)
+    result["auto_selected"] = True
+    return result
+
+
 @app.get("/api/departments/data_engineering/{idea_id}")
 def dept_data_engineering(idea_id: int):
     with db_session() as conn:
@@ -1874,11 +1963,24 @@ def dept_data_engineering(idea_id: int):
         for t in tickers
     ]
     return {
+        "idea_id": idea_id,
         "tickers": ticker_data,
         "fundamental_coverage": 0,
         "universe_size": 69,
         "data_sources": data_sources,
     }
+
+
+@app.get("/api/departments/quant_research")
+def dept_quant_research_latest():
+    with db_session() as conn:
+        idea_id = _dept_fallback_idea(conn, "quant_research")
+    if idea_id is None:
+        return {"idea_id": None, "auto_selected": True, "runs": [],
+                "summary": {"total_runs": 0, "passes": 0, "best_sharpe": 0}, "best_run": {}}
+    result = dept_quant_research(idea_id)
+    result["auto_selected"] = True
+    return result
 
 
 @app.get("/api/departments/quant_research/{idea_id}")
@@ -1905,6 +2007,23 @@ def dept_quant_research(idea_id: int):
         "best_run": best,
         "summary":  {"total_runs": len(runs), "passes": len(passes), "best_sharpe": round(float(best.get("sharpe_net") or 0), 3)},
     }
+
+
+@app.get("/api/departments/red_blue")
+def dept_red_blue_latest():
+    """No idea specified — auto-show the most recent REAL debate. The
+    'active' status only means a debate is currently pending, not that one
+    ever happened, so this is what makes the department reliably
+    inspectable regardless of which idea happens to be pre-selected
+    elsewhere in the UI."""
+    with db_session() as conn:
+        idea_id = _dept_fallback_idea(conn, "red_blue")
+    if idea_id is None:
+        return {"idea_id": None, "auto_selected": True, "debates": [],
+                "summary": {"total_debates": 0, "advances": 0, "conditionals": 0, "rejections": 0}}
+    result = dept_red_blue(idea_id)
+    result["auto_selected"] = True
+    return result
 
 
 @app.get("/api/departments/red_blue/{idea_id}")
@@ -1950,6 +2069,17 @@ def dept_red_blue(idea_id: int):
             "rejections":    rejections,
         },
     }
+
+
+@app.get("/api/departments/execution")
+def dept_execution_latest():
+    with db_session() as conn:
+        idea_id = _dept_fallback_idea(conn, "execution")
+    if idea_id is None:
+        return {"idea_id": None, "auto_selected": True, "paper_trade": None, "all_trades": []}
+    result = dept_execution(idea_id)
+    result["auto_selected"] = True
+    return result
 
 
 @app.get("/api/departments/execution/{idea_id}")
