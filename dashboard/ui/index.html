@@ -860,8 +860,15 @@ svg text{font-family:var(--font-mono)}
           <option>pending</option><option>active</option><option>rejected</option>
         </select>
       </div>
+      <div class="form-group" style="align-self:flex-end">
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--muted);white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="filter-synthetic" onchange="loadIdeas()">
+          Show gate-calibration test probes
+        </label>
+      </div>
       <div style="align-self:flex-end;color:var(--muted);font-size:11px">
         <span id="ideas-count">0</span> ideas
+        <span id="ideas-hidden-note" style="color:var(--muted);opacity:.7"></span>
       </div>
     </div>
     <div class="tbl-wrap-lg"><table>
@@ -2531,20 +2538,25 @@ async function triggerBacktestForIdea(id) {
 async function loadIdeas() {
   const stage  = document.getElementById('filter-stage')?.value  || '';
   const status = document.getElementById('filter-status')?.value || '';
-  const d = await apiFetch(`/pipeline/ideas?stage=${stage}&status=${status}&limit=100`);
+  const includeSynthetic = document.getElementById('filter-synthetic')?.checked || false;
+  const d = await apiFetch(`/pipeline/ideas?stage=${stage}&status=${status}&limit=100&include_synthetic=${includeSynthetic}`);
   if (!d) return;
   document.getElementById('ideas-count').textContent = d.total;
+  document.getElementById('ideas-hidden-note').textContent =
+    includeSynthetic ? '' : ' (gate-calibration test probes hidden)';
   document.getElementById('ideas-table').innerHTML = d.ideas.map(r => {
     const sn = r.bt_sharpe_net; const sg = r.bt_sharpe_gross;
     const so = r.bt_sharpe_oos; const tc = r.bt_trade_count;
     const rp = r.bt_regimes_positive;
     const hasSanity = r.bt_sanity_flags && r.bt_sanity_flags !== 'null';
+    const isSynthetic = (r.slug || '').startsWith('calib-');
     const regClr = rp == null ? '' : rp >= 2 ? 'color:var(--green)' : 'color:var(--red)';
     const tcClr  = tc == null ? '' : tc < 30  ? 'color:var(--red)'  : 'color:var(--muted)';
-    return `<tr${hasSanity ? ' style="background:rgba(255,200,0,.06)"' : ''}>
+    return `<tr${isSynthetic ? ' style="background:rgba(234,179,8,.08)" title="Synthetic gate-calibration probe — not a real idea"'
+                             : hasSanity ? ' style="background:rgba(255,200,0,.06)"' : ''}>
        <td style="color:var(--muted)">${r.id}</td>
        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-         <a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${esc(r.title)}</a>
+         ${isSynthetic ? '<span style="color:var(--yellow)" title="Synthetic — not a real idea">🧪</span> ' : ''}<a onclick="openIdeaModal(${r.id})" style="color:var(--cyan);cursor:pointer">${esc(r.title)}</a>
        </td>
        <td>${r.ticker||'—'}</td><td>${r.timeframe||'—'}</td>
        <td>${stageBadge(r.stage)}</td>

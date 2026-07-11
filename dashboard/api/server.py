@@ -19,6 +19,14 @@ from config.settings import (
 
 _PROGRESS_FILE = str(PROGRESS_FILE)
 
+# scripts/calibration_harness.py plants synthetic gate-honesty test ideas
+# (slug 'calib-<ticker>-<n>') with fabricated OU/random-walk price data — real
+# gates, fake data, never a tradable idea. They must not inflate idea counts /
+# funnels / gate-acceptance rates / ticker stats. Excluded by default from
+# Ideas Queue + Analytics + Mission Control's headline totals; each place that
+# filters them accepts an explicit opt-in to inspect them when needed.
+_REAL_IDEA_FILTER = "slug NOT LIKE 'calib-%'"
+
 app = FastAPI(title="Mark's Research Centre — Mission Control", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -190,17 +198,21 @@ def agent_progress():
 @app.get("/api/mission-control")
 def mission_control():
     with db_session() as conn:
-        stages  = conn.execute("SELECT stage, COUNT(*) as n FROM alpha_ideas WHERE status != 'rejected' GROUP BY stage").fetchall()
+        stages  = conn.execute(f"SELECT stage, COUNT(*) as n FROM alpha_ideas WHERE status != 'rejected' AND {_REAL_IDEA_FILTER} GROUP BY stage").fetchall()
         today   = datetime.utcnow().strftime("%Y-%m-%d")
         spend   = conn.execute("SELECT COALESCE(SUM(cost_usd),0) as total, COUNT(*) as calls FROM ai_usage WHERE created_at LIKE ?", (f"{today}%",)).fetchone()
         logs    = conn.execute("SELECT level, source, message, created_at FROM daemon_logs ORDER BY id DESC LIMIT 50").fetchall()
-        totals  = conn.execute("SELECT COUNT(*) as total, SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected, SUM(CASE WHEN stage='stage5' THEN 1 ELSE 0 END) as live FROM alpha_ideas").fetchone()
+        totals  = conn.execute(f"SELECT COUNT(*) as total, SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END) as rejected, SUM(CASE WHEN stage='stage5' THEN 1 ELSE 0 END) as live FROM alpha_ideas WHERE {_REAL_IDEA_FILTER}").fetchone()
         models  = conn.execute("SELECT model, SUM(cost_usd) as cost, COUNT(*) as calls FROM ai_usage WHERE created_at LIKE ? GROUP BY model", (f"{today}%",)).fetchall()
-        # Active stages: stages that have ideas currently awaiting processing
-        active_raw = conn.execute("""
+        # Active stages: stages that have ideas currently awaiting processing.
+        # A PASSING calibration probe briefly sits stage3/active (until the
+        # harness retires it before its next run) — exclude it here too so it
+        # never shows as a live active-pipeline idea.
+        active_raw = conn.execute(f"""
             SELECT stage FROM alpha_ideas
-            WHERE (stage='gate0' AND status='pending')
-               OR (stage IN ('stage1','stage2','stage3','stage4a') AND status='active')
+            WHERE ((stage='gate0' AND status='pending')
+               OR (stage IN ('stage1','stage2','stage3','stage4a') AND status='active'))
+               AND {_REAL_IDEA_FILTER}
             GROUP BY stage
         """).fetchall()
     stage_map = {r["stage"]: r["n"] for r in stages}
@@ -218,21 +230,28 @@ def mission_control():
 @app.get("/api/analytics")
 def analytics():
     with db_session() as conn:
-        # Stage funnel (all-time)
-        funnel = conn.execute("""
-            SELECT stage, status, COUNT(*) as n FROM alpha_ideas GROUP BY stage, status
+        # Stage funnel (all-time) — excludes synthetic calibration probes, see
+        # _REAL_IDEA_FILTER, so the funnel reflects real research throughput.
+        funnel = conn.execute(f"""
+            SELECT stage, status, COUNT(*) as n FROM alpha_ideas
+            WHERE {_REAL_IDEA_FILTER} GROUP BY stage, status
         """).fetchall()
 
-        # Gate acceptance rates
-        gate_rates = conn.execute("""
-            SELECT gate, decision, COUNT(*) as n FROM gate_decisions GROUP BY gate, decision
+        # Gate acceptance rates — joined to alpha_ideas to exclude the gate
+        # decisions written by calibration probes (each probe runs through the
+        # real gates, so its decisions would otherwise skew acceptance rates).
+        gate_rates = conn.execute(f"""
+            SELECT gd.gate, gd.decision, COUNT(*) as n
+            FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id = gd.idea_id
+            WHERE ai.{_REAL_IDEA_FILTER}
+            GROUP BY gd.gate, gd.decision
         """).fetchall()
 
         # Daily idea creation (last 30 days)
-        daily = conn.execute("""
+        daily = conn.execute(f"""
             SELECT date(created_at) as day, COUNT(*) as n
             FROM alpha_ideas
-            WHERE created_at >= date('now', '-30 days')
+            WHERE created_at >= date('now', '-30 days') AND {_REAL_IDEA_FILTER}
             GROUP BY day ORDER BY day
         """).fetchall()
 
@@ -251,19 +270,24 @@ def analytics():
             FROM ai_usage GROUP BY agent ORDER BY cost DESC
         """).fetchall()
 
-        # Ticker distribution
-        pairs = conn.execute("""
+        # Ticker distribution — calibration probes reuse REAL tickers (e.g.
+        # 1155.KL) with fabricated Sharpes, so this must exclude them or a
+        # real ticker's avg_sharpe silently absorbs synthetic results.
+        pairs = conn.execute(f"""
             SELECT ticker, COUNT(*) as n,
                    AVG(COALESCE(backtest_sharpe, 0)) as avg_sharpe
-            FROM alpha_ideas WHERE ticker IS NOT NULL GROUP BY ticker ORDER BY n DESC
+            FROM alpha_ideas
+            WHERE ticker IS NOT NULL AND {_REAL_IDEA_FILTER}
+            GROUP BY ticker ORDER BY n DESC
         """).fetchall()
 
-        # Pipeline events last 7 days
-        events = conn.execute("""
-            SELECT date(created_at) as day, event_type, COUNT(*) as n
-            FROM pipeline_events
-            WHERE created_at >= date('now', '-7 days')
-            GROUP BY day, event_type ORDER BY day
+        # Pipeline events last 7 days — joined to exclude calibration-probe
+        # backtest/gate events from the research activity feed.
+        events = conn.execute(f"""
+            SELECT date(pe.created_at) as day, pe.event_type, COUNT(*) as n
+            FROM pipeline_events pe JOIN alpha_ideas ai ON ai.id = pe.idea_id
+            WHERE pe.created_at >= date('now', '-7 days') AND ai.{_REAL_IDEA_FILTER}
+            GROUP BY day, pe.event_type ORDER BY day
         """).fetchall()
 
     # Build gate acceptance map
@@ -307,7 +331,7 @@ def analytics():
 
 @app.get("/api/pipeline/ideas")
 def get_ideas(stage: Optional[str] = None, status: Optional[str] = None, limit: int = 50,
-              include_all_stages: bool = False):
+              include_all_stages: bool = False, include_synthetic: bool = False):
     with db_session() as conn:
         where, params = [], []
         if include_all_stages:
@@ -316,6 +340,10 @@ def get_ideas(stage: Optional[str] = None, status: Optional[str] = None, limit: 
         else:
             if stage:  where.append("ai.stage=?");  params.append(stage)
             if status: where.append("ai.status=?"); params.append(status)
+        if not include_synthetic:
+            # Hide gate-calibration test probes (slug 'calib-*') by default —
+            # synthetic data, never a real idea. include_synthetic=true opts in.
+            where.append(f"ai.{_REAL_IDEA_FILTER}")
         clause = f"WHERE {' AND '.join(where)}" if where else ""
         # LEFT JOIN latest backtest_run to expose QC metrics in the ideas table
         ideas = conn.execute(f"""
