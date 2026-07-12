@@ -813,7 +813,15 @@ class BacktestEngineer(BaseAgent):
             """, (idea_id, f"gate2_{run_type}"[:30], reason[:500]))
         try:
             from knowledge.ingestion.rejection_memory import RejectionMemory
-            RejectionMemory().record_rejection(idea_id, reason, reason_category)
+            # reason_category is ALREADY precise here (unrepresentable/
+            # duplicate/data_quality/verify_failed) — pass it explicitly so
+            # rejection_patterns/the KG bucket use it directly instead of
+            # re-guessing from free text (2026-07-13 fix). Still passed
+            # positionally as `stage` too, unchanged, since strategy_
+            # cemetery.rejected_at_stage already relies on this exact value
+            # (pipeline/revisit.py's chain-revival guard checks it).
+            RejectionMemory().record_rejection(idea_id, reason, reason_category,
+                                               reason_category=reason_category)
         except Exception:
             pass
         self._clear_progress(idea_id)

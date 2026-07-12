@@ -36,12 +36,26 @@ _SECTOR_KEYWORDS = {
 }
 
 _REASON_CATEGORY_KEYWORDS = {
+    # Checked FIRST (dict order = match priority in _classify): "not
+    # available" alone would otherwise fall into "infeasible" below, and
+    # these are the parser's own honest-rejection wording (backtest_
+    # engineer.py's dsl_unrepresentable gate), not a keyword guess.
+    "unrepresentable": ["not representable", "cannot be expressed", "not available in the "
+                        "condition set", "not a standard technical indicator", "custom "
+                        "derived metric", "requires computing a custom", "not encoded"],
     "overfitting":  ["overfit", "curve fit", "data snoop", "in-sample", "look-ahead"],
     "no_edge":      ["no edge", "random", "weak factor", "low ic", "low sharpe", "below threshold"],
     "infeasible":   ["infeasible", "short sell", "pairs", "intraday", "not available", "no data",
                      "cannot trade", "restricted", "lot size"],
     "low_sharpe":   ["sharpe", "poor performance", "negative return"],
-    "irrelevant":   ["not klse", "foreign", "fx", "forex", "currency pair", "crypto",
+    # "crypto" deliberately NOT here (removed 2026-07-13): this list is
+    # market-agnostic code shared by both daemons, and this keyword was a
+    # Bursa-only-era assumption ("mentions crypto" = off-topic). In the
+    # crypto daemon almost every idea legitimately mentions crypto/BTC, so
+    # it was mislabeling on-topic rejections as "irrelevant" — idea #218's
+    # unrepresentable cross-asset ratio landed here purely on that keyword,
+    # then got chain-revived under a bucket unrelated to its real problem.
+    "irrelevant":   ["not klse", "foreign", "fx", "forex", "currency pair",
                      "mobile banking", "venture", "indian", "steganograph"],
     "liquidity":    ["illiquid", "low volume", "wide spread", "penny stock"],
 }
@@ -59,6 +73,10 @@ def _classify(text: str, keyword_map: dict, default: str = "other") -> str:
 # Tells a future generation pass what NEW evidence would justify revisiting a
 # rejected strategy family/sector combination, rather than a bare "avoid".
 _REVIVAL_CONDITIONS = {
+    "unrepresentable": "Only revive once a new DSL leaf exists that can express this formula "
+                       "(see leaf_synthesis_attempts) — new market data, regime, or KG findings "
+                       "do not change whether the parser CAN express it, so they are never "
+                       "grounds for revival on their own.",
     "overfitting":  "Only revive with a lower-parameter formulation tested across a broader universe (15+ stocks).",
     "no_edge":      "Only revive with a materially different data source or a longer/shorter holding period showing IC > 0.05.",
     "infeasible":   "Only revive if the infeasible mechanic (short/pairs/intraday) is removed entirely.",
@@ -78,8 +96,27 @@ def _tokens(text: str) -> set:
 class RejectionMemory:
     """Record why ideas fail; inject avoidance rules into generation prompts."""
 
-    def record_rejection(self, idea_id: int, reason: str, stage: str) -> None:
-        """Extract failure pattern from a rejected idea and accumulate its count."""
+    def record_rejection(self, idea_id: int, reason: str, stage: str,
+                         reason_category: str | None = None) -> None:
+        """Extract failure pattern from a rejected idea and accumulate its count.
+
+        `stage` is the pipeline stage/gate that rejected it (gate0, stage2,
+        stage2_cs, human_review, or — at call sites inside _reject_idea — a
+        more specific value like "unrepresentable"/"duplicate"/"data_quality"
+        that ALSO doubles as strategy_cemetery.rejected_at_stage; unchanged
+        by this fix for backward compatibility with existing checks on that
+        column, e.g. pipeline/revisit.py's chain-revival guard).
+
+        `reason_category` is the SEPARATE, correct bucket for
+        rejection_patterns / the KG rejection_pattern node. Pass it
+        explicitly whenever the caller already knows it precisely (e.g.
+        _reject_idea's own reason_category param) — free-text keyword
+        classification is a fallback for callers that only have a message,
+        not a substitute for a category the caller already computed
+        (2026-07-13 fix: this used to re-guess from text even when a
+        precise category was available, and the guess had no
+        "unrepresentable" bucket at all, so idea #218's cross-asset-ratio
+        rejection fell into "irrelevant" purely on the word "crypto")."""
         try:
             with db_session() as conn:
                 row = conn.execute(
@@ -92,7 +129,8 @@ class RejectionMemory:
             blob = f"{row['title']} {row['hypothesis'] or ''} {row['factor_formula'] or ''} {reason}"
             factor_type     = _classify(blob, _FACTOR_TYPE_KEYWORDS, "other")
             sector          = _classify(blob, _SECTOR_KEYWORDS, "general")
-            reason_category = _classify(reason or blob, _REASON_CATEGORY_KEYWORDS, "other")
+            reason_category = reason_category or _classify(
+                reason or blob, _REASON_CATEGORY_KEYWORDS, "other")
 
             with db_session() as conn:
                 # Update rejection_reason on the idea

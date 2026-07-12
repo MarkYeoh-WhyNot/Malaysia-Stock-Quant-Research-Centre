@@ -89,6 +89,32 @@ def test_unrepresentable_rejected_with_reason_not_genericized(idea, monkeypatch)
     assert run["run_type"] == "dsl_unrepresentable"
 
 
+def test_unrepresentable_reason_category_wins_over_crypto_keyword_guess(idea, monkeypatch):
+    """2026-07-13 fix: even when the rejection text contains 'crypto' (which
+    used to force-classify as 'irrelevant'), the explicit reason_category
+    passed by _reject_idea must land in rejection_patterns as
+    'unrepresentable', not be re-guessed from the text."""
+    be, df = idea
+    monkeypatch.setattr(
+        BacktestEngineer, "_parse_factor",
+        lambda self, *a: {"representable": False,
+                          "reason": "requires a custom crypto BTC dominance index ratio"})
+    monkeypatch.setattr(
+        "agents.leaf_synthesizer.leaf_synthesizer.LeafSynthesizer.synthesize",
+        lambda self, *a, **kw: None)
+    be._run_backtest(TEST_IDEA_ID)
+
+    with db_session() as conn:
+        cemetery = conn.execute(
+            "SELECT factor_type, sector FROM strategy_cemetery WHERE idea_id=?",
+            (TEST_IDEA_ID,)).fetchone()
+        pattern = conn.execute(
+            "SELECT reason_category FROM rejection_patterns WHERE factor_type=? "
+            "AND sector=? AND reason_category='unrepresentable'",
+            (cemetery["factor_type"], cemetery["sector"])).fetchone()
+    assert pattern is not None, "explicit reason_category must beat the 'crypto' keyword guess"
+
+
 def test_unrepresentable_triggers_leaf_synthesis_attempt(idea, monkeypatch):
     be, df = idea
     monkeypatch.setattr(BacktestEngineer, "_parse_factor",
