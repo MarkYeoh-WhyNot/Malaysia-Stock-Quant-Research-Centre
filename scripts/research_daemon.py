@@ -183,7 +183,7 @@ class ResearchDaemon:
             self._process_graph_maintain, self._process_evidence_ingest,
             self._process_graph_health_check, self._process_feedback_ingest,
             self._process_vault_export, self._process_funnel_report,
-            self._process_calibration_check,
+            self._process_calibration_check, self._process_revisit_scan,
         )
         for step in steps:
             await step()
@@ -1214,6 +1214,26 @@ class ResearchDaemon:
             logger.info(f"[Calibration] {slim}")
         except Exception as e:
             logger.error(f"[Calibration] Error: {e}", exc_info=True)
+
+    async def _process_revisit_scan(self):
+        """'温故而知新' — daily check for regime flips / new data sources /
+        contradicting findings that might revive an old rejected idea.
+        Query-only (fast; no executor needed) — the resulting revisit rows
+        flow through the ordinary stage2 pipeline at _process_stage2's own
+        pace, so this job never itself runs a backtest."""
+        if not self._job_due("revisit_scan", daily_at_hour=2):
+            return
+        try:
+            from pipeline.revisit import run_revisit_scan
+            result = run_revisit_scan()
+            self._mark_job_run("revisit_scan")
+            if result.get("enqueued"):
+                send_alert(f"Revisit scan: {result['triggers']} trigger(s) → "
+                           f"{result['enqueued']} old idea(s) re-opened "
+                           f"{result.get('ideas')}", level="INFO")
+            logger.info(f"[Revisit] {result}")
+        except Exception as e:
+            logger.error(f"[Revisit] Error: {e}", exc_info=True)
 
     # ── Obsidian feedback ingest — 05:00 UTC, just before the vault export ────
 

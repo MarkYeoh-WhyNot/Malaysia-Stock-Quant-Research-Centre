@@ -955,6 +955,30 @@ def init_db(db_path: Path = DB_PATH):
             )
         """)
 
+        # Event-driven revisit (pipeline/revisit.py): last-observed snapshot
+        # per trigger key (e.g. "vol_regime:BTC/USDT" -> "high_vol") so a
+        # regime CHANGE, not just its current value, fires a revisit scan.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS revisit_state (
+                key          TEXT PRIMARY KEY,
+                value        TEXT,
+                updated_at   TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        # New-data-source arrivals worth re-examining old rejects for (e.g.
+        # "funding_history_backfilled"). No reliable automatic detector for
+        # this trigger exists yet — rows are a manual convention: insert one
+        # when a data source lands, the revisit scanner consumes it once.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS data_source_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_name   TEXT NOT NULL,
+                description   TEXT,
+                consumed      INTEGER DEFAULT 0,
+                created_at    TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # Paper trading: daily NAV series per idea (mark-to-market)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_equity (
