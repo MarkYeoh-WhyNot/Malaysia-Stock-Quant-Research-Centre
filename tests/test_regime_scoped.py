@@ -8,7 +8,12 @@ Pins:
     forces flat outside the declared terciles;
   * perturb_tree preserves regime_filter (robustness gate must compare
     scoped-vs-scoped);
-  * submit_regime_scoped_idea charges the >= 6-config DOF row.
+  * submit_regime_scoped_idea charges the >= 6-config DOF row;
+  * canonical_signature distinguishes a scoped tree from its unscoped
+    sibling AND from a differently-scoped variant (2026-07-12 bug: the
+    signature ignored regime_filter entirely, so submit_regime_scoped_idea's
+    dedup check treated every scoped candidate as a duplicate of its
+    unscoped counterpart whenever one already existed).
 """
 import numpy as np
 import pandas as pd
@@ -16,7 +21,7 @@ import pytest
 
 from agents.backtest_engineer.gates import regime_gate_decision
 from agents.backtest_engineer.signal_dsl import (
-    _regime_mask, perturb_tree, signal_from_dsl, validate,
+    _regime_mask, canonical_signature, perturb_tree, signal_from_dsl, validate,
 )
 
 _BASE = {"entry": {"leaf": "momentum", "period": 20, "min_return": 0.01},
@@ -98,6 +103,21 @@ def test_mask_warmup_is_flat():
 def test_perturb_tree_preserves_regime_filter():
     out = perturb_tree(_scoped(["high_vol"]), np.random.RandomState(0))
     assert out["regime_filter"] == {"type": "vol_tercile", "active": ["high_vol"]}
+
+
+# ── signature distinguishes scoped from unscoped and from each other ───────
+
+def test_signature_distinguishes_regime_scoped_from_unscoped():
+    sig_unscoped = canonical_signature(_BASE, "BTC/USDT")
+    sig_high = canonical_signature(_scoped(["high_vol"]), "BTC/USDT")
+    sig_low = canonical_signature(_scoped(["low_vol"]), "BTC/USDT")
+    assert len({sig_unscoped, sig_high, sig_low}) == 3
+
+
+def test_signature_unchanged_for_trees_without_regime_filter():
+    # No regression: a plain tree's hash must not depend on this fix at all.
+    assert (canonical_signature(_BASE, "BTC/USDT")
+            == canonical_signature(dict(_BASE), "BTC/USDT"))
 
 
 # ── gate decision ────────────────────────────────────────────────────────────

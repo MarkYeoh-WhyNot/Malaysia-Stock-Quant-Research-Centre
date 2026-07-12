@@ -184,6 +184,7 @@ class ResearchDaemon:
             self._process_graph_health_check, self._process_feedback_ingest,
             self._process_vault_export, self._process_funnel_report,
             self._process_calibration_check, self._process_revisit_scan,
+            self._process_finding_driven_candidates,
         )
         for step in steps:
             await step()
@@ -1220,8 +1221,11 @@ class ResearchDaemon:
         contradicting findings that might revive an old rejected idea.
         Query-only (fast; no executor needed) — the resulting revisit rows
         flow through the ordinary stage2 pipeline at _process_stage2's own
-        pace, so this job never itself runs a backtest."""
-        if not self._job_due("revisit_scan", daily_at_hour=2):
+        pace, so this job never itself runs a backtest. Runs 4x/day (was
+        once daily) — Mark 2026-07-12: catch regime flips / new findings
+        within hours instead of up to 24h; the job is pure DB queries, so
+        more frequent scans cost nothing but a little query load."""
+        if not self._job_due("revisit_scan", min_gap=timedelta(hours=6)):
             return
         try:
             from pipeline.revisit import run_revisit_scan
@@ -1234,6 +1238,29 @@ class ResearchDaemon:
             logger.info(f"[Revisit] {result}")
         except Exception as e:
             logger.error(f"[Revisit] Error: {e}", exc_info=True)
+
+    async def _process_finding_driven_candidates(self):
+        """Close the loop from "a confirmed/watch direction landed in the
+        KG" to "a gated candidate is automatically submitted to test it
+        further" (Mark 2026-07-12). Scans new confirmed/watch finding nodes,
+        builds default-parameter candidates from the DSL leaves they used
+        (plain single-name + a regime-scoped variant), and submits them at
+        stage2/pending. Deterministic, no LLM cost — query-only, no
+        executor needed; the submitted ideas are backtested at
+        _process_stage2's own pace like any other idea."""
+        if not self._job_due("finding_driven_candidates", min_gap=timedelta(hours=6)):
+            return
+        try:
+            from pipeline.finding_candidates import run_finding_driven_candidates
+            result = run_finding_driven_candidates()
+            self._mark_job_run("finding_driven_candidates")
+            if result.get("submitted"):
+                send_alert(f"Finding-driven candidates: {result['findings_scanned']} "
+                           f"new finding(s) → {result['submitted']} candidate(s) "
+                           f"submitted {result.get('ideas')}", level="INFO")
+            logger.info(f"[FindingCandidates] {result}")
+        except Exception as e:
+            logger.error(f"[FindingCandidates] Error: {e}", exc_info=True)
 
     # ── Obsidian feedback ingest — 05:00 UTC, just before the vault export ────
 

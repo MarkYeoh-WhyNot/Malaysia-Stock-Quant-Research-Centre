@@ -518,6 +518,7 @@ ENABLED_JOBS = {
     "db_maintenance",
     "calibration_check",
     "revisit_scan",
+    "finding_driven_candidates",
 }
 
 # GateConfig overrides for this market: crypto Sharpe/vol norms differ and the

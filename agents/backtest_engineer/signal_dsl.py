@@ -681,6 +681,16 @@ def canonical_signature(dsl: dict, ticker: str) -> str:
         payload["short_entry"] = _normalize(dsl.get("short_entry"))
     if dsl.get("short_exit") is not None:
         payload["short_exit"] = _normalize(dsl.get("short_exit"))
+    # Same "only add when present" rule: a regime-scoped tree is a DIFFERENT
+    # strategy from its unscoped sibling (flat outside the declared terciles
+    # vs always-in-market) — omitting this key made them hash IDENTICALLY,
+    # so submit_regime_scoped_idea's dedup check silently rejected every
+    # scoped candidate as a "duplicate" of its unscoped counterpart whenever
+    # one already existed (2026-07-12 bug, caught by finding_candidates.py's
+    # first end-to-end run). Non-regime trees are unaffected — same as
+    # before this fix, byte-for-byte.
+    if dsl.get("regime_filter") is not None:
+        payload["regime_filter"] = _normalize(dsl.get("regime_filter"))
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True).encode()
     ).hexdigest()
