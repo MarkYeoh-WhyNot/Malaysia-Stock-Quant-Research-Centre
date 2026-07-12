@@ -37,11 +37,20 @@ class Inspector(ABC):
     def record(self, finding: Finding) -> int:
         """Write a Finding to governance_findings and return the row ID.
 
+        State-change-only: if the most recent row for this (agent, scope) has
+        the same status/severity/evidence/recommendation/escalation, no new
+        row is inserted and that row's id is returned instead. Inspectors run
+        every daemon cycle (~60s) regardless of whether the verdict changed,
+        so without this the table (and the finding-node KB graph it feeds via
+        knowledge/ingestion/evidence_graph.py) grows unbounded with identical
+        repeats.
+
         Args:
             finding: The Finding to persist
 
         Returns:
-            The inserted row ID from governance_findings
+            The row ID from governance_findings (newly inserted, or the
+            existing unchanged row if this is a repeat of the last state)
         """
         evidence_json = None
         if finding.evidence is not None:
@@ -51,6 +60,29 @@ class Inspector(ABC):
                 evidence_json = str(finding.evidence)
 
         with db_session() as conn:
+            prev = conn.execute(
+                """
+                SELECT id, status, severity, evidence, local_recommendation, escalate_to
+                FROM governance_findings
+                WHERE agent = ? AND scope IS ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (finding.agent, finding.scope),
+            ).fetchone()
+            if prev is not None and (
+                prev["status"] == finding.status
+                and prev["severity"] == finding.severity
+                and prev["evidence"] == evidence_json
+                and prev["local_recommendation"] == finding.local_recommendation
+                and prev["escalate_to"] == finding.escalate_to
+            ):
+                self.logger.debug(
+                    f"Unchanged finding for {finding.agent}/{finding.level} "
+                    f"{finding.scope} {finding.status}/{finding.severity} — "
+                    f"skipping duplicate row (reusing id={prev['id']})"
+                )
+                return prev["id"]
+
             cursor = conn.execute(
                 """
                 INSERT INTO governance_findings

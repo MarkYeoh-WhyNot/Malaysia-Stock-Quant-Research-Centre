@@ -130,11 +130,9 @@ def test_ingest_findings_wires_agent_and_risk():
             (_AGENT_NAME,
              "parser approximated ma_level as ema_cross — representability violation",
              "return representable:false"))
-        fid = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-
     evidence_graph.ingest_findings()
 
-    fnode = store.get_node(slug=f"finding-{fid}")
+    fnode = store.get_node(slug=f"finding-{evidence_graph._slug_hash('|'.join((_AGENT_NAME, 'L0', 'parser', 'BLOCKER', 'FAIL')))}")
     agent_node = store.get_node(slug=f"agent-{evidence_graph._slug_hash(_AGENT_NAME)}")
     risk_node = store.get_node(slug="risk-parser_approximation")
     assert fnode is not None and agent_node is not None and risk_node is not None

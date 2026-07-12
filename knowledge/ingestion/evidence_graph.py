@@ -240,26 +240,42 @@ def ingest_strategies_and_evidence() -> dict:
 
 def ingest_findings() -> dict:
     """Promote governance_findings → finding nodes + reported_by(agent) /
-    exposed_to(risk) edges."""
+    exposed_to(risk) edges.
+
+    Dedupes by (agent, level, scope, severity, status) rather than by row id:
+    the inspectors' record() path now only inserts a new governance_findings
+    row on an actual state change (see governance/base.py), but this ingester
+    stays defense-in-depth against any inspector that bypasses record() or
+    against pre-existing duplicate rows — same (agent, level, scope, severity,
+    status) always maps to the same finding node instead of minting one node
+    per row."""
     stats = {"findings": 0, "agents": 0, "risk_edges": 0}
     with db_session() as conn:
         findings = [dict(r) for r in conn.execute("SELECT * FROM governance_findings").fetchall()]
 
     seen_agents: dict[str, int] = {}
+    seen_finding_slugs: set[str] = set()
     for f in findings:
         fid = f["id"]
         agent = (f.get("agent") or "unknown_agent")
+        level = f.get("level") or ""
+        scope = f.get("scope") or ""
+        severity = f.get("severity") or ""
+        status = f.get("status") or ""
         blob = " ".join(str(f.get(k) or "") for k in
                         ("scope", "evidence", "local_recommendation", "escalate_to")).lower()
+        fslug = f"finding-{_slug_hash('|'.join((agent, level, scope, severity, status)))}"
         fnode = store.upsert_node(
-            "finding", slug=f"finding-{fid}",
-            title=f"{agent}: {f.get('severity') or ''} ({f.get('status') or ''})".strip(),
+            "finding", slug=fslug,
+            title=f"{agent}: {severity} ({status})".strip(),
             domain="governance",
             summary=(f.get("evidence") or f.get("local_recommendation") or "")[:500],
-            tags=[t for t in (f.get("level"), f.get("severity"), f.get("status")) if t],
+            tags=[t for t in (level, severity, status) if t],
             ref=("governance_findings", fid), ingestion_version=INGESTION_VERSION,
         )
-        stats["findings"] += 1
+        if fslug not in seen_finding_slugs:
+            seen_finding_slugs.add(fslug)
+            stats["findings"] += 1
 
         if agent not in seen_agents:
             seen_agents[agent] = store.upsert_node(
