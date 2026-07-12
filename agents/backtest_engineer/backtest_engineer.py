@@ -1263,7 +1263,7 @@ class BacktestEngineer(BaseAgent):
             df=df, symbol=symbol, train_df=train_df, val_df=val_df, test_df=test_df,
             train_r=train_r, val_r=val_r, test_r=test_r,
             sharpe_is=sharpe_is, sharpe_oos=sharpe_oos, oos_deg=oos_deg,
-            regimes_positive=regimes_positive,
+            regimes_positive=regimes_positive, regime_sharpes=reg,
             capacity_pass=capacity_pass, capacity_note=capacity_note,
         )
         train_val_gap           = gate_result["train_val_gap"]

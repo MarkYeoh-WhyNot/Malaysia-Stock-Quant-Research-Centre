@@ -397,6 +397,14 @@ LEAVES = {
 MAX_DEPTH = 4
 MAX_LEAVES = 6
 
+# Regime-scoped candidates (optional top-level "regime_filter" key): the
+# position is masked to zero outside the declared volatility terciles. The
+# active set must be a non-empty PROPER subset — all three would be a no-op
+# disguised as a scoped candidate.
+REGIME_STATES = ("low_vol", "mid_vol", "high_vol")
+_REGIME_VOL_WINDOW = 60      # bars, mirrors engine._compute_regimes
+_REGIME_MIN_HISTORY = 252    # bars before the expanding terciles are trusted
+
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
@@ -497,6 +505,18 @@ def validate(tree: dict) -> list[str]:
     for part in ("entry", "exit", "short_entry", "short_exit"):
         if isinstance(tree.get(part), dict):
             _check_cross(tree[part])
+    rf = tree.get("regime_filter")
+    if rf is not None:
+        if not isinstance(rf, dict) or rf.get("type") != "vol_tercile":
+            errors.append('regime_filter must be {"type":"vol_tercile","active":[...]}')
+        else:
+            active = rf.get("active")
+            if (not isinstance(active, list) or not active
+                    or not set(active) <= set(REGIME_STATES)
+                    or len(set(active)) >= len(REGIME_STATES)):
+                errors.append(
+                    f"regime_filter.active must be a non-empty proper subset "
+                    f"of {list(REGIME_STATES)} (all three = unscoped no-op)")
     return errors
 
 
@@ -558,6 +578,32 @@ def _side_series(df: pd.DataFrame, entry_node: dict | None, exit_node: dict | No
     return entry.astype(float)
 
 
+def _regime_mask(df: pd.DataFrame, active: list) -> pd.Series:
+    """Ex-ante volatility-tercile membership mask (True = may hold a position).
+
+    Deliberately NOT the engine's full-sample terciles: those are fine for
+    post-hoc attribution but lookahead for trading. Here the p33/p66 cuts are
+    EXPANDING quantiles (only past vol observations), the vol measure is the
+    un-annualised 60-bar rolling std (tercile membership is scale-invariant,
+    and this function doesn't know the bar interval), and the whole mask is
+    shifted one bar — the regime a trade acts on is always yesterday's,
+    unconditionally, not a tunable parameter. Warm-up (< _REGIME_MIN_HISTORY
+    bars) → False → flat.
+    """
+    vol = df["close"].pct_change().rolling(_REGIME_VOL_WINDOW).std()
+    p33 = vol.expanding(min_periods=_REGIME_MIN_HISTORY).quantile(0.33)
+    p66 = vol.expanding(min_periods=_REGIME_MIN_HISTORY).quantile(0.66)
+    terciles = {
+        "low_vol": vol <= p33,
+        "mid_vol": (vol > p33) & (vol <= p66),
+        "high_vol": vol > p66,
+    }
+    mask = pd.Series(False, index=df.index)
+    for name in active:
+        mask |= terciles[name].fillna(False)
+    return mask.shift(1, fill_value=False)
+
+
 def signal_from_dsl(df: pd.DataFrame, dsl: dict) -> pd.Series:
     """Position series from a DSL tree: 0/1 long-only (Bursa, and any crypto
     tree that only sets entry/exit), or -1/0/1 when a short leg is present.
@@ -579,13 +625,23 @@ def signal_from_dsl(df: pd.DataFrame, dsl: dict) -> pd.Series:
         short_sig = _side_series(df, dsl.get("short_entry"), dsl.get("short_exit"))
 
     if short_sig is None:
-        return long_sig if long_sig is not None else pd.Series(0.0, index=df.index)
-    if long_sig is None:
-        return -short_sig
-    return pd.Series(
-        np.where(long_sig > 0, 1.0, np.where(short_sig > 0, -1.0, 0.0)),
-        index=df.index,
-    )
+        sig = long_sig if long_sig is not None else pd.Series(0.0, index=df.index)
+    elif long_sig is None:
+        sig = -short_sig
+    else:
+        sig = pd.Series(
+            np.where(long_sig > 0, 1.0, np.where(short_sig > 0, -1.0, 0.0)),
+            index=df.index,
+        )
+
+    # Regime scoping: mask the NETTED position to zero outside the declared
+    # terciles — applied after entry/exit state so a regime flip mid-position
+    # forces flat (an entry-side AND could not). validate() guarantees a
+    # non-empty proper subset.
+    rf = dsl.get("regime_filter")
+    if rf:
+        sig = sig.where(_regime_mask(df, list(rf.get("active") or [])), 0.0)
+    return sig
 
 
 # ── Signature (semantic dedup) ────────────────────────────────────────────────
@@ -670,6 +726,11 @@ def perturb_tree(tree: dict, rng: np.random.RandomState, scale: float = 0.2) -> 
         out["short_entry"] = _perturb(tree["short_entry"])
     if tree.get("short_exit"):
         out["short_exit"] = _perturb(tree["short_exit"])
+    if tree.get("regime_filter"):
+        # Not perturbed (no numeric params) but MUST survive the copy —
+        # otherwise the robustness gate would compare a scoped base against
+        # unscoped variants.
+        out["regime_filter"] = dict(tree["regime_filter"])
     return out
 
 
