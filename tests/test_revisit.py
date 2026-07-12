@@ -72,13 +72,21 @@ def _insert_backtest_run(idea_id, **regime_cols):
             (idea_id, *regime_cols.values()))
 
 
-def _insert_cemetery(idea_id, revival_conditions="generic", rejection_reason="generic"):
+def _insert_cemetery(idea_id, revival_conditions="generic", rejection_reason="generic",
+                     rejected_at_stage="stage2"):
     with db_session() as conn:
         conn.execute(
             "INSERT INTO strategy_cemetery (idea_id, strategy_name, factor_type, "
             "sector, rejected_at_stage, rejection_reason, revival_conditions) "
-            "VALUES (?, ?, 'momentum', 'general', 'stage2', ?, ?)",
-            (idea_id, f"TESTREVISIT {idea_id}", rejection_reason, revival_conditions))
+            "VALUES (?, ?, 'momentum', 'general', ?, ?, ?)",
+            (idea_id, f"TESTREVISIT {idea_id}", rejected_at_stage,
+             rejection_reason, revival_conditions))
+
+
+def _set_parent(idea_id, parent_id):
+    with db_session() as conn:
+        conn.execute("UPDATE alpha_ideas SET parent_idea_id=? WHERE id=?",
+                    (parent_id, idea_id))
 
 
 # ── select_candidates: regime_change ─────────────────────────────────────────
@@ -120,6 +128,48 @@ def test_regime_change_respects_cooldown_and_calib_exclusion():
     revisit.enqueue_revisit({"idea_id": idea_id, "reason": "test"})
     second = revisit.select_candidates(triggers, limit=10)
     assert idea_id not in {c["idea_id"] for c in second}
+
+
+def test_never_chain_revives_a_revisit_of_a_revisit():
+    """Caught live 2026-07-12: idea 218 (a revisit of 174) got revisited
+    AGAIN as idea 220 by an unrelated contradicting-finding trigger, titled
+    'revisit: revisit: ...' — a structurally blocked idea can loop forever,
+    burning a trial slot each cycle for zero new information. Only the
+    idea's OWN offspring are excluded; it stays revivable itself."""
+    root_id = _insert_idea(_PREFIX + "root")
+    _insert_backtest_run(root_id, regimes_positive=1, sharpe_high_vol=1.0,
+                         sharpe_low_vol=-0.1, sharpe_mid_vol=-0.1)
+    already_revisited_id = _insert_idea(_PREFIX + "already-revisited")
+    _set_parent(already_revisited_id, root_id)
+    # Backdate past the cooldown window so root_id's exclusion below is
+    # attributable ONLY to the new "own-offspring" guard, not the
+    # pre-existing recent-cooldown check (a separate, already-tested rule).
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE alpha_ideas SET created_at=datetime('now', '-200 days') WHERE id=?",
+            (already_revisited_id,))
+    _insert_backtest_run(already_revisited_id, regimes_positive=1, sharpe_high_vol=1.0,
+                         sharpe_low_vol=-0.1, sharpe_mid_vol=-0.1)
+
+    triggers = [{"type": "regime_change", "kind": "vol_tercile",
+                "from": "low_vol", "to": "high_vol"}]
+    candidates = revisit.select_candidates(triggers, limit=10)
+    ids = {c["idea_id"] for c in candidates}
+    assert root_id in ids
+    assert already_revisited_id not in ids
+
+
+def test_never_revives_a_structurally_unrepresentable_idea():
+    idea_id = _insert_idea(_PREFIX + "unrepresentable")
+    _insert_backtest_run(idea_id, regimes_positive=1, sharpe_high_vol=1.0,
+                         sharpe_low_vol=-0.1, sharpe_mid_vol=-0.1)
+    _insert_cemetery(idea_id, rejected_at_stage="unrepresentable",
+                     rejection_reason="custom cross-asset ratio not in the condition set")
+
+    triggers = [{"type": "regime_change", "kind": "vol_tercile",
+                "from": "low_vol", "to": "high_vol"}]
+    candidates = revisit.select_candidates(triggers, limit=10)
+    assert idea_id not in {c["idea_id"] for c in candidates}
 
 
 # ── select_candidates: data_source ───────────────────────────────────────────

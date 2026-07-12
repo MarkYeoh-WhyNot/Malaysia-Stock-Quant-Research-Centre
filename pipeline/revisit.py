@@ -143,8 +143,30 @@ def _already_revisited_recently(conn, parent_id: int) -> bool:
 
 
 def _eligible(conn, idea_id: int) -> bool:
-    row = conn.execute("SELECT slug FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
+    row = conn.execute(
+        "SELECT slug, parent_idea_id FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
     if not row or (row["slug"] or "").startswith("calib-"):
+        return False
+    if row["parent_idea_id"] is not None:
+        # Never chain-revive a revisit of a revisit — without this, a
+        # structurally blocked idea (see next check) loops "revisit:
+        # revisit: revisit: ..." forever, burning a trial slot each time
+        # for zero new information (caught live 2026-07-12: idea 218, a
+        # revisit of 174, got revisited AGAIN as idea 220 by an unrelated
+        # contradicting-finding trigger). The ROOT idea stays revivable —
+        # only its own offspring are excluded.
+        return False
+    cemetery = conn.execute(
+        "SELECT rejected_at_stage FROM strategy_cemetery WHERE idea_id=? "
+        "ORDER BY id DESC LIMIT 1", (idea_id,)).fetchone()
+    if cemetery and cemetery["rejected_at_stage"] == "unrepresentable":
+        # Permanent structural block: no DSL leaf can express this formula
+        # regardless of market regime, new data, or contradicting KG
+        # findings — reason_category classification (rejection_memory.py's
+        # coarse keyword buckets) can mislabel the TRUE cause, but this
+        # column is set directly by the unrepresentable-DSL gate itself
+        # (backtest_engineer.py) and is reliable. Only a code change (a
+        # new leaf) fixes this, not fresh evidence.
         return False
     return not _already_revisited_recently(conn, idea_id)
 
