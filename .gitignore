@@ -11,6 +11,7 @@ venv/
 .env.save
 *.env.save
 .DS_Store
+.claude/
 .key_rotation_date
 data/daemon_heartbeat
 data/openclaw_progress.json
