@@ -277,6 +277,43 @@ def test_xs_backtest_persists_ic_columns_on_own_row():
     assert abs(res["row_mean_ic"] - res["ic"]["mean_ic"]) < 1e-9, res
 
 
+def test_xs_backtest_populates_equity_curve_and_fidelity_columns():
+    """Regression: run_cross_sectional_backtest used to return without ever
+    writing backtest_series or the cagr/ulcer_index/dd_duration_bars/
+    fill_robustness columns (only the single-name path did) — the Backtest
+    Lab dashboard showed "No equity series cached" and blank Fidelity &
+    Execution metrics for every basket idea. Pin both are now populated."""
+    out = _run_mode("crypto", _XS_ENGINE_SNIPPET.replace(
+        'SELECT run_type, passed FROM backtest_runs WHERE idea_id=?',
+        'SELECT run_type, passed, cagr, ulcer_index, dd_duration_bars, '
+        'fill_robustness, sharpe_net_conservative FROM backtest_runs WHERE idea_id=?',
+    ).replace(
+        '    idea = conn.execute("SELECT stage, status FROM alpha_ideas WHERE id=?",\n'
+        '                        (iid,)).fetchone()',
+        '    idea = conn.execute("SELECT stage, status FROM alpha_ideas WHERE id=?",\n'
+        '                        (iid,)).fetchone()\n'
+        '    n_series_rows = conn.execute(\n'
+        '        "SELECT COUNT(*) AS n FROM backtest_series WHERE idea_id=?",\n'
+        '        (iid,)).fetchone()["n"]',
+    ).replace(
+        '"n_rebalances": r.get("n_rebalances")}))',
+        '"n_rebalances": r.get("n_rebalances"),\n'
+        '    "row_cagr": run["cagr"], "row_ulcer": run["ulcer_index"],\n'
+        '    "row_dd_dur": run["dd_duration_bars"],\n'
+        '    "row_fill_robustness": run["fill_robustness"],\n'
+        '    "row_sharpe_cons": run["sharpe_net_conservative"],\n'
+        '    "n_series_rows": n_series_rows}))',
+    ))
+    line = [l for l in out.splitlines() if l.startswith("RESULT ")][-1]
+    res = json.loads(line[len("RESULT "):])
+    assert res["row_cagr"] is not None, res
+    assert res["row_ulcer"] is not None, res
+    assert res["row_dd_dur"] is not None, res
+    assert res["row_fill_robustness"] is not None, res
+    assert res["row_sharpe_cons"] is not None, res
+    assert res["n_series_rows"] > 1000, res  # ~1200-bar synthetic universe
+
+
 def test_xs_sandbox_submission_and_bursa_long_only():
     """sandbox xs briefs build the xs: spec; Bursa forces bottom_n=0 at the
     ENGINE level (long-only structurally) — pin the sandbox contract here."""

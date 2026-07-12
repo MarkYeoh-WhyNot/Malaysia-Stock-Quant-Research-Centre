@@ -592,6 +592,26 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
 
     from agents.backtest_engineer.backtest_engineer import _stamp_versions
 
+    # ── Fidelity reports (report-only, mirrors the single-name block) ────
+    # Reuses the SAME _compute_performance helper already used for
+    # train_r/val_r/test_r above, on the full basket NAV — one honest
+    # source of truth for cagr/ulcer/drawdown-duration, no re-derivation.
+    # Capacity haircut needs per-name ADV aggregation (not built for
+    # baskets yet) — left unset rather than fabricated.
+    cagr_full = ulcer_full = dd_dur_full = None
+    sharpe_net_conservative = fill_robustness = None
+    try:
+        _full_r = engine_mod._compute_performance(engine, port_df, one(port_df), interval)
+        _cons_r = engine_mod._compute_performance(engine, port_df, one(port_df), interval, lag=2)
+        cagr_full   = _full_r.get("cagr")
+        ulcer_full  = _full_r.get("ulcer_index")
+        dd_dur_full = _full_r.get("dd_duration_bars")
+        _sh_full, _shc_full = _full_r.get("sharpe_net", 0.0), _cons_r.get("sharpe_net", 0.0)
+        sharpe_net_conservative = _shc_full
+        fill_robustness = round(_shc_full / _sh_full, 3) if abs(_sh_full) > 1e-9 else 0.0
+    except Exception as _fid_exc:
+        engine.log_daemon("WARN", f"[{idea_id}] XSect fidelity reports failed: {_fid_exc}")
+
     with db_session() as conn:
         conn.execute("""
             INSERT INTO backtest_runs
@@ -627,6 +647,16 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
             json.dumps(ic.get("best_stocks")) if ic.get("best_stocks") is not None else None,
         ))
         _stamp_versions(conn)
+        run_id = conn.execute(
+            "SELECT id FROM backtest_runs WHERE idea_id=? ORDER BY created_at DESC LIMIT 1",
+            (idea_id,)).fetchone()["id"]
+        conn.execute("""
+            UPDATE backtest_runs
+            SET cagr=?, ulcer_index=?, dd_duration_bars=?,
+                sharpe_net_conservative=?, fill_robustness=?
+            WHERE id=?
+        """, (cagr_full, ulcer_full, dd_dur_full,
+              sharpe_net_conservative, fill_robustness, run_id))
         if overall_pass:
             conn.execute(
                 "UPDATE alpha_ideas SET backtest_sharpe=?, backtest_dd=?, "
@@ -655,6 +685,30 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
             "VALUES (?, 'gate2_3_xs', ?, 'BacktestEngineer', ?)",
             (idea_id, "approve" if overall_pass else "reject",
              (verdict_reason or "all gates passed")[:500]))
+
+    # ── Save equity curve to backtest_series (Backtest Lab chart) ─────────
+    # Same NAV the gates ran on, not a re-derivation; benchmark leg is the
+    # equal-weight universe series the benchmark gate itself compares against.
+    try:
+        oos_start = len(train_df) + len(val_df)
+        peak = nav.expanding().max()
+        dd_series = (nav - peak) / peak.clip(lower=1e-9)
+        bench_nav = (1.0 + _ew).cumprod()
+        with db_session() as conn:
+            conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
+            rows_eq = [
+                (idea_id, str(d)[:10], float(v) - 1.0,
+                 float(bench_nav.iloc[i]) - 1.0, float(dd_series.iloc[i]),
+                 1 if i >= oos_start else 0)
+                for i, (d, v) in enumerate(zip(nav.index, nav.values))
+            ]
+            conn.executemany(
+                "INSERT INTO backtest_series "
+                "(idea_id, date, strategy_pct, benchmark_pct, drawdown_pct, is_oos) "
+                "VALUES (?,?,?,?,?,?)", rows_eq)
+        engine.log_daemon("INFO", f"XSect [{idea_id}] saved {len(rows_eq)} equity points")
+    except Exception as _eq_exc:
+        engine.log_daemon("WARN", f"[{idea_id}] XSect equity curve save failed: {_eq_exc}")
 
     engine._clear_progress(idea_id)
     engine.log_daemon(
