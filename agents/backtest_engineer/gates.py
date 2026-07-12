@@ -38,10 +38,56 @@ from agents.backtest_engineer import stats
 from agents.backtest_engineer import engine as engine_mod
 
 
+def recent_trial_count(conn, window_days: int) -> int:
+    """Distinct ideas backtested inside the rolling deflation window.
+
+    Synthetic calibration probes (slug 'calib-%', inserted by
+    scripts/calibration_harness.py) are excluded: they measure the gate
+    stack itself and must not raise the deflated hurdle for real ideas.
+    LEFT JOIN keeps orphaned backtest_runs rows counted (this DB
+    legitimately carries synthetic rows without an alpha_ideas parent) —
+    only a positively identified calib probe is dropped, so the count is
+    byte-identical to the old query whenever no harness has run.
+    """
+    return conn.execute(
+        "SELECT COUNT(DISTINCT br.idea_id) AS n FROM backtest_runs br "
+        "LEFT JOIN alpha_ideas ai ON ai.id = br.idea_id "
+        "WHERE br.created_at >= datetime('now', ?) "
+        "AND (ai.slug IS NULL OR ai.slug NOT LIKE 'calib-%')",
+        (f"-{int(window_days)} days",),
+    ).fetchone()["n"]
+
+
+def regime_gate_decision(params: dict, regimes_positive: int,
+                         regime_sharpes: dict | None) -> tuple[bool, str, bool]:
+    """QC5 decision for both candidate types. Returns (pass, note, is_scoped).
+
+    unscoped:      positive in >= 2/3 volatility terciles — byte-identical to
+                   the original rule (pinned by tests).
+    regime-scoped: (DSL "regime_filter" key) flat outside its declared
+                   terciles BY CONSTRUCTION, so 2/3 would be unfailable
+                   theatre — instead EVERY declared tercile must be positive.
+    """
+    _dsl = params.get("dsl")
+    _rf = _dsl.get("regime_filter") if isinstance(_dsl, dict) else None
+    if _rf:
+        active = list(_rf.get("active") or [])
+        ok = bool(active) and all(
+            (regime_sharpes or {}).get(f"sharpe_{a}", 0.0) > 0 for a in active)
+        note = "" if ok else (f"Regime-scoped strategy not positive in every "
+                              f"declared tercile {active}")
+        return ok, note, True
+    ok = regimes_positive >= 2
+    note = "" if ok else (f"Strategy only works in {regimes_positive}/3 "
+                          f"volatility regimes — not robust enough")
+    return ok, note, False
+
+
 def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
                     train_df, val_df, test_df, train_r, val_r, test_r,
                     sharpe_is, sharpe_oos, oos_deg, regimes_positive,
-                    capacity_pass, capacity_note) -> dict:
+                    capacity_pass, capacity_note,
+                    regime_sharpes: dict | None = None) -> dict:
     """Apply the full stage2/3 gate stack. Returns a dict with every pass/fail
     boolean, diagnostic note, and computed metric the caller needs for DB
     persistence and the final result payload (see the return statement for
@@ -117,11 +163,7 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
         # Trial count over a ROLLING window (not all history — a forever-
         # growing N silently raised the bar for every future idea
         # regardless of its own quality; audit finding, 2026-07-10).
-        n_trials = conn.execute(
-            "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs "
-            "WHERE created_at >= datetime('now', ?)",
-            (f"-{int(GATE_CONFIG.deflation_window_days)} days",),
-        ).fetchone()["n"] + 1
+        n_trials = recent_trial_count(conn, int(GATE_CONFIG.deflation_window_days)) + 1
         # Honest multiple-testing accounting: if this idea's params were
         # chosen by a parameter sweep, every swept config was a trial.
         try:
@@ -239,13 +281,24 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
     if not oos_pass:
         engine.log_daemon("WARN", f"Backtest [{idea_id}] OOS gate FAILED: {oos_note}")
 
-    # QC5: regime robustness gate
-    regime_pass = regimes_positive >= 2
-    regime_note = ""
+    # QC5: regime robustness gate — NOT a relaxation for scoped candidates:
+    # the composite (flat segments included) still faces PSR/DD/OOS/
+    # trade-count on the full history, and the regime choice is charged as
+    # >= 6 trials via its optimizer_runs row (WARNed below if missing).
+    regime_pass, regime_note, _regime_scoped = regime_gate_decision(
+        params, regimes_positive, regime_sharpes)
     if not regime_pass:
-        regime_note = (f"Strategy only works in {regimes_positive}/3 volatility regimes "
-                       f"— not robust enough")
         engine.log_daemon("WARN", f"Backtest [{idea_id}] regime gate FAILED: {regime_note}")
+    if _regime_scoped:
+        with db_session() as conn:
+            _dof = conn.execute(
+                "SELECT 1 FROM optimizer_runs WHERE idea_id=? AND status='done' "
+                "AND n_configs >= 6", (idea_id,)).fetchone()
+        if not _dof:
+            engine.log_daemon(
+                "WARN", f"Backtest [{idea_id}] regime-scoped idea missing its "
+                        f">=6-config optimizer_runs DOF charge — the regime "
+                        f"choice is an uncounted trial")
 
     # QC6: multiple-testing deflation — SUBSUMED by the PSR principal rule
     # above (SR* IS the deflated benchmark inside PSR); no separate binary.

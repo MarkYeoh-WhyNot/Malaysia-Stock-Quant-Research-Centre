@@ -516,6 +516,8 @@ ENABLED_JOBS = {
     "vault_export",
     "funnel_report",
     "db_maintenance",
+    "calibration_check",
+    "revisit_scan",
 }
 
 # GateConfig overrides for this market: crypto Sharpe/vol norms differ and the

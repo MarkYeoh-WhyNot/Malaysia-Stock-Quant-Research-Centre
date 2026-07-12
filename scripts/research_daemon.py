@@ -183,6 +183,7 @@ class ResearchDaemon:
             self._process_graph_maintain, self._process_evidence_ingest,
             self._process_graph_health_check, self._process_feedback_ingest,
             self._process_vault_export, self._process_funnel_report,
+            self._process_calibration_check,
         )
         for step in steps:
             await step()
@@ -1166,6 +1167,53 @@ class ResearchDaemon:
                 logger.error(f"[GraphHealth] {result['blockers']} BLOCKER(s) in the knowledge graph")
         except Exception as e:
             logger.error(f"[GraphHealth] Error: {e}", exc_info=True)
+
+    async def _process_calibration_check(self):
+        """Weekly gate-calibration run: feed synthetic strong/moderate/noise
+        edges through the REAL gate stack and alert on drift. Pure CPU
+        (~36 full backtests, no LLM) — offloaded to a thread. The probes'
+        calib-% rows are excluded from the deflated-hurdle trial count
+        (gates.recent_trial_count), so scheduling this cannot raise the bar
+        for real ideas. Manual reruns after any gate change remain Mark's
+        discipline — the daemon can't observe code edits."""
+        if not self._job_due("calibration_check", min_gap=timedelta(days=7)):
+            return
+        logger.info("[Calibration] Starting weekly gate-calibration harness…")
+        try:
+            from scripts.calibration_harness import run_calibration
+            rep = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: run_calibration(verbose=False))
+            self._mark_job_run("calibration_check")
+
+            slim = {k: rep.get(k) for k in
+                    ("market_mode", "calibrated", "winner_pass_rate",
+                     "moderate_pass_rate", "loser_pass_rate",
+                     "moderate_dd_cap_rejects", "diagnosis")}
+            try:
+                import os
+                path = os.path.join(os.environ.get("OPENCLAW_RUNTIME_DIR", "."),
+                                    "calibration_report.json")
+                with open(path, "w") as fh:
+                    json.dump(slim, fh, indent=1, default=str)
+            except Exception:
+                pass
+
+            msg = (f"Gate calibration: win={rep['winner_pass_rate']:.0%} (≥90%) "
+                   f"moderate={rep['moderate_pass_rate']:.0%} (≥60%) "
+                   f"noise={rep['loser_pass_rate']:.0%} (≤5%)")
+            if rep["loser_pass_rate"] > 0.05:
+                # Noise passing the gates is the one failure that poisons
+                # everything downstream — treat like a kill-switch event.
+                send_alert(f"{msg} — NOISE LEAKING THROUGH GATES. "
+                           f"{rep.get('diagnosis', '')}", level="CRITICAL")
+            elif not rep["calibrated"]:
+                send_alert(f"{msg} — calibration drift. "
+                           f"{rep.get('diagnosis', '')}", level="WARNING")
+            else:
+                send_alert(msg, level="INFO")
+            logger.info(f"[Calibration] {slim}")
+        except Exception as e:
+            logger.error(f"[Calibration] Error: {e}", exc_info=True)
 
     # ── Obsidian feedback ingest — 05:00 UTC, just before the vault export ────
 
