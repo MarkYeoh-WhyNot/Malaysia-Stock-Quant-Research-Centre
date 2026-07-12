@@ -38,9 +38,49 @@ from agents.backtest_engineer import engine as engine_mod
 from agents.backtest_engineer.engine import _funding_bar_sum
 
 
+def _ic_series(sig_panel: pd.DataFrame, ret_panel: pd.DataFrame,
+               spread_ok: bool) -> tuple:
+    """Per-date cross-sectional IC + top-quintile (+ top-minus-bottom, when
+    ``spread_ok``) portfolio returns. Shared by ``cross_sectional_test`` (full
+    window) and the xs-factor sweep's train+val screening (optimizer.py) so
+    both compute IC identically — extracted, not duplicated.
+
+    Returns ``(ic_series, portfolio_rets, spread_rets)``, each a plain list.
+    """
+    ic_series: list[float] = []
+    portfolio_rets: list[float] = []
+    spread_rets: list[float] = []   # top-minus-bottom (factor mode, shorts allowed)
+
+    for date in sig_panel.index:
+        sig_row = sig_panel.loc[date].dropna()
+        ret_row = ret_panel.loc[date].dropna()
+        common_stocks = sig_row.index.intersection(ret_row.index)
+        if len(common_stocks) < 5:
+            continue
+
+        sv = sig_row[common_stocks].values
+        rv = ret_row[common_stocks].values
+
+        ic = stats.spearman(sv, rv)
+        if not np.isnan(ic):
+            ic_series.append(ic)
+
+        # Top-quintile portfolio (top ~20% of available stocks that day)
+        n_q = max(1, len(common_stocks) // 5)
+        top_idx = np.argsort(sv)[-n_q:]
+        if len(top_idx) > 0:
+            portfolio_rets.append(float(np.mean(rv[top_idx])))
+        if spread_ok:
+            bot_idx = np.argsort(sv)[:n_q]
+            spread_rets.append(float(np.mean(rv[top_idx]) - np.mean(rv[bot_idx])))
+
+    return ic_series, portfolio_rets, spread_rets
+
+
 def cross_sectional_test(engine, factor_formula: str, idea_id: int,
                          factor: dict | None = None,
-                         interval: str = "1d", days: int = 730) -> dict:
+                         interval: str = "1d", days: int = 730,
+                         persist: bool = True) -> dict:
     """Test whether a factor generalises across the full universe.
 
     Two modes:
@@ -61,6 +101,15 @@ def cross_sectional_test(engine, factor_formula: str, idea_id: int,
     Gate thresholds come from GATE_CONFIG (xs_min_mean_ic /
     xs_min_ic_tstat / xs_min_positive_names — defaults equal the values
     previously hardcoded here; crypto overrides positive-names to 12/20).
+
+    ``persist`` controls whether the IC columns are UPDATEd onto the idea's
+    latest backtest_runs row. That UPDATE assumes the DSL/legacy backtest
+    has already INSERTed its row (true for the research_daemon legacy-veto
+    call site). ``run_cross_sectional_backtest`` calls this BEFORE its own
+    INSERT, so it passes ``persist=False`` and folds the IC values into its
+    own INSERT instead — otherwise the UPDATE silently matches no row and
+    the queryable mean_ic/ic_tstat/stocks_positive_ic/best_stocks columns
+    stay NULL (the numbers still land in result_data JSON either way).
     """
     with db_session() as conn:
         row = conn.execute("SELECT * FROM alpha_ideas WHERE id=?", (idea_id,)).fetchone()
@@ -142,34 +191,9 @@ def cross_sectional_test(engine, factor_formula: str, idea_id: int,
         }
 
     # ── Cross-sectional IC series (IC at each trading date) ───────────────
-    ic_series: list[float] = []
-    portfolio_rets: list[float] = []
-    spread_rets: list[float] = []   # top-minus-bottom (factor mode, shorts allowed)
     from config.settings import ALLOW_SHORT as _allow_short
     _spread_ok = factor is not None and _allow_short
-
-    for date in sig_panel.index:
-        sig_row = sig_panel.loc[date].dropna()
-        ret_row = ret_panel.loc[date].dropna()
-        common_stocks = sig_row.index.intersection(ret_row.index)
-        if len(common_stocks) < 5:
-            continue
-
-        sv = sig_row[common_stocks].values
-        rv = ret_row[common_stocks].values
-
-        ic = stats.spearman(sv, rv)
-        if not np.isnan(ic):
-            ic_series.append(ic)
-
-        # Top-quintile portfolio (top ~20% of available stocks that day)
-        n_q = max(1, len(common_stocks) // 5)
-        top_idx = np.argsort(sv)[-n_q:]
-        if len(top_idx) > 0:
-            portfolio_rets.append(float(np.mean(rv[top_idx])))
-        if _spread_ok:
-            bot_idx = np.argsort(sv)[:n_q]
-            spread_rets.append(float(np.mean(rv[top_idx]) - np.mean(rv[bot_idx])))
+    ic_series, portfolio_rets, spread_rets = _ic_series(sig_panel, ret_panel, _spread_ok)
 
     if not ic_series:
         return {
@@ -249,22 +273,25 @@ def cross_sectional_test(engine, factor_formula: str, idea_id: int,
     }
 
     # ── Persist IC columns to latest backtest_run for this idea ──────────
-    try:
-        with db_session() as conn:
-            conn.execute("""
-                UPDATE backtest_runs
-                SET mean_ic=?, ic_tstat=?, stocks_positive_ic=?, best_stocks=?
-                WHERE id = (
-                    SELECT id FROM backtest_runs WHERE idea_id=?
-                    ORDER BY created_at DESC LIMIT 1
-                )
-            """, (
-                round(mean_ic, 4), round(ic_tstat, 3),
-                stocks_positive_ic, json.dumps(best_stocks),
-                idea_id,
-            ))
-    except Exception as e:
-        engine.log_daemon("WARN", f"CrossSect: failed to save IC stats for [{idea_id}]: {e}")
+    # (skipped when the caller will fold these into its own INSERT — see
+    # the ``persist`` docstring note above)
+    if persist:
+        try:
+            with db_session() as conn:
+                conn.execute("""
+                    UPDATE backtest_runs
+                    SET mean_ic=?, ic_tstat=?, stocks_positive_ic=?, best_stocks=?
+                    WHERE id = (
+                        SELECT id FROM backtest_runs WHERE idea_id=?
+                        ORDER BY created_at DESC LIMIT 1
+                    )
+                """, (
+                    round(mean_ic, 4), round(ic_tstat, 3),
+                    stocks_positive_ic, json.dumps(best_stocks),
+                    idea_id,
+                ))
+        except Exception as e:
+            engine.log_daemon("WARN", f"CrossSect: failed to save IC stats for [{idea_id}]: {e}")
 
     engine.log_daemon(
         "INFO" if factor_is_real else "WARN",
@@ -371,7 +398,13 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
                                  reason_category="data")
 
     # ── Rebalance loop: ranks at bar close → weights from the NEXT bar ────
-    weights = pd.DataFrame(0.0, index=close_p.index, columns=close_p.columns)
+    # Rows between rebalances stay NaN and forward-fill from the last
+    # rebalance row; the rebalance rows themselves are taken LITERALLY
+    # (fix 2026-07-12: the old replace(0→NaN).ffill() also forward-filled a
+    # dropped name's stale weight over its legitimate 0 — names could enter
+    # but never exit, gross leverage crept up every membership change and
+    # exit turnover was never costed).
+    weights = pd.DataFrame(np.nan, index=close_p.index, columns=close_p.columns)
     current = pd.Series(0.0, index=close_p.columns)
     n_rebalances = 0
     for i in range(0, n_bars, rebalance_bars):
@@ -386,7 +419,7 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
                 n_rebalances += 1
             current = new_w
         weights.iloc[i] = current
-    weights = weights.replace(0.0, np.nan).ffill().fillna(0.0)
+    weights = weights.ffill().fillna(0.0)
     # one-bar execution delay — weights decided at bar i apply to i+1
     w_held = weights.shift(1).fillna(0.0)
 
@@ -443,7 +476,7 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
     # IC gate — the factor itself must be real across the universe
     ic = cross_sectional_test(engine, row["factor_formula"] or fname, idea_id,
                                    factor={"name": fname, "params": fparams},
-                                   interval=interval)
+                                   interval=interval, persist=False)
     ic_pass = bool(ic.get("factor_is_real"))
 
     # Benchmark gate — RISK-ADJUSTED (2026-07-10): the basket's net Sharpe
@@ -572,8 +605,9 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
                sharpe_is, sharpe_oos, oos_sharpe, oos_degradation,
                sharpe_low_vol, sharpe_mid_vol, sharpe_high_vol,
                regimes_positive, sanity_flags, max_dd,
-               verdict, verdict_reason)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               verdict, verdict_reason,
+               mean_ic, ic_tstat, stocks_positive_ic, best_stocks)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             idea_id, "cross_sectional",
             row["ticker"] or "UNIVERSE", interval, row["factor_formula"] or fname,
@@ -589,6 +623,8 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
             regimes["sharpe_low_vol"], regimes["sharpe_mid_vol"],
             regimes["sharpe_high_vol"], regimes_positive, None, test_r["max_dd"],
             verdict, verdict_reason or None,
+            ic.get("mean_ic"), ic.get("ic_tstat"), ic.get("stocks_positive_ic"),
+            json.dumps(ic.get("best_stocks")) if ic.get("best_stocks") is not None else None,
         ))
         _stamp_versions(conn)
         if overall_pass:

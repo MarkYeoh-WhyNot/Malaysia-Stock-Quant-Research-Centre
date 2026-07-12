@@ -250,6 +250,33 @@ def test_xs_engine_planted_edge_passes_and_parks(market_mode):
     assert res["ic"]["mean_ic"] > 0.05, res
 
 
+def test_xs_backtest_persists_ic_columns_on_own_row():
+    """Regression: run_cross_sectional_backtest calls cross_sectional_test
+    BEFORE inserting its own backtest_runs row, so the old "UPDATE latest
+    row" persistence silently matched nothing and left mean_ic/ic_tstat/
+    stocks_positive_ic/best_stocks NULL on the basket's row (the numbers
+    still made it into result_data JSON, so nothing was lost — just the
+    queryable columns). Pin that the basket's OWN row now carries them."""
+    out = _run_mode("crypto", _XS_ENGINE_SNIPPET.replace(
+        'SELECT run_type, passed FROM backtest_runs WHERE idea_id=?',
+        'SELECT run_type, passed, mean_ic, ic_tstat, stocks_positive_ic, '
+        'best_stocks FROM backtest_runs WHERE idea_id=?',
+    ).replace(
+        '"n_rebalances": r.get("n_rebalances")}))',
+        '"n_rebalances": r.get("n_rebalances"),\n'
+        '    "row_mean_ic": run["mean_ic"], "row_ic_tstat": run["ic_tstat"],\n'
+        '    "row_stocks_positive_ic": run["stocks_positive_ic"],\n'
+        '    "row_best_stocks": run["best_stocks"]}))',
+    ))
+    line = [l for l in out.splitlines() if l.startswith("RESULT ")][-1]
+    res = json.loads(line[len("RESULT "):])
+    assert res["row_mean_ic"] is not None, res
+    assert res["row_ic_tstat"] is not None, res
+    assert res["row_stocks_positive_ic"] is not None, res
+    assert res["row_best_stocks"] is not None, res
+    assert abs(res["row_mean_ic"] - res["ic"]["mean_ic"]) < 1e-9, res
+
+
 def test_xs_sandbox_submission_and_bursa_long_only():
     """sandbox xs briefs build the xs: spec; Bursa forces bottom_n=0 at the
     ENGINE level (long-only structurally) — pin the sandbox contract here."""
