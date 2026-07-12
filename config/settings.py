@@ -167,7 +167,12 @@ JUDGE_REJECT_RULE  = _P.JUDGE_REJECT_RULE
 INSTRUMENT_TYPE  = _P.INSTRUMENT_TYPE
 CONCENTRATION_SECTOR = _P.CONCENTRATION_SECTOR
 ENABLED_JOBS     = _P.ENABLED_JOBS        # None = all jobs
-DIRECTION_DOC    = _P.DIRECTION_DOC        # System Direction dashboard content
+DIRECTION_DOC    = _P.DIRECTION_DOC        # System Direction dashboard content (market charter)
+
+# Shared constitution — imported directly (NOT via the profile) so both markets
+# carry the byte-identical text; charters stay market-specific. See
+# config/markets/_shared.py for the three-layer direction structure.
+from config.markets._shared import SYSTEM_CONSTITUTION  # noqa: E402
 
 # ── Research content (KB hunt / alpha seeds, from profile) ───────────────────
 # Fixes the bug where DiversityEngine/ResearchHunter/KBIngester/AlphaSeedGenerator

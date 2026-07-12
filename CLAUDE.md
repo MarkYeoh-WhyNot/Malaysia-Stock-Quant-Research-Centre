@@ -520,6 +520,28 @@ search; without it everything runs FTS5-only.
 
 ## SYSTEM DIRECTION — MARK'S RESEARCH CENTRE NORTH STAR
 
+> **Scope note (2026-07-12 — three-layer direction structure):** the system's identity is
+> split into ONE shared constitution + per-market charters ("same constitution, different
+> market charters, shared governance"):
+> - **`config/markets/_shared.py` `SYSTEM_CONSTITUTION`** — shared identity + governance,
+>   byte-identical for both markets: research-validation OS not a signal factory; quality
+>   over quantity; no signal trusted until it survives every check; reject-never-approximate;
+>   deterministic checks before model judgment; negative evidence retained; one truth across
+>   backtests/charts/gates/paper; paper before capital; no automated capital decisions.
+>   Implemented by the bottom-up governance/board architecture
+>   (`docs/board_architecture_work_orders.md`, `docs/knowledge_graph_evolution_design.md`).
+> - **Market charters** — each profile's `DIRECTION_DOC` (`config/markets/{bursa,crypto}.py`),
+>   market doctrine only. Crypto: a research/intelligence OS, data-source-led (funding,
+>   on-chain, tokenomics, microstructure, baskets/spreads). Bursa: long-only, explainable,
+>   liquidity-aware alpha surviving local frictions and institution-driven flow.
+> - The dashboard System Direction page shows the constitution + the active market's charter
+>   (`/api/system/direction`).
+> **RULE: no technical results in philosophy/charter text** (no trial counts, IC/t-stats,
+> harness outcomes, gate mechanics) — evidence lives in the research record; enforced by a
+> no-digits test pin in `tests/test_direction_doc.py`. The Bursa block below is the legacy
+> full North Star document; its operational sections (gates, costs, angles) remain accurate,
+> but the identity layer above supersedes its philosophy wording.
+
 ```
 ═══════════════════════════════════════════════════════
 MARK'S RESEARCH CENTRE — SYSTEM DIRECTION

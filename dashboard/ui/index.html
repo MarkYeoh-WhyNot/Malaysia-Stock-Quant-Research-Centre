@@ -579,11 +579,26 @@ svg text{font-family:var(--font-mono)}
   <!-- Live state row -->
   <div class="dir-state-grid" id="dir-state-row"></div>
 
-  <!-- Core Purpose / Philosophy -->
+  <!-- System Constitution (shared, identical for both markets) -->
+  <div class="dir-section">
+    <div class="dir-card" id="dir-card-constitution">
+      <div class="dir-card-head" onclick="dirToggle('constitution')">
+        <span class="dir-card-title"><span class="ico">🏛️</span>System Constitution
+          <span style="background:var(--bg4);border:1px solid var(--border);padding:1px 8px;border-radius:10px;font-size:11px;color:var(--muted2)">shared — both markets</span>
+        </span>
+        <span class="dir-card-chevron">▾</span>
+      </div>
+      <div class="dir-card-body">
+        <p id="dir-constitution-text" style="font-size:12px;color:var(--muted2);line-height:1.7;white-space:pre-line"></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Core Purpose / Philosophy (market charter) -->
   <div class="dir-section">
     <div class="dir-card open" id="dir-card-philosophy">
       <div class="dir-card-head" onclick="dirToggle('philosophy')">
-        <span class="dir-card-title"><span class="ico">🎯</span>Design Philosophy</span>
+        <span class="dir-card-title"><span class="ico">🎯</span>Design Philosophy — Market Charter</span>
         <span class="dir-card-chevron">▾</span>
       </div>
       <div class="dir-card-body">
@@ -4419,6 +4434,7 @@ async function loadDirection() {
 
   document.getElementById('dir-updated').textContent = 'Last updated: ' + (d.last_updated || '—');
   document.getElementById('dir-purpose').textContent = d.core_purpose || '';
+  document.getElementById('dir-constitution-text').textContent = d.system_constitution || '';
   document.getElementById('dir-philosophy-text').textContent = d.design_philosophy || '';
 
   // Live state row

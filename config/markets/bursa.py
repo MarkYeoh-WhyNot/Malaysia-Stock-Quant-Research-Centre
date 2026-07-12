@@ -428,16 +428,20 @@ GATE_OVERRIDES: dict = {}
 # endpoint is market-agnostic. The endpoint merges this with live KB / idea /
 # spend numbers and derives research-angle coverage from RESEARCH_ANGLES.
 DIRECTION_DOC = {
-    "last_updated": "April 2026",
+    "last_updated": "July 2026",
     "core_purpose": (
         "Find genuine, statistically robust alpha factors in Bursa Malaysia equity markets. "
         "Prove them cross-sectionally. Deploy them safely with human oversight at every "
         "capital decision point."
     ),
     "design_philosophy": (
-        "Quality over quantity. 10 robust, well-validated strategies beats 300 hastily "
-        "generated noise ideas. Every component must earn its place. The system should get "
-        "smarter every day, not just bigger."
+        "A long-only Malaysian equity research system: slow-moving, explainable, "
+        "liquidity-aware alpha that survives local market frictions — settlement and "
+        "lot-size reality, transaction costs, thin liquidity, corporate actions, sector "
+        "concentration, and institution-driven flow. Malaysia-specific evidence beats "
+        "generic technical patterns; on a small universe, overfitting, survivorship bias, "
+        "and liquidity illusion are the primary enemies, so a signal must be economically "
+        "explainable, not merely statistically surviving."
     ),
     "success_metrics": [
         {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 15+ stocks"},

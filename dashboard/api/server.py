@@ -1518,6 +1518,9 @@ def system_direction():
         "market": _settings.MARKET,
         "market_name": _settings.MARKET_NAME,
         "last_updated": _doc["last_updated"],
+        # Three-layer direction (2026-07-12): shared constitution (identical for
+        # both markets) + this market's charter (core_purpose/design_philosophy).
+        "system_constitution": _settings.SYSTEM_CONSTITUTION,
         "core_purpose": _doc["core_purpose"],
         "design_philosophy": _doc["design_philosophy"],
         "success_metrics": _doc["success_metrics"],

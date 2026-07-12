@@ -1,5 +1,15 @@
 # Philosophy Reconciliation — Work Order
 
+> **DISPOSITION (2026-07-12): EXECUTED — as a constitution/charter split, superseding the
+> original single-doc instructions below.** Following the OpenAI dual-philosophy
+> consultation ("same constitution, different market charters, shared governance"), the
+> shared principles were lifted into `config/markets/_shared.py` `SYSTEM_CONSTITUTION`
+> (re-exported via `config/settings.py`, served in `/api/system/direction`, rendered as a
+> dashboard card), and both markets' `DIRECTION_DOC`s became lean market charters. Two
+> test pins in `tests/test_direction_doc.py` prevent drift: no shared-principle
+> duplication inside charters, and NO digits in philosophy text (Mark's rule: no
+> technical results — trial counts / IC / thresholds — in philosophy or charters).
+
 Standalone work order, separated from `docs/board_architecture_work_orders.md` so it can
 be executed independently. It aligns the system's stated philosophy with the bottom-up
 board architecture (plan: `~/.claude/plans/this-is-the-full-wondrous-bird.md`).

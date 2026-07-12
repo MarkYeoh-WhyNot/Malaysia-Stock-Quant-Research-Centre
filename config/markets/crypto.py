@@ -538,27 +538,23 @@ GATE_OVERRIDES: dict = {
 DIRECTION_DOC = {
     "last_updated": "July 2026",
     "core_purpose": (
-        "Expand crypto data breadth and market structure access, not just backtest count. The "
-        "calibration harness has already shown daily/sub-daily OHLCV technicals on liquid "
-        "crypto majors carry no edge that survives honest validation (0/2,100 alpha-hunt trials, "
-        "0/64 classic scan, 0/300 optimizer sweep, momentum inverted) — that search space is "
-        "empirically exhausted, not under-explored. The one statistically real signal found "
-        "so far (cross-sectional funding carry, IC 0.018, t~3) lives in a data layer "
-        "(funding) most of the system's history didn't have. Edge is expected to live in "
-        "layers the pipeline can't see yet — on-chain flows, tokenomics, microstructure — or "
-        "in structures the gates can't express yet (cross-sectional baskets, spreads), not in "
-        "another backtest of the same 20 pairs. Every strategy still paper-trades before any "
-        "capital, with human oversight at each step."
+        "A crypto research and intelligence operating system, not a trading bot: the product "
+        "is explaining what is moving, why, whether the move is real, who is likely on each "
+        "side, and what risk hides underneath — then turning that understanding into validated "
+        "strategies, never chasing signals. Getting there means expanding data breadth and "
+        "market-structure access, not just backtest count: edge is expected to live in data "
+        "layers beyond price itself — funding and derivatives positioning, on-chain flows, "
+        "tokenomics, liquidity and microstructure — and in structures beyond the single "
+        "instrument, such as cross-sectional baskets and spreads."
     ),
     "design_philosophy": (
-        "Quality over quantity, and honesty over throughput. A handful of robust, "
-        "well-validated strategies beats hundreds of noise ideas — the gates stay stricter "
-        "than equities, not looser. But quality gates cannot manufacture edge that isn't in "
-        "the data feeding them: when a search space is proven barren, the fix is new data or "
-        "new structure, not more trials against the same inputs. Every additional trial also "
-        "raises the deflated-PSR hurdle for the next idea (90-day noise window) — bulk "
-        "automated ideation against an unchanged data surface is partly self-defeating, so "
-        "growth should be data-source-led, not idea-volume-led."
+        "Data-source-led, not idea-volume-led. Quality gates cannot manufacture edge that "
+        "isn't in the data feeding them: when a search space is exhausted, the answer is new "
+        "data or new structure, not more trials against the same inputs — repeated brute "
+        "force over an unchanged data surface degrades the evidence for every idea that "
+        "follows. Crypto's gates stay stricter than equities', not looser: the market is "
+        "faster, rougher, and more adversarial, so funding, liquidation pressure, exchange "
+        "risk, and fake volume are first-class research inputs, not afterthoughts."
     ),
     "success_metrics": [
         {"rank": 1, "metric": "One new data source (on-chain, tokenomics, or microstructure) live and feeding a factor leaf"},
