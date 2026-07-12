@@ -22,9 +22,12 @@ regime (like the legacy sma_crossover behaviour).
 """
 import hashlib
 import json
+import logging
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # ── Leaf registry ─────────────────────────────────────────────────────────────
 # Each leaf: params with type/range (used by validate() and perturbation),
@@ -393,6 +396,37 @@ LEAVES = {
         ),
     },
 }
+
+
+def _load_generated_leaves() -> dict:
+    """Auto-load AI-synthesized leaves (agents/leaf_synthesizer/) from
+    agents/backtest_engineer/leaves_generated/ — physically separate from
+    this hand-authored catalog for auditability. Each module exports
+    LEAF_NAME (str) and LEAF_SPEC (dict, same shape as an entry above).
+    A single bad generated module is logged and skipped, never fatal — the
+    hand-authored catalog must always import cleanly."""
+    import importlib
+    import pkgutil
+    generated: dict = {}
+    try:
+        from agents.backtest_engineer import leaves_generated as _pkg
+    except ImportError:
+        return generated
+    for _, modname, _ in pkgutil.iter_modules(_pkg.__path__):
+        try:
+            mod = importlib.import_module(
+                f"agents.backtest_engineer.leaves_generated.{modname}")
+            name, spec = getattr(mod, "LEAF_NAME", None), getattr(mod, "LEAF_SPEC", None)
+            if name and spec:
+                generated[name] = spec
+            else:
+                logger.warning(f"[signal_dsl] {modname} missing LEAF_NAME/LEAF_SPEC — skipped")
+        except Exception as exc:
+            logger.warning(f"[signal_dsl] failed to load generated leaf {modname}: {exc}")
+    return generated
+
+
+LEAVES = {**LEAVES, **_load_generated_leaves()}
 
 MAX_DEPTH = 4
 MAX_LEAVES = 6

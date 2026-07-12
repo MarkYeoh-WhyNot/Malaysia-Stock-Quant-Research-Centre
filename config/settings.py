@@ -47,6 +47,19 @@ CONCIERGE_MODEL           = os.getenv("CONCIERGE_MODEL", MODEL_MAIN)
 CONCIERGE_DAILY_BUDGET_USD = float(os.getenv("CONCIERGE_DAILY_BUDGET_USD", "5"))
 CONCIERGE_MAX_TOOL_ITERS  = int(os.getenv("CONCIERGE_MAX_TOOL_ITERS", "6"))
 
+# LeafSynthesizer (agents/leaf_synthesizer/) — attempts to turn a genuinely-
+# unrepresentable formula into a new, tested DSL leaf instead of a dead end.
+# Own sub-cap: Opus planning is the expensive stage, and every unrepresentable
+# rejection triggers an attempt (2026-07-13, Mark-approved), so a burst of
+# hard-to-parse ideas can't starve the research pipeline's daily budget.
+LEAF_SYNTH_DAILY_BUDGET_USD = float(os.getenv("LEAF_SYNTH_DAILY_BUDGET_USD", "10"))
+# Auto-push to origin after a local commit — OFF by default. The container
+# image includes .git (Dockerfile's `COPY . .`, no .dockerignore excludes it)
+# but has no `git` binary or push credentials configured; provisioning a
+# scoped write token into a production container is a deliberate, separate
+# decision, not something this feature silently assumes.
+LEAF_SYNTH_AUTO_PUSH      = os.getenv("LEAF_SYNTH_AUTO_PUSH", "false").lower() == "true"
+
 # ── Market identity (from profile) ────────────────────────────────────────────
 MARKET          = _P.MARKET
 MARKET_CURRENCY = _P.MARKET_CURRENCY

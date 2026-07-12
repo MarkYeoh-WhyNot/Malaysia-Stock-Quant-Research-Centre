@@ -979,6 +979,28 @@ def init_db(db_path: Path = DB_PATH):
             )
         """)
 
+        # LeafSynthesizer (agents/leaf_synthesizer/): every attempt to turn a
+        # genuinely-unrepresentable formula into a new DSL leaf, approved or
+        # not — full audit trail since this is the one place an LLM writes
+        # code that runs unreviewed inside the backtest engine (2026-07-13).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS leaf_synthesis_attempts (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                idea_id           INTEGER REFERENCES alpha_ideas(id),
+                hypothesis        TEXT,
+                rejection_reason  TEXT,
+                status            TEXT NOT NULL,
+                leaf_name         TEXT,
+                spec_json         TEXT,
+                generated_file    TEXT,
+                test_file         TEXT,
+                review_notes      TEXT,
+                cost_usd          REAL DEFAULT 0,
+                git_commit_sha    TEXT,
+                created_at        TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
         # Paper trading: daily NAV series per idea (mark-to-market)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_equity (

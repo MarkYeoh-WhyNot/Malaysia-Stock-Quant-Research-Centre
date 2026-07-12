@@ -939,9 +939,19 @@ class BacktestEngineer(BaseAgent):
                 row["hypothesis"] or "",
             )
         if not params.get("representable"):
+            _reason = params.get("reason", "factor not representable as signal conditions")
+            # Attempt to turn this dead end into a new DSL leaf instead of a
+            # permanent one (Mark-approved 2026-07-13) — best-effort, never
+            # blocks the rejection itself from being recorded.
+            try:
+                from agents.leaf_synthesizer.leaf_synthesizer import LeafSynthesizer
+                LeafSynthesizer().synthesize(
+                    idea_id, row["hypothesis"] or "", row["factor_formula"] or "", _reason)
+            except Exception as _ls_exc:
+                self.log_daemon("WARN", f"[{idea_id}] Leaf synthesis attempt "
+                                        f"failed: {_ls_exc}")
             return self._reject_idea(
-                idea_id, row, "dsl_unrepresentable",
-                params.get("reason", "factor not representable as signal conditions"),
+                idea_id, row, "dsl_unrepresentable", _reason,
                 reason_category="unrepresentable",
             )
 

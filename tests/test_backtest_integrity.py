@@ -10,6 +10,7 @@ from data.database import db_session, init_db
 from agents.backtest_engineer.backtest_engineer import BacktestEngineer
 from agents.backtest_engineer import stats
 from agents.backtest_engineer import engine
+from agents.leaf_synthesizer.leaf_synthesizer import LeafSynthesizer
 
 TEST_IDEA_ID = 987_654_320
 
@@ -55,6 +56,10 @@ def _cleanup():
         conn.execute("DELETE FROM pipeline_events WHERE idea_id=?", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM gate_decisions WHERE idea_id=?", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (TEST_IDEA_ID,))
+        # Unrepresentable-rejection tests trigger a real (unmocked)
+        # LeafSynthesizer attempt, which fails fast on the missing API key
+        # but still logs its audit row — delete it before the parent idea.
+        conn.execute("DELETE FROM leaf_synthesis_attempts WHERE idea_id=?", (TEST_IDEA_ID,))
         conn.execute("DELETE FROM alpha_ideas WHERE id=?", (TEST_IDEA_ID,))
 
 
@@ -82,6 +87,40 @@ def test_unrepresentable_rejected_with_reason_not_genericized(idea, monkeypatch)
             "SELECT run_type FROM backtest_runs WHERE idea_id=?",
             (TEST_IDEA_ID,)).fetchone()
     assert run["run_type"] == "dsl_unrepresentable"
+
+
+def test_unrepresentable_triggers_leaf_synthesis_attempt(idea, monkeypatch):
+    be, df = idea
+    monkeypatch.setattr(BacktestEngineer, "_parse_factor",
+                        lambda self, *a: {"representable": False,
+                                          "reason": "requires analyst sentiment data"})
+    calls = []
+    monkeypatch.setattr(LeafSynthesizer, "synthesize",
+                        lambda self, idea_id, hyp, formula, reason:
+                        calls.append((idea_id, hyp, formula, reason)))
+    result = be._run_backtest(TEST_IDEA_ID)
+    assert result["verdict"] == "REJECTED"
+    assert len(calls) == 1
+    assert calls[0][0] == TEST_IDEA_ID
+    assert calls[0][3] == "requires analyst sentiment data"
+
+
+def test_leaf_synthesis_failure_never_blocks_the_rejection(idea, monkeypatch):
+    be, df = idea
+    monkeypatch.setattr(BacktestEngineer, "_parse_factor",
+                        lambda self, *a: {"representable": False,
+                                          "reason": "requires analyst sentiment data"})
+
+    def boom(self, *a, **kw):
+        raise RuntimeError("synthesis pipeline exploded")
+    monkeypatch.setattr(LeafSynthesizer, "synthesize", boom)
+
+    result = be._run_backtest(TEST_IDEA_ID)
+    assert result["verdict"] == "REJECTED"
+    assert result["error"] == "dsl_unrepresentable"
+    status, reason = _idea_status()
+    assert status == "rejected"
+    assert "analyst sentiment" in reason
 
 
 def test_never_firing_signal_blocked_by_verify(idea, monkeypatch):
