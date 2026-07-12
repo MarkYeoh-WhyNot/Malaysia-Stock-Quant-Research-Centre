@@ -171,10 +171,15 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
            "feasibility": feasibility, "status": status, "ticker": ticker}
 
     if optimize:
+        # xs (basket) ideas sweep the pre-registered 200-config grid
+        # (docs/funding_carry_sweep_design.md); DSL ideas keep 300.
+        from agents.backtest_engineer.optimizer import (
+            DEFAULT_N_CONFIGS, XS_DEFAULT_N_CONFIGS)
+        _n = XS_DEFAULT_N_CONFIGS if xs else DEFAULT_N_CONFIGS
         with db_session() as conn:
             conn.execute(
                 "INSERT INTO optimizer_runs (idea_id, status, seed, n_configs) "
-                "VALUES (?, 'queued', ?, ?)", (idea_id, 42, 300))
+                "VALUES (?, 'queued', ?, ?)", (idea_id, 42, _n))
         out["optimizing"] = True
         return out
 
