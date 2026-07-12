@@ -121,6 +121,7 @@ def run_sweep(idea_id: int, seed: int = 42,
     the search.
     """
     from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+    from agents.backtest_engineer import engine
 
     eng = BacktestEngineer()
 
@@ -158,10 +159,10 @@ def run_sweep(idea_id: int, seed: int = 42,
         train_df, val_df, _test_df = splits
         try:
             params = {"signal_type": "dsl", "dsl": cfg["dsl"]}
-            train_perf = eng._compute_performance(
-                train_df, eng._compute_signals(train_df, params), cfg["timeframe"])
-            val_perf = eng._compute_performance(
-                val_df, eng._compute_signals(val_df, params), cfg["timeframe"])
+            train_perf = engine._compute_performance(
+                eng, train_df, engine._compute_signals(eng, train_df, params), cfg["timeframe"])
+            val_perf = engine._compute_performance(
+                eng, val_df, engine._compute_signals(eng, val_df, params), cfg["timeframe"])
         except Exception as e:
             logger.warning(f"sweep[{idea_id}]: config failed: {e}")
             continue
@@ -187,8 +188,8 @@ def run_sweep(idea_id: int, seed: int = 42,
         _, _, test_df = frames[(best["instrument"], best["timeframe"])]
         try:
             params = {"signal_type": "dsl", "dsl": best["dsl"]}
-            test_perf = eng._compute_performance(
-                test_df, eng._compute_signals(test_df, params), best["timeframe"])
+            test_perf = engine._compute_performance(
+                eng, test_df, engine._compute_signals(eng, test_df, params), best["timeframe"])
             winner = {**best,
                       "test_sharpe": test_perf["sharpe_net"],
                       "test_max_dd": test_perf["max_dd"],

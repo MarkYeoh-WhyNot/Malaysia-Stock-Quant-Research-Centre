@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """One-way Obsidian vault export of the knowledge graph.
 
-Writes one Markdown file per kb_node into vault/ (gitignored) with YAML
-frontmatter and typed [[wikilinks]], so the graph opens natively in Obsidian
-(graph view, backlinks, search). WIPE-AND-REWRITE: never point this at a
-vault you edit by hand — the DB is the source of truth.
+Writes one Markdown file per kb_node into vault/ with YAML frontmatter and
+typed [[wikilinks]], so the graph opens natively in Obsidian (graph view,
+backlinks, search).
+
+WIPE-AND-REWRITE for the GENERATED type-folders (ideas/, techniques/, …): the
+DB is the source of truth for those, so never hand-edit them. The one exception
+is vault/feedback/ — that zone is human-authored, git-tracked, NEVER wiped, and
+read back into the loop by scripts/ingest_obsidian_feedback.py. That is the
+feedback surface: edit there, not in the generated notes.
 
 Usage: python scripts/export_obsidian.py [output_dir]
 """
@@ -29,7 +34,69 @@ TYPE_FOLDER = {
     "technique": "techniques",
     "idea": "ideas",
     "rejection_pattern": "rejections",
+    # evidence / truth-graph node types (2026-07-12)
+    "strategy": "strategies",
+    "signature": "signatures",
+    "backtest_run": "backtests",
+    "gate_decision": "gate_decisions",
+    "risk": "risks",
+    "finding": "findings",
+    "leaf": "leaves",
+    "agent": "agents",
 }
+
+# Human-editable zone — preserved across exports and ingested back into the DB.
+FEEDBACK_FOLDER = "feedback"
+
+FEEDBACK_TEMPLATE = """---
+target:            # slug of the note this is about, e.g. idea-987654320  (see the generated note's filename)
+verdict:           # promote | reject | watch   (leave blank for a note-only review)
+rating:            # 1-5, optional
+tags: []           # e.g. [lookahead, overfit, promising]
+reviewer: mark
+---
+
+<!-- Write your analysis below. It is indexed into the KB search (kb_fts) and
+     surfaces as grounding context in future idea generation. A `reject` verdict
+     also feeds RejectionMemory so the loop stops regenerating this class. -->
+"""
+
+FEEDBACK_README = """# Feedback zone — your writeback into the research loop
+
+This is the ONLY folder in the vault you should hand-edit. Everything else is
+regenerated (wipe-and-rewrite) from the database every day.
+
+## How to give feedback
+1. Duplicate `_TEMPLATE.md` (Obsidian: right-click - Make a copy).
+2. Name it after the target, e.g. `idea-987654320.md` (optional but tidy).
+3. Fill the frontmatter `target:` with the slug of the note you're reviewing —
+   it's the generated note's filename without `.md`.
+4. Set a `verdict`, `rating`, and/or `tags`, and write your reasoning in the body.
+5. Commit + push (git transport). The VPS ingests it on pull.
+
+## What each field does
+- **verdict: reject**  -> RejectionMemory + gate_decisions; the loop stops
+  regenerating this class of idea. Your body text becomes the rejection reason.
+- **verdict: promote / watch** -> logged as a human gate_decision (audit trail).
+- **body note** -> indexed into kb_fts as a human note linked to the target, so
+  the retriever surfaces your reasoning when grounding future generation.
+- **rating / tags** -> stored on the feedback record and folded into the note's
+  tags, feeding idea-generation prioritization.
+
+Re-ingesting an unchanged file is a no-op; editing it supersedes the prior take.
+Never delete a file to "undo" — the DB keeps the last ingested state.
+"""
+
+
+def _safe_slug(slug: str) -> str:
+    """Slugs may contain '/' (e.g. crypto pairs like BTC/USDT), which would break
+    both file paths and Obsidian [[wikilinks]]. Map any path/link-hostile char to
+    '-' — applied identically to filenames and link targets so links still resolve.
+    """
+    out = str(slug or "")
+    for ch in ("/", "\\", ":", "|", "#", "^", "[", "]"):
+        out = out.replace(ch, "-")
+    return out.strip("-") or "unnamed"
 
 
 def _yaml_escape(value: str) -> str:
@@ -50,9 +117,21 @@ def _frontmatter(node: dict) -> str:
         f"domain: {_yaml_escape(node['domain'])}",
         f"tags: [{', '.join(_yaml_escape(t) for t in tags if t)}]",
         f"created: {_yaml_escape(node['created_at'])}",
-        "---",
     ]
+    # Provenance fields (present on evidence-graph nodes); keep Dataview-friendly.
+    if _has(node, "review_state"):
+        lines.append(f"review_state: {_yaml_escape(node['review_state'])}")
+    if _has(node, "confidence"):
+        lines.append(f"confidence: {node['confidence']}")
+    lines.append("---")
     return "\n".join(lines)
+
+
+def _has(node: dict, key: str) -> bool:
+    try:
+        return node[key] is not None
+    except (KeyError, IndexError):
+        return False
 
 
 def export_vault(out_dir: str = DEFAULT_VAULT) -> dict:
@@ -71,10 +150,20 @@ def export_vault(out_dir: str = DEFAULT_VAULT) -> dict:
     for e in edges:
         out_edges.setdefault(e["source_id"], []).append(e)
 
-    if os.path.isdir(out_dir):
-        shutil.rmtree(out_dir)
-    for folder in TYPE_FOLDER.values():
-        os.makedirs(os.path.join(out_dir, folder), exist_ok=True)
+    # Wipe ONLY the generated type-folders — never the human feedback zone.
+    for folder in set(TYPE_FOLDER.values()):
+        gen_dir = os.path.join(out_dir, folder)
+        if os.path.isdir(gen_dir):
+            shutil.rmtree(gen_dir)
+        os.makedirs(gen_dir, exist_ok=True)
+
+    # Seed / refresh the feedback zone without touching the user's own files.
+    fb_dir = os.path.join(out_dir, FEEDBACK_FOLDER)
+    os.makedirs(fb_dir, exist_ok=True)
+    with open(os.path.join(fb_dir, "_TEMPLATE.md"), "w", encoding="utf-8") as fh:
+        fh.write(FEEDBACK_TEMPLATE)
+    with open(os.path.join(fb_dir, "README.md"), "w", encoding="utf-8") as fh:
+        fh.write(FEEDBACK_README)
 
     written = 0
     for n in nodes:
@@ -96,11 +185,11 @@ def export_vault(out_dir: str = DEFAULT_VAULT) -> dict:
             for relation in sorted(by_relation):
                 parts.append(f"\n### {relation}\n")
                 for e in by_relation[relation]:
-                    parts.append(f"- [[{e['target_slug']}]] (weight {e['weight']:.2f})")
+                    parts.append(f"- [[{_safe_slug(e['target_slug'])}]] (weight {e['weight']:.2f})")
             parts.append("")
 
         folder = TYPE_FOLDER.get(node["node_type"], "notes")
-        path = os.path.join(out_dir, folder, f"{node['slug']}.md")
+        path = os.path.join(out_dir, folder, f"{_safe_slug(node['slug'])}.md")
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("\n".join(parts))
         written += 1

@@ -15,9 +15,17 @@ qualify on sufficient evidence, while a strong-looking short sample cannot.
 """
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# Train-val gap tolerance: allow gaps up to this many σ of sampling noise before
+# flagging potential overfitting (permits genuine stationary edges on short data).
+_TVG_SIGMA_K = 2.0
 
 
 def norm_cdf(x: float) -> float:
@@ -80,3 +88,91 @@ def deflated_sr_star(n_trials: int, n_obs: int, ann: float) -> float:
         return float("inf")
     return float(math.sqrt(2.0 * math.log(max(n_trials, 2)) / n_obs)
                  * math.sqrt(ann))
+
+
+def spearman(x: np.ndarray, y: np.ndarray) -> float:
+    """Spearman rank correlation via pandas rank (handles ties, no scipy needed)."""
+    n = len(x)
+    if n < 4:
+        return np.nan
+    rx = pd.Series(x).rank(method="average").values.astype(float)
+    ry = pd.Series(y).rank(method="average").values.astype(float)
+    mx, my = rx.mean(), ry.mean()
+    num   = np.mean((rx - mx) * (ry - my))
+    denom = rx.std(ddof=0) * ry.std(ddof=0)
+    return float(num / denom) if denom > 1e-10 else np.nan
+
+
+def nw_tstat(series: np.ndarray, max_lag: int | None = None) -> float:
+    """t-stat of the series mean using Newey-West (Bartlett kernel) standard
+    errors. Daily IC observations are autocorrelated, so the iid t-stat
+    (mean / (std/√n)) overstates significance; this corrects for it."""
+    n = len(series)
+    if n < 3:
+        return 0.0
+    x = series - series.mean()
+    if max_lag is None:
+        max_lag = int(np.floor(4 * (n / 100.0) ** (2.0 / 9.0)))
+    max_lag = max(0, min(max_lag, n - 1))
+    gamma0 = float(np.dot(x, x)) / n
+    lrv = gamma0
+    for lag in range(1, max_lag + 1):
+        w = 1.0 - lag / (max_lag + 1.0)
+        lrv += 2.0 * w * (float(np.dot(x[lag:], x[:-lag])) / n)
+    if lrv <= 1e-12:
+        return 0.0
+    return float(series.mean() / np.sqrt(lrv / n))
+
+
+def sharpe_stderr(sharpe_ann: float, n_bars: int, ann: float) -> float:
+    """Standard error of an annualised Sharpe estimate (Lo 2002, IID form):
+    se(SR_per_bar) = sqrt((1 + 0.5·SR_per_bar²)/n); annualise by sqrt(ann)."""
+    if n_bars < 2 or ann <= 0:
+        return float("inf")
+    sr_pb = sharpe_ann / np.sqrt(ann)
+    return float(np.sqrt((1.0 + 0.5 * sr_pb * sr_pb) / n_bars) * np.sqrt(ann))
+
+
+def train_val_gap_tolerance(train_sharpe: float, val_sharpe: float,
+                            n_train: int, n_val: int, ann: float,
+                            floor: float) -> float:
+    """Max allowable |train − val| Sharpe before it counts as overfitting.
+    Never below ``floor`` (with lots of data a real 0.30 gap still matters),
+    but widened to a k-sigma band of the gap's sampling noise for short
+    slices — so genuine stationary edges are not rejected on Sharpe noise."""
+    se_gap = float(np.hypot(sharpe_stderr(train_sharpe, n_train, ann),
+                            sharpe_stderr(val_sharpe, n_val, ann)))
+    return max(float(floor), _TVG_SIGMA_K * se_gap)
+
+
+def robustness_check(engine_instance, test_df: pd.DataFrame, dsl_tree: dict,
+                     base_sharpe: float, interval: str, gate_config) -> float:
+    """QC7: fraction of ±20% parameter perturbations whose test-split net
+    Sharpe stays above robustness_sharpe_ratio × base. Seeded for
+    reproducibility; vectorized, no LLM cost.
+
+    Args:
+        engine_instance: BacktestEngineer instance, threaded through to the
+            engine module's _compute_signals/_compute_performance functions
+        test_df: test data
+        dsl_tree: DSL parse tree
+        base_sharpe: baseline Sharpe to measure robustness against
+        interval: bar interval (e.g., "1d")
+        gate_config: GATE_CONFIG with robustness_draws, robustness_sharpe_ratio, etc.
+    """
+    from agents.backtest_engineer import signal_dsl
+    from agents.backtest_engineer import engine as engine_mod
+    rng = np.random.RandomState(1234)
+    ok, valid = 0, 0
+    for _ in range(gate_config.robustness_draws):
+        perturbed = signal_dsl.perturb_tree(dsl_tree, rng)
+        try:
+            sig = engine_mod._compute_signals(
+                engine_instance, test_df, {"signal_type": "dsl", "dsl": perturbed})
+            perf = engine_mod._compute_performance(engine_instance, test_df, sig, interval)
+            valid += 1
+            if perf["sharpe_net"] > gate_config.robustness_sharpe_ratio * base_sharpe:
+                ok += 1
+        except Exception as e:
+            logger.warning(f"Robustness draw failed: {e}")
+    return ok / max(valid, 1)

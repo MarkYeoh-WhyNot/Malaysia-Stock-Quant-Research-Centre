@@ -14,4 +14,8 @@ venv/
 .key_rotation_date
 data/daemon_heartbeat
 data/openclaw_progress.json
-vault/
+# Ignore the generated vault, but NOT the human feedback zone: git can only
+# re-include a subdir if the parent dir itself isn't excluded, so match
+# vault/* (children) rather than vault/ (the dir), then un-ignore feedback/.
+vault/*
+!vault/feedback/

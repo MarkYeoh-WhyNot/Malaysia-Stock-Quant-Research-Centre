@@ -166,9 +166,21 @@ def init_db(db_path: Path = DB_PATH):
             message TEXT,
             created_at TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS protocol_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol TEXT NOT NULL,
+            protocol_name TEXT,
+            tvl REAL,
+            tvl_rank INTEGER,
+            fees_24h REAL,
+            revenue_24h REAL,
+            fetched_at TEXT DEFAULT (datetime('now'))
+        );
         CREATE INDEX IF NOT EXISTS idx_kb_domain   ON kb_documents(domain);
         CREATE INDEX IF NOT EXISTS idx_ideas_stage ON alpha_ideas(stage);
         CREATE INDEX IF NOT EXISTS idx_logs_level  ON daemon_logs(level);
+        CREATE INDEX IF NOT EXISTS idx_protocol_symbol ON protocol_metrics(symbol);
+        CREATE INDEX IF NOT EXISTS idx_protocol_fetched ON protocol_metrics(fetched_at);
         """)
         # ── Safe post-schema migrations ──────────────────────────────────────
         # seeded=1 means AlphaSeedGenerator has already processed this document.
@@ -789,11 +801,14 @@ def init_db(db_path: Path = DB_PATH):
         # kb_documents/kb_concepts stay untouched; kb_nodes unifies them (plus
         # techniques, ideas, rejection patterns) so kb_edges can link ANY node
         # kind — the old kb_links FKs allowed doc-to-doc only.
+        # node_type is validated in knowledge/graph/store.py against
+        # kb_node_type_registry (below), NOT a DB CHECK — so new node types are
+        # one INSERT, never a table rebuild. Legacy DBs that still carry the old
+        # CHECK are migrated by _migrate_kb_nodes_v2() after this block.
         conn.execute("""
             CREATE TABLE IF NOT EXISTS kb_nodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                node_type TEXT NOT NULL CHECK(node_type IN
-                    ('note','concept','technique','idea','rejection_pattern')),
+                node_type TEXT NOT NULL,
                 ref_table TEXT,
                 ref_id INTEGER,
                 slug TEXT UNIQUE NOT NULL,
@@ -803,6 +818,9 @@ def init_db(db_path: Path = DB_PATH):
                 tags TEXT,
                 content_hash TEXT,
                 extracted_at TEXT,
+                confidence REAL,
+                review_state TEXT,
+                ingestion_version TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 UNIQUE(ref_table, ref_id)
@@ -818,12 +836,69 @@ def init_db(db_path: Path = DB_PATH):
                 relation TEXT NOT NULL,
                 weight REAL DEFAULT 1.0,
                 origin TEXT DEFAULT 'llm',
+                evidence_count INTEGER DEFAULT 1,
+                last_seen_at TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 UNIQUE(source_id, target_id, relation)
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_edges_src ON kb_edges(source_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_edges_tgt ON kb_edges(target_id)")
+        # Legacy DBs: backfill the evidence columns added 2026-07-12.
+        for _col, _decl in (("evidence_count", "INTEGER DEFAULT 1"),
+                            ("last_seen_at", "TEXT")):
+            try:
+                conn.execute(f"ALTER TABLE kb_edges ADD COLUMN {_col} {_decl}")
+            except Exception:
+                pass
+
+        # Knowledge-graph node-type registry: the source of truth for valid
+        # node_type values (validated in knowledge/graph/store.py). Adding a new
+        # node type is one INSERT here — no kb_nodes rebuild.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_node_type_registry (
+                node_type   TEXT PRIMARY KEY,
+                description TEXT,
+                status      TEXT DEFAULT 'active',
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        for _nt, _desc in (
+            ("note", "Free-form note / human annotation"),
+            ("concept", "Extracted concept from documents"),
+            ("technique", "Technique from technique_library"),
+            ("idea", "Raw / low-stage alpha_ideas candidate"),
+            ("rejection_pattern", "Aggregated rejection pattern"),
+            ("strategy", "Executable or evaluated idea (parsed/backtested/gated/promoted)"),
+            ("signature", "signal_signature factor identity"),
+            ("backtest_run", "A backtest_runs evidence row"),
+            ("gate_decision", "A gate_decisions evidence row"),
+            ("risk", "Named research risk (cost drag, parser approximation, …)"),
+            ("finding", "Promoted governance_findings row"),
+            ("leaf", "Executable DSL leaf from signal_dsl.py"),
+            ("agent", "A governance/inspector agent that reports findings"),
+        ):
+            conn.execute(
+                "INSERT OR IGNORE INTO kb_node_type_registry (node_type, description) VALUES (?, ?)",
+                (_nt, _desc),
+            )
+
+        # Entity resolution: alias → canonical node (BTC/BTCUSDT/XBT, DPSR/…).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_aliases (
+                alias       TEXT PRIMARY KEY,
+                canonical   TEXT,
+                node_id     INTEGER REFERENCES kb_nodes(id),
+                alias_type  TEXT,
+                confidence  REAL DEFAULT 1.0,
+                origin      TEXT DEFAULT 'human',
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        try:
+            conn.execute("ALTER TABLE kb_aliases ADD COLUMN canonical TEXT")
+        except Exception:
+            pass
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS kb_embeddings (
@@ -842,6 +917,32 @@ def init_db(db_path: Path = DB_PATH):
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS kb_fts USING fts5(
                 title, summary, content, tags, node_id UNINDEXED
+            )
+        """)
+
+        # Human feedback captured in Obsidian (vault/feedback/) and ingested
+        # back into the loop by scripts/ingest_obsidian_feedback.py. This is the
+        # authoritative store; downstream effects (rejection memory, gate
+        # decisions, FTS note nodes) are derived idempotently from these rows.
+        # One active row per (target_slug, reviewer); content_hash makes
+        # re-ingesting an unchanged file a no-op.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS kb_feedback (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_slug  TEXT NOT NULL,
+                node_id      INTEGER REFERENCES kb_nodes(id),
+                idea_id      INTEGER REFERENCES alpha_ideas(id),
+                reviewer     TEXT DEFAULT 'human',
+                verdict      TEXT,
+                rating       INTEGER,
+                tags         TEXT,
+                note         TEXT,
+                content_hash TEXT NOT NULL,
+                source_path  TEXT,
+                applied_at   TEXT,
+                created_at   TEXT DEFAULT (datetime('now')),
+                updated_at   TEXT DEFAULT (datetime('now')),
+                UNIQUE(target_slug, reviewer)
             )
         """)
 
@@ -924,6 +1025,27 @@ def init_db(db_path: Path = DB_PATH):
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_epf_date ON epf_holdings(date)"
+        )
+
+        # CoinGecko client: token supply cache for crypto market
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS token_supply (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol                TEXT NOT NULL,
+            circulating_supply    REAL,
+            total_supply          REAL,
+            max_supply            REAL,
+            fully_diluted_valuation REAL,
+            market_cap            REAL,
+            fetched_at            TEXT DEFAULT (datetime('now')),
+            UNIQUE(symbol, fetched_at)
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_symbol ON token_supply(symbol)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_fetched ON token_supply(fetched_at)"
         )
 
         # Analyst module: coverage initiation tracker
@@ -1200,7 +1322,114 @@ def init_db(db_path: Path = DB_PATH):
             "CREATE INDEX IF NOT EXISTS idx_optruns_status ON optimizer_runs(status)"
         )
 
+        # Governance findings: audit trail of inspector reports at each level (L0–L3)
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS governance_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            level TEXT NOT NULL,
+            scope TEXT,
+            status TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            evidence TEXT,
+            local_recommendation TEXT,
+            escalate_to TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gov_scope ON governance_findings(scope)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gov_status ON governance_findings(status)"
+        )
+
+    # Runs in its own connection AFTER the main session commits, because the
+    # kb_nodes CHECK-drop rebuild needs foreign_keys OFF outside a transaction.
+    _migrate_kb_nodes_v2(db_path)
+
     logger.info(f"Database initialized at {db_path}")
+
+
+def _migrate_kb_nodes_v2(db_path: Path = DB_PATH):
+    """One-time, idempotent rebuild of legacy kb_nodes: drop the node_type CHECK
+    (validation moved to store.py + kb_node_type_registry) and add the
+    confidence / review_state / ingestion_version columns.
+
+    Fresh DBs are already born with the new schema (see init_db), so this only
+    fires on pre-2026-07-12 databases that still carry the CHECK. Ids are
+    preserved, so every kb_edges / kb_embeddings / kb_feedback / kb_aliases
+    reference stays valid.
+    """
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='kb_nodes'"
+        ).fetchone()
+        if row is None:
+            return
+        if "CHECK" not in (row["sql"] or ""):
+            return  # already migrated — new columns are guaranteed by the create above
+
+        logger.info("[kb_nodes v2] Legacy CHECK detected — rebuilding kb_nodes without it")
+        # foreign_keys must be toggled OUTSIDE a transaction; sqlite3 autocommits
+        # DDL only when not in a transaction, so drive the transaction explicitly.
+        conn.isolation_level = None
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
+        # This DB legitimately carries pre-existing orphan refs (synthetic/pruned
+        # rows), so the test is "the rebuild must not INCREASE orphans", not
+        # "zero orphans". Ids are copied 1:1, so this should hold exactly.
+        fk_before = len(conn.execute("PRAGMA foreign_key_check").fetchall())
+        conn.execute("""
+            CREATE TABLE kb_nodes_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_type TEXT NOT NULL,
+                ref_table TEXT,
+                ref_id INTEGER,
+                slug TEXT UNIQUE NOT NULL,
+                title TEXT,
+                domain TEXT,
+                summary TEXT,
+                tags TEXT,
+                content_hash TEXT,
+                extracted_at TEXT,
+                confidence REAL,
+                review_state TEXT,
+                ingestion_version TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now')),
+                UNIQUE(ref_table, ref_id)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO kb_nodes_new
+                (id, node_type, ref_table, ref_id, slug, title, domain, summary,
+                 tags, content_hash, extracted_at, created_at, updated_at)
+            SELECT id, node_type, ref_table, ref_id, slug, title, domain, summary,
+                   tags, content_hash, extracted_at, created_at, updated_at
+            FROM kb_nodes
+        """)
+        before = conn.execute("SELECT COUNT(*) AS n FROM kb_nodes").fetchone()["n"]
+        after = conn.execute("SELECT COUNT(*) AS n FROM kb_nodes_new").fetchone()["n"]
+        if before != after:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(f"[kb_nodes v2] row mismatch {before} != {after}; aborted")
+        conn.execute("DROP TABLE kb_nodes")
+        conn.execute("ALTER TABLE kb_nodes_new RENAME TO kb_nodes")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_kb_nodes_type ON kb_nodes(node_type)")
+        fk_after = len(conn.execute("PRAGMA foreign_key_check").fetchall())
+        if fk_after > fk_before:
+            conn.execute("ROLLBACK")
+            raise RuntimeError(
+                f"[kb_nodes v2] rebuild increased FK orphans {fk_before} -> {fk_after}; aborted")
+        conn.execute("COMMIT")
+        conn.execute("PRAGMA foreign_keys=ON")
+        logger.info(f"[kb_nodes v2] Rebuilt kb_nodes ({after} rows), CHECK removed")
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     init_db()

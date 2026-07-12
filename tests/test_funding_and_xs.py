@@ -67,6 +67,7 @@ import json
 import numpy as np
 import pandas as pd
 from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+from agents.backtest_engineer import engine
 
 n = 400
 idx = pd.date_range("2023-01-01", periods=n, freq="D")
@@ -79,9 +80,9 @@ eng = BacktestEngineer()
 sig_long = pd.Series(1.0, index=idx)
 with_col = base.copy()
 with_col["funding_bar_sum"] = 0.0009   # brutal +0.03%/8h x 3
-r_real = eng._compute_performance(with_col, sig_long, "1d")
-r_none = eng._compute_performance(base, sig_long, "1d")   # modeled 0.0003/bar
-r_short = eng._compute_performance(with_col, pd.Series(-1.0, index=idx), "1d")
+r_real = engine._compute_performance(eng, with_col, sig_long, "1d")
+r_none = engine._compute_performance(eng, base, sig_long, "1d")   # modeled 0.0003/bar
+r_short = engine._compute_performance(eng, with_col, pd.Series(-1.0, index=idx), "1d")
 print("RESULT " + json.dumps({
     "real_net": r_real["sharpe_net"], "none_net": r_none["sharpe_net"],
     "real_drag": r_real["funding_drag_pct"], "none_drag": r_none["funding_drag_pct"],
@@ -99,13 +100,14 @@ def test_zero_column_disables_modeled_fallback():
     """funding_bar_sum == 0.0 must mean ZERO drag (the xs engine embeds
     funding in the NAV and attaches a zero column to prevent double-count)."""
     from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+    from agents.backtest_engineer import engine
     n = 300
     idx = pd.date_range("2023-01-01", periods=n, freq="D")
     close = 100 + np.cumsum(np.random.default_rng(1).standard_normal(n) * 0.5)
     df = pd.DataFrame({"open": close, "high": close, "low": close,
                        "close": close, "volume": np.full(n, 1e9),
                        "funding_bar_sum": 0.0}, index=idx)
-    r = BacktestEngineer()._compute_performance(df, pd.Series(1.0, index=idx), "1d")
+    r = engine._compute_performance(BacktestEngineer(), df, pd.Series(1.0, index=idx), "1d")
     assert r["funding_drag_pct"] == 0.0
 
 

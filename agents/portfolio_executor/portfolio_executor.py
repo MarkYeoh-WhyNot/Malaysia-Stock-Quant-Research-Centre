@@ -348,6 +348,7 @@ class PortfolioExecutor(BaseAgent):
         backtester's 1-bar signal delay).
         """
         from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+        from agents.backtest_engineer import engine
 
         df = self._data_engineer.fetch_prices(ticker, interval=interval, days=365,
                                               use_cache=True)
@@ -355,7 +356,7 @@ class PortfolioExecutor(BaseAgent):
             return {"error": f"No price data for {ticker}"}
 
         # symbol threading lets funding_* leaves resolve their real-rate column
-        signals = BacktestEngineer()._compute_signals(df, params, symbol=ticker)
+        signals = engine._compute_signals(BacktestEngineer(), df, params, symbol=ticker)
         current_signal = int(signals.iloc[-1]) if len(signals) else 0
 
         action = "hold"

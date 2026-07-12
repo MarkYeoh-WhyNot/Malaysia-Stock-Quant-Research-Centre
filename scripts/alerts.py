@@ -21,6 +21,24 @@ _LEVEL_EMOJI = {
 _VALID_LEVELS = tuple(_LEVEL_EMOJI)
 
 
+def _log_delivery(level: str, message: str, delivered: bool) -> None:
+    """Best-effort persistence of the delivery outcome to daemon_logs so the
+    Alerting department card has a real record instead of no record at all.
+    Isolated in its own try/except and imported lazily — must never be the
+    reason an alert call raises, and must not create a hard import-time
+    dependency for a module that has to work before the daemon/DB is up.
+    """
+    try:
+        from data.database import db_session
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO daemon_logs (level, source, message) VALUES (?, 'alerts', ?)",
+                (level, f"{'sent' if delivered else 'dropped'}: {message[:200]}"),
+            )
+    except Exception as e:
+        logger.warning(f"[Alerts] Failed to log delivery outcome: {e}")
+
+
 def send_alert(message: str, level: str = "INFO") -> bool:
     """Best-effort Telegram notification. Never raises — a failed alert must
     not crash the caller (often itself in an exception handler).
@@ -33,6 +51,7 @@ def send_alert(message: str, level: str = "INFO") -> bool:
     emoji = _LEVEL_EMOJI[level]
     if not TELEGRAM_BOT_TOKEN or not ALERT_TELEGRAM_CHAT_ID:
         logger.warning(f"[Alerts:{level}] Not configured, dropping alert: {message}")
+        _log_delivery(level, message, delivered=False)
         return False
     try:
         resp = requests.post(
@@ -43,8 +62,11 @@ def send_alert(message: str, level: str = "INFO") -> bool:
         )
         if resp.status_code != 200:
             logger.warning(f"[Alerts] Telegram API returned {resp.status_code}: {resp.text[:200]}")
+            _log_delivery(level, message, delivered=False)
             return False
+        _log_delivery(level, message, delivered=True)
         return True
     except Exception as e:
         logger.warning(f"[Alerts] Failed to send alert: {e}")
+        _log_delivery(level, message, delivered=False)
         return False

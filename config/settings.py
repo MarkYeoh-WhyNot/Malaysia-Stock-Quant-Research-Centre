@@ -110,6 +110,13 @@ BURSA_MIN_DAILY_VALUE_MYR = _P.MIN_DAILY_VALUE
 PAPER_CAPITAL_MYR = 100_000.0
 PAPER_ALLOC_PCT   = 0.95     # fraction of idea NAV deployed per position
 
+# Governance (D2): pairwise Pearson correlation of daily returns across
+# active paper strategies above this threshold escalates to BLOCKER —
+# two strategies that move in lockstep are one hidden bet, not two
+# independent ones, regardless of how diversified they look name-by-name.
+# NEW risk-monitoring parameter — deliberately NOT part of GATE_CONFIG.
+CORRELATION_ESCALATION_THRESHOLD = 0.75
+
 # Cost / sizing functions — legacy names bound to the active profile.
 bursa_slippage_tier = _P.slippage_tier
 bursa_trade_cost    = _P.trade_cost

@@ -16,6 +16,7 @@ from config.settings import (
     AI_DAILY_BUDGET_USD, key_health_check,
     OPENCLAW_API_KEY, DASHBOARD_ORIGIN, PROGRESS_FILE,
 )
+from governance.managers import summarize_all_departments, DEPARTMENT_AGENT_MAP
 
 _PROGRESS_FILE = str(PROGRESS_FILE)
 
@@ -1246,11 +1247,12 @@ def kb_search(q: str, domain: Optional[str] = None, limit: int = 20):
 
 @app.get("/api/kb/graph")
 def kb_graph(limit: int = 500, domain: Optional[str] = None,
-             since: Optional[str] = None):
+             since: Optional[str] = None, node_type: Optional[str] = None):
     """Nodes + typed edges for the knowledge-graph view.
-    Pass since=<as_of from a previous response> for a live delta."""
+    Pass since=<as_of from a previous response> for a live delta.
+    node_type filters to one or more comma-separated types (saved views)."""
     from knowledge.graph.store import graph_json
-    return graph_json(limit=limit, domain=domain, since=since)
+    return graph_json(limit=limit, domain=domain, since=since, node_type=node_type)
 
 
 @app.get("/api/kb/graph/subgraph")
@@ -1914,6 +1916,58 @@ def dept_overview():
             "last_action_ago": _ago(kb_last["created_at"] if kb_last else None),
         },
     ]
+    return {"departments": departments, "as_of": now.isoformat()}
+
+
+# ─── Governance Health Strip ─────────────────────────────────────────────────
+# Separate from the pipeline-activity department cards above: this rolls up
+# L0 inspector findings (governance/) per L1 department (Backtest Fidelity,
+# Parser Honesty, Portfolio Risk, Data Integrity, Paper Trading) via
+# governance.managers.summarize_all_departments(). It does not touch or
+# replace dept_overview()'s response.
+_GOV_EVIDENCE_TRUNCATE = 160
+
+
+@app.get("/api/governance/overview")
+def governance_overview():
+    now = datetime.utcnow()
+    summaries = summarize_all_departments(lookback_hours=24)
+
+    departments = []
+    with db_session() as conn:
+        for summary in summaries:
+            top_blocker = None
+            if summary.blocking_issues > 0:
+                agent_names = DEPARTMENT_AGENT_MAP.get(summary.department, [])
+                if agent_names:
+                    placeholders = ", ".join("?" * len(agent_names))
+                    row = conn.execute(
+                        f"""SELECT local_recommendation, evidence FROM governance_findings
+                            WHERE agent IN ({placeholders}) AND severity='BLOCKER'
+                            ORDER BY created_at DESC LIMIT 1""",
+                        agent_names,
+                    ).fetchone()
+                    if row:
+                        rec = row["local_recommendation"]
+                        if rec:
+                            top_blocker = rec
+                        else:
+                            evidence = row["evidence"] or ""
+                            top_blocker = (
+                                evidence[:_GOV_EVIDENCE_TRUNCATE] + "…"
+                                if len(evidence) > _GOV_EVIDENCE_TRUNCATE
+                                else evidence
+                            ) or None
+
+            departments.append({
+                "department": summary.department,
+                "status": summary.status,
+                "findings_count": summary.findings_count,
+                "blocking_issues": summary.blocking_issues,
+                "top_blocker": top_blocker,
+                "recommendations": summary.recommendations,
+            })
+
     return {"departments": departments, "as_of": now.isoformat()}
 
 

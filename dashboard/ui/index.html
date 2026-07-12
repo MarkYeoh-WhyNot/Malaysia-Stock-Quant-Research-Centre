@@ -268,6 +268,19 @@ svg text{font-family:var(--font-mono)}
 .dept-status-dot.active{background:#22c55e;box-shadow:0 0 6px #22c55e;animation:pulse-dot 2s infinite}
 .dept-status-dot.idle{background:var(--muted)}
 .dept-status-dot.error{background:var(--red)}
+/* governance health strip re-uses the dot-indicator language above, with its
+   own status vocabulary (HEALTHY/WARNING/ALERT — audit health, not pipeline
+   activity) mapped to lowercase CSS classes on the same .dept-status-dot base */
+.dept-status-dot.healthy{background:var(--green)}
+.dept-status-dot.warning{background:var(--yellow);box-shadow:0 0 6px var(--yellow)}
+.dept-status-dot.alert{background:var(--red);box-shadow:0 0 6px var(--red);animation:pulse-dot 2s infinite}
+.gov-strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:14px}
+.gov-badge{background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:11px;cursor:default}
+.gov-badge-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.gov-badge-name{font-weight:600;color:var(--text)}
+.gov-badge-count{color:var(--muted);margin-top:2px}
+.gov-badge-blocker{color:var(--red);margin-top:4px;padding-top:4px;border-top:1px solid var(--bg4);
+  overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 .dept-name{font-size:12px;font-weight:600;margin-bottom:10px;color:var(--text)}
 .dept-kpis{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
 .dept-kpi-value{font-size:14px;font-weight:700;color:var(--dept-color,#888);line-height:1.2}
@@ -665,6 +678,10 @@ svg text{font-family:var(--font-mono)}
     </div>
     <div class="dept-grid" id="dept-grid">
       <div style="color:var(--muted);font-size:11px;padding:8px">Loading departments…</div>
+    </div>
+    <div class="panel-title" style="font-size:11px;color:var(--muted);margin:2px 0 6px">Governance Health</div>
+    <div class="gov-strip" id="governance-strip">
+      <div style="color:var(--muted);font-size:11px;padding:8px">Loading governance…</div>
     </div>
     <div id="dept-work-view" class="dept-work-view hidden">
       <div class="dept-work-header">
@@ -1444,6 +1461,21 @@ svg text{font-family:var(--font-mono)}
           <input type="text" id="kb-graph-search" placeholder="GraphRAG search…"
                  style="font-size:12px;padding:3px 8px;width:170px"
                  onkeydown="if(event.key==='Enter')kbGraphSearch()">
+          <select id="kb-graph-view" onchange="kbGraphApplyView(this.value)" style="font-size:12px;padding:3px 6px" title="Saved views">
+            <option value="">— Saved views —</option>
+            <option value="failure">Why did strategies fail?</option>
+            <option value="parser">Parser honesty map</option>
+            <option value="findings">Open blocker findings</option>
+            <option value="evidence">Full evidence graph</option>
+            <option value="concept">Concept graph (original)</option>
+          </select>
+          <select id="kb-graph-type" onchange="loadKBGraph(true)" style="font-size:12px;padding:3px 6px" title="Node type filter">
+            <option value="">All Types</option>
+            <option>strategy</option><option>signature</option><option>backtest_run</option>
+            <option>gate_decision</option><option>rejection_pattern</option><option>risk</option>
+            <option>finding</option><option>agent</option><option>leaf</option>
+            <option>idea</option><option>technique</option><option>concept</option><option>note</option>
+          </select>
           <select id="kb-graph-domain" onchange="loadKBGraph(true)" style="font-size:12px;padding:3px 6px">
             <option value="">All Domains</option>
           </select>
@@ -3387,12 +3419,21 @@ async function updateKBDomain(id, domain, selectEl) {
 const KB_GRAPH_COLORS = {
   note: '#06b6d4', concept: '#8b5cf6', technique: '#3b82f6',
   idea: '#10b981', rejection_pattern: '#ef4444',
+  // evidence / truth-graph node types
+  strategy: '#22d3ee', signature: '#a78bfa', backtest_run: '#fbbf24',
+  gate_decision: '#f97316', risk: '#f43f5e', finding: '#e11d48',
+  leaf: '#4ade80', agent: '#38bdf8',
 };
 const KB_GRAPH_EDGE_COLORS = {
   contradicts: '#ef4444', supports: '#10b981', refines: '#3b82f6',
   derived_from: '#f97316', about_ticker: '#ec4899', uses_technique: '#3b82f6',
   rejected_because: '#ef4444', shared_concept: '#64748b',
   shared_tag: '#64748b', mentions: '#64748b',
+  // evidence / truth-graph relations
+  produced: '#fbbf24', failed: '#ef4444', passed: '#10b981',
+  shares_signature: '#a78bfa', reported_by: '#38bdf8', blocks: '#f97316',
+  measured_by: '#64748b', exposed_to: '#f43f5e', affects: '#f97316',
+  compiled_to: '#22d3ee', uses_leaf: '#4ade80',
 };
 
 let _cy = null;
@@ -3450,7 +3491,7 @@ function _cyNodePayload(n) {
   return { group: 'nodes', data: {
       id: 'n' + n.id, nid: n.id, label: (n.title || n.slug || '').slice(0, 40),
       title: n.title, slug: n.slug, type: n.type, domain: n.domain,
-      summary: n.summary || '',
+      review_state: n.review_state || '', summary: n.summary || '',
   }};
 }
 
@@ -3462,10 +3503,28 @@ function _cyEdgePayload(e, i) {
   }};
 }
 
+// Saved views map a lens name → the node types it needs (design §9).
+const KB_GRAPH_VIEWS = {
+  failure:  'strategy,gate_decision,rejection_pattern,backtest_run,signature',
+  parser:   'strategy,leaf,finding,risk',
+  findings: 'finding,agent,risk',
+  evidence: 'strategy,signature,backtest_run,gate_decision,risk,finding,leaf,agent',
+  concept:  'idea,concept,technique,note,rejection_pattern',
+};
+function kbGraphApplyView(view) {
+  const typeSel = document.getElementById('kb-graph-type');
+  if (typeSel) typeSel.value = '';           // saved view overrides the single-type filter
+  loadKBGraph(true);
+}
+
 async function loadKBGraph(fullRefresh) {
   const domain = document.getElementById('kb-graph-domain')?.value || '';
   const limit = document.getElementById('kb-graph-limit')?.value || 300;
-  const d = await apiFetch(`/kb/graph?limit=${limit}&domain=${domain}`);
+  const view = document.getElementById('kb-graph-view')?.value || '';
+  const typeFilter = document.getElementById('kb-graph-type')?.value || '';
+  const nodeType = view ? KB_GRAPH_VIEWS[view] : typeFilter;
+  const d = await apiFetch(`/kb/graph?limit=${limit}&domain=${domain}` +
+                           (nodeType ? `&node_type=${encodeURIComponent(nodeType)}` : ''));
   const empty = document.getElementById('kb-graph-empty');
   if (!d || !d.nodes || !d.nodes.length) {
     if (empty) empty.style.display = 'flex';
@@ -4517,6 +4576,8 @@ async function initDeptHub() {
   }
   await refreshDeptCards();
   setInterval(refreshDeptCards, 30000);
+  await refreshGovernanceStrip();
+  setInterval(refreshGovernanceStrip, 30000);
   const grid = document.getElementById('dept-grid');
   if (grid) {
     grid.addEventListener('click', e => {
@@ -4565,6 +4626,36 @@ async function refreshDeptCards() {
         <span class="dept-last-action-text">${esc(dept.last_action)}</span>
       </div>`;
     grid.appendChild(card);
+  });
+}
+
+// Governance health strip — audit/fidelity rollup from governance/managers.py,
+// distinct from the pipeline-activity cards above. Does not share data or
+// markup with refreshDeptCards(); purely additive.
+const _GOV_ABBR = {
+  "Backtest Fidelity": "BF", "Parser Honesty": "PH", "Portfolio Risk": "PR",
+  "Data Integrity": "DI", "Paper Trading": "PT",
+};
+async function refreshGovernanceStrip() {
+  const data = await apiFetch('/governance/overview');
+  const strip = document.getElementById('governance-strip');
+  if (!strip) return;
+  if (!data) { strip.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:8px">Governance data unavailable</div>'; return; }
+  strip.innerHTML = '';
+  (data.departments || []).forEach(dept => {
+    const badge = document.createElement('div');
+    badge.className = 'gov-badge';
+    const statusClass = (dept.status || '').toLowerCase();
+    const title = dept.top_blocker ? esc(dept.top_blocker) : '';
+    if (title) badge.title = title;
+    badge.innerHTML = `
+      <div class="gov-badge-head">
+        <span class="gov-badge-name">${_GOV_ABBR[dept.department] || esc(dept.department)}</span>
+        <span class="dept-status-dot ${statusClass}"></span>
+      </div>
+      <div class="gov-badge-count">${dept.findings_count} finding${dept.findings_count === 1 ? '' : 's'}${dept.blocking_issues ? `, ${dept.blocking_issues} blocking` : ''}</div>
+      ${dept.top_blocker ? `<div class="gov-badge-blocker">${esc(dept.top_blocker)}</div>` : ''}`;
+    strip.appendChild(badge);
   });
 }
 

@@ -510,6 +510,9 @@ ENABLED_JOBS = {
     "kb_hunt",
     "alpha_seeds",
     "graph_maintain",
+    "evidence_ingest",
+    "graph_health_check",
+    "feedback_ingest",
     "vault_export",
     "funnel_report",
     "db_maintenance",
@@ -535,20 +538,33 @@ GATE_OVERRIDES: dict = {
 DIRECTION_DOC = {
     "last_updated": "July 2026",
     "core_purpose": (
-        "Find genuine, statistically robust alpha in liquid crypto markets. Prove it "
-        "cross-sectionally across majors, survive 24/7 volatility and funding costs, and "
-        "paper-trade every strategy before any capital — human oversight at each step."
+        "Expand crypto data breadth and market structure access, not just backtest count. The "
+        "calibration harness has already shown daily/sub-daily OHLCV technicals on liquid "
+        "crypto majors carry no edge that survives honest validation (0/2,100 alpha-hunt trials, "
+        "0/64 classic scan, 0/300 optimizer sweep, momentum inverted) — that search space is "
+        "empirically exhausted, not under-explored. The one statistically real signal found "
+        "so far (cross-sectional funding carry, IC 0.018, t~3) lives in a data layer "
+        "(funding) most of the system's history didn't have. Edge is expected to live in "
+        "layers the pipeline can't see yet — on-chain flows, tokenomics, microstructure — or "
+        "in structures the gates can't express yet (cross-sectional baskets, spreads), not in "
+        "another backtest of the same 20 pairs. Every strategy still paper-trades before any "
+        "capital, with human oversight at each step."
     ),
     "design_philosophy": (
-        "Quality over quantity. A handful of robust, well-validated strategies beats hundreds "
-        "of noise ideas. Crypto is faster and rougher than equities — the gates must be "
-        "stricter, not looser."
+        "Quality over quantity, and honesty over throughput. A handful of robust, "
+        "well-validated strategies beats hundreds of noise ideas — the gates stay stricter "
+        "than equities, not looser. But quality gates cannot manufacture edge that isn't in "
+        "the data feeding them: when a search space is proven barren, the fix is new data or "
+        "new structure, not more trials against the same inputs. Every additional trial also "
+        "raises the deflated-PSR hurdle for the next idea (90-day noise window) — bulk "
+        "automated ideation against an unchanged data surface is partly self-defeating, so "
+        "growth should be data-source-led, not idea-volume-led."
     ),
     "success_metrics": [
-        {"rank": 1, "metric": "First idea reaches Stage 3 with IC > 0.05 across 12+ of the 20 pairs"},
-        {"rank": 2, "metric": "First idea completes a 30-day paper trade with Sharpe >= 1.0 after funding + fees"},
-        {"rank": 3, "metric": "First strategy paper-proven long AND short across a regime shift"},
-        {"rank": 4, "metric": "KB reaches 50 quality crypto-quant docs across all 9 research angles"},
+        {"rank": 1, "metric": "One new data source (on-chain, tokenomics, or microstructure) live and feeding a factor leaf"},
+        {"rank": 2, "metric": "Cross-sectional funding-carry factor swept (period/top-N/rebalance) — the one real signal found, unexplored"},
+        {"rank": 3, "metric": "First idea completes a 30-day paper trade with Sharpe >= 1.0 after funding + fees"},
+        {"rank": 4, "metric": "First strategy paper-proven long AND short across a regime shift"},
         {"rank": 5, "metric": "Daily budget stays under $10 while the pipeline processes meaningful ideas"},
     ],
     "constraints": [

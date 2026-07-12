@@ -138,6 +138,56 @@ def retrieve(query: str, k: int = 8, hops: int = 2,
     return results[:k]
 
 
+def retrieve_facets(query: str, k: int = 12) -> dict:
+    """Structured, relation-typed retrieval over the evidence graph (design §7).
+
+    Instead of a flat ranked list, return a packet grouped by what each fact IS
+    to the query — past failures, common rejection reasons, related signatures,
+    open risks, leaves used. Powers "evaluate this idea" prompts, where the
+    agent needs failure precedent by relationship, not just similarity.
+    """
+    facets = {
+        "direct_matches": [], "related_signatures": [], "past_failures": [],
+        "common_rejection_reasons": [], "open_risks": [], "leaves_used": [],
+    }
+    seeds = [nid for nid, _ in fts.fts_search(query, k=k)]
+    if not seeds:
+        return facets
+
+    marks = ",".join("?" * len(seeds))
+    with db_session() as conn:
+        for r in conn.execute(
+            f"SELECT id, node_type, title FROM kb_nodes WHERE id IN ({marks})", seeds):
+            facets["direct_matches"].append(r["title"])
+        rows = conn.execute(f"""
+            SELECT e.relation AS rel,
+                   ns.node_type AS s_type, ns.title AS s_title,
+                   nt.node_type AS t_type, nt.title AS t_title, nt.summary AS t_summary
+            FROM kb_edges e
+            JOIN kb_nodes ns ON ns.id = e.source_id
+            JOIN kb_nodes nt ON nt.id = e.target_id
+            WHERE e.source_id IN ({marks}) OR e.target_id IN ({marks})
+        """, seeds + seeds).fetchall()
+
+    for r in rows:
+        rel = r["rel"]
+        if rel == "shares_signature":
+            facets["related_signatures"].append(r["t_title"])
+        elif rel == "failed":
+            facets["past_failures"].append(r["s_title"])
+            if r["t_summary"]:
+                facets["common_rejection_reasons"].append(r["t_summary"][:120])
+        elif rel == "rejected_because":
+            facets["common_rejection_reasons"].append(r["t_title"])
+        elif rel == "exposed_to" and r["t_type"] == "risk":
+            facets["open_risks"].append(r["t_title"])
+        elif rel == "uses_leaf":
+            facets["leaves_used"].append(r["t_title"])
+
+    # dedupe, cap
+    return {key: list(dict.fromkeys(v))[:8] for key, v in facets.items()}
+
+
 def assemble_context(results: list[dict], max_chars: int = 4000) -> str:
     """Pack retrieval results into a prompt-ready context block, including the
     relationship paths so the agent sees how knowledge connects."""

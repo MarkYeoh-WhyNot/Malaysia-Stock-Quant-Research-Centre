@@ -109,6 +109,7 @@ def _fake_engine_env(monkeypatch, idea_id):
 def test_run_sweep_selects_winner_and_touches_test_once(monkeypatch):
     from agents.backtest_engineer.optimizer import run_sweep
     from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+    from agents.backtest_engineer import engine as engine_mod
     idea_id = 999911
     df = _fake_engine_env(monkeypatch, idea_id)
 
@@ -119,14 +120,14 @@ def test_run_sweep_selects_winner_and_touches_test_once(monkeypatch):
     v = int(len(df) * 0.2)
     test_start = df.index[t + v]
     calls = {"test": 0}
-    orig = BacktestEngineer._compute_performance
+    orig = engine_mod._compute_performance
 
-    def spy(self, frame, signals, interval, leverage=None):
+    def spy(eng, frame, signals, interval, leverage=None, lag=1, extra_cost_per_side=0.0):
         if len(frame) and frame.index[0] == test_start:
             calls["test"] += 1
-        return orig(self, frame, signals, interval, leverage)
+        return orig(eng, frame, signals, interval, leverage, lag, extra_cost_per_side)
 
-    monkeypatch.setattr(BacktestEngineer, "_compute_performance", spy)
+    monkeypatch.setattr(engine_mod, "_compute_performance", spy)
 
     result = run_sweep(idea_id, seed=7, n_configs=30)
     assert not result.get("error")

@@ -5,8 +5,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from config.settings import GATE_CONFIG
 from data.database import db_session, init_db
 from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+from agents.backtest_engineer import stats
+from agents.backtest_engineer import engine
 
 TEST_IDEA_ID = 987_654_320
 
@@ -124,10 +127,10 @@ def test_robustness_check_math():
     df = pd.DataFrame({"close": close,
                        "volume": np.full(n, 3_000_000.0)})
     tree = {"entry": {"leaf": "momentum", "period": 20, "min_return": 0.0}, "exit": None}
-    base_sig = be._compute_signals(df, {"signal_type": "dsl", "dsl": tree})
-    base = be._compute_performance(df, base_sig, "1d")
-    score1 = be._robustness_check(df, tree, base["sharpe_net"], "1d")
-    score2 = be._robustness_check(df, tree, base["sharpe_net"], "1d")
+    base_sig = engine._compute_signals(be, df, {"signal_type": "dsl", "dsl": tree})
+    base = engine._compute_performance(be, df, base_sig, "1d")
+    score1 = stats.robustness_check(be, df, tree, base["sharpe_net"], "1d", GATE_CONFIG)
+    score2 = stats.robustness_check(be, df, tree, base["sharpe_net"], "1d", GATE_CONFIG)
     assert score1 == score2  # seeded → reproducible
     assert score1 >= 0.6, f"steady-trend momentum should be robust, got {score1}"
 
@@ -137,7 +140,7 @@ def test_legacy_params_still_work(idea):
     be, df = idea
     legacy = {"signal_type": "sma_crossover", "fast_period": 20,
               "slow_period": 50, "long_only": True}
-    sig = be._compute_signals(df, legacy)
+    sig = engine._compute_signals(be, df, legacy)
     fast = df["close"].rolling(20).mean()
     slow = df["close"].rolling(50).mean()
     want = pd.Series(np.where(fast > slow, 1.0, 0.0), index=df.index)

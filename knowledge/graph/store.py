@@ -12,13 +12,47 @@ from data.database import db_session
 
 logger = logging.getLogger(__name__)
 
-NODE_TYPES = ("note", "concept", "technique", "idea", "rejection_pattern")
+# Fallback set only — the authoritative list lives in kb_node_type_registry and
+# is validated at write time (see _check_node_type). Keep in sync for the case
+# where the registry table is missing (very old DB / first init).
+NODE_TYPES = (
+    "note", "concept", "technique", "idea", "rejection_pattern",
+    "strategy", "signature", "backtest_run", "gate_decision", "risk",
+    "finding", "leaf", "agent",
+)
 
 RELATIONS = (
+    # concept-graph (original)
     "supports", "contradicts", "refines", "derived_from", "about_ticker",
     "uses_technique", "rejected_because", "shared_concept", "shared_tag",
     "mentions",
+    # evidence / truth graph (2026-07-12)
+    "produced", "failed", "passed", "shares_signature", "reported_by",
+    "blocks", "measured_by", "exposed_to", "affects", "compiled_to",
+    "uses_leaf",
 )
+
+# Lazily-loaded cache of valid node types from kb_node_type_registry.
+_NODE_TYPE_CACHE: set | None = None
+
+
+def _check_node_type(conn, node_type: str) -> None:
+    """Validate node_type against kb_node_type_registry (cached, refreshed on
+    miss). Raises ValueError for an unregistered type — the same discipline
+    add_edge applies to relations, without a DB-level CHECK."""
+    global _NODE_TYPE_CACHE
+    if _NODE_TYPE_CACHE is not None and node_type in _NODE_TYPE_CACHE:
+        return
+    try:
+        rows = conn.execute(
+            "SELECT node_type FROM kb_node_type_registry WHERE status='active'"
+        ).fetchall()
+        _NODE_TYPE_CACHE = {r["node_type"] for r in rows} or set(NODE_TYPES)
+    except Exception:
+        _NODE_TYPE_CACHE = set(NODE_TYPES)
+    if node_type not in _NODE_TYPE_CACHE:
+        raise ValueError(
+            f"Invalid node_type {node_type!r} (not in kb_node_type_registry)")
 
 
 def content_hash(*parts: str) -> str:
@@ -31,19 +65,25 @@ def content_hash(*parts: str) -> str:
 
 def upsert_node(node_type: str, slug: str, title: str = "", domain: str = "",
                 summary: str = "", tags=None, content: str = "",
-                ref: tuple[str, int] | None = None) -> int:
+                ref: tuple[str, int] | None = None,
+                confidence: float | None = None,
+                review_state: str | None = None,
+                ingestion_version: str | None = None) -> int:
     """Insert or update a node; sync its kb_fts row; return node id.
 
     If the content hash changed, extracted_at is reset to NULL so the LLM
     edge extractor re-processes the node on its next pass.
+
+    confidence / review_state / ingestion_version are optional provenance
+    fields (deterministic ingesters stamp ingestion_version; the feedback loop
+    drives review_state). Passing None leaves the existing value untouched.
     """
-    if node_type not in NODE_TYPES:
-        raise ValueError(f"Invalid node_type: {node_type}")
     tags_str = json.dumps(tags) if isinstance(tags, (list, dict)) else (tags or "")
     chash = content_hash(title, summary, content, tags_str)
     ref_table, ref_id = ref if ref else (None, None)
 
     with db_session() as conn:
+        _check_node_type(conn, node_type)
         existing = conn.execute(
             "SELECT id, content_hash FROM kb_nodes WHERE slug=? "
             "OR (ref_table IS NOT NULL AND ref_table=? AND ref_id=?)",
@@ -70,6 +110,18 @@ def upsert_node(node_type: str, slug: str, title: str = "", domain: str = "",
                   summary, tags_str, chash))
             node_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
             _sync_fts(conn, node_id, title, summary, content, tags_str)
+
+        # Optional provenance columns — only overwrite when a value is supplied.
+        sets, params = [], []
+        if confidence is not None:
+            sets.append("confidence=?"); params.append(confidence)
+        if review_state is not None:
+            sets.append("review_state=?"); params.append(review_state)
+        if ingestion_version is not None:
+            sets.append("ingestion_version=?"); params.append(ingestion_version)
+        if sets:
+            params.append(node_id)
+            conn.execute(f"UPDATE kb_nodes SET {', '.join(sets)} WHERE id=?", params)
     return node_id
 
 
@@ -84,22 +136,32 @@ def _sync_fts(conn, node_id: int, title: str, summary: str,
 
 
 def add_edge(source_id: int, target_id: int, relation: str,
-             weight: float = 1.0, origin: str = "llm") -> bool:
+             weight: float = 1.0, origin: str = "llm",
+             count_evidence: bool = False) -> bool:
     """Idempotent typed edge; concurrent duplicates collapse onto one row,
-    keeping the strongest weight. Returns False for self-loops/bad relations."""
+    keeping the strongest weight. Returns False for self-loops/bad relations.
+
+    count_evidence=True bumps evidence_count on a repeat sighting (for rollup
+    edges where the same relation is re-observed across many source rows); it
+    stays False for the default 1:1 evidence-node wiring where the distinct
+    nodes already ARE the evidence.
+    """
     if source_id == target_id:
         return False
     if relation not in RELATIONS:
         logger.warning(f"[GraphStore] Dropping edge with unknown relation {relation!r}")
         return False
     weight = max(0.0, min(1.0, float(weight)))
+    inc = 1 if count_evidence else 0
     with db_session() as conn:
         conn.execute("""
-            INSERT INTO kb_edges (source_id, target_id, relation, weight, origin)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO kb_edges (source_id, target_id, relation, weight, origin, last_seen_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(source_id, target_id, relation)
-            DO UPDATE SET weight=max(weight, excluded.weight)
-        """, (source_id, target_id, relation, weight, origin))
+            DO UPDATE SET weight=max(weight, excluded.weight),
+                          evidence_count=evidence_count + ?,
+                          last_seen_at=datetime('now')
+        """, (source_id, target_id, relation, weight, origin, inc))
     return True
 
 
@@ -126,7 +188,8 @@ def neighbors(node_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
+def graph_json(limit: int = 500, domain: str = None, since: str = None,
+               node_type: str = None) -> dict:
     """Nodes+edges payload for the dashboard graph view.
 
     With `since` (an as_of timestamp from a previous call), returns only
@@ -134,6 +197,9 @@ def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
     protocol. Delta edges may reference nodes outside the delta; the client
     ignores edges whose endpoints it doesn't hold (an hourly full refresh
     reconciles, including deletions which deltas can't see).
+
+    node_type accepts a single type or a comma-separated list (saved views pass
+    the set of types a lens needs, e.g. "strategy,gate_decision,rejection_pattern").
     """
     from datetime import datetime, timezone
     as_of = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -141,6 +207,11 @@ def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
     if domain:
         filters.append("domain=?")
         params.append(domain)
+    if node_type:
+        types = [t.strip() for t in node_type.split(",") if t.strip()]
+        if types:
+            filters.append(f"node_type IN ({','.join('?' * len(types))})")
+            params.extend(types)
     if since:
         filters.append("updated_at > ?")
         params.append(since)
@@ -148,7 +219,7 @@ def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
 
     with db_session() as conn:
         nodes = conn.execute(
-            f"SELECT id, slug, title, node_type, domain, summary FROM kb_nodes "
+            f"SELECT id, slug, title, node_type, domain, summary, review_state FROM kb_nodes "
             f"{where} ORDER BY updated_at DESC LIMIT ?",
             params + [limit]).fetchall()
         edges = []
@@ -169,6 +240,7 @@ def graph_json(limit: int = 500, domain: str = None, since: str = None) -> dict:
         "delta": bool(since),
         "nodes": [{"id": n["id"], "slug": n["slug"], "title": n["title"],
                    "type": n["node_type"], "domain": n["domain"],
+                   "review_state": n["review_state"],
                    "summary": (n["summary"] or "")[:280]} for n in nodes],
         "edges": [{"source": e["source_id"], "target": e["target_id"],
                    "relation": e["relation"], "weight": e["weight"]} for e in edges],

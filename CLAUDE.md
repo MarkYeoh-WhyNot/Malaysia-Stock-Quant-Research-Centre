@@ -493,12 +493,25 @@ grounds ideas in graph context (topicless generation targets the
 least-covered angle). AlphaSeedGenerator adds live `derived_from` edges.
 
 **Daemon jobs**: graph_maintain (2h — extract + embed), fts_reconcile (inside
-nightly db_maintenance), vault_export (06:00 UTC daily).
+nightly db_maintenance), feedback_ingest (05:00 UTC daily), vault_export
+(06:00 UTC daily).
 
-**Obsidian**: `python scripts/export_obsidian.py` (or Telegram `/vault`)
-writes a one-way wipe-and-rewrite vault/ (gitignored) with YAML frontmatter
-and typed [[wikilinks]] — open it in Obsidian for graph view/backlinks. Never
-hand-edit the vault; the DB is the source of truth.
+**Obsidian (two-way)**: `python scripts/export_obsidian.py` (or Telegram
+`/vault`) writes vault/ with YAML frontmatter and typed [[wikilinks]] — open it
+in Obsidian for graph view/backlinks. The generated type-folders (ideas/,
+techniques/, …) are WIPE-AND-REWRITE — never hand-edit them, the DB owns them.
+The ONE exception is **vault/feedback/** (git-tracked via a `!vault/feedback/`
+un-ignore; never wiped): duplicate `_TEMPLATE.md`, set `target:` to a note's
+slug + a `verdict`/`rating`/`tags` + body, and `scripts/ingest_obsidian_feedback.py`
+reads it back — reject → RejectionMemory + gate_decisions + status='rejected';
+body note → human `note` kb_node linked to the target (syncs kb_fts, so the
+retriever grounds on it); rating/tags → kb_feedback + note tags. Ingest is
+idempotent (kb_feedback.content_hash); RejectionMemory only fires on the first
+transition into reject, so re-edits don't inflate pattern counts. Transport is
+git: VPS pushes vault/feedback/, you pull/edit/push on the Mac, the daemon
+ingests locally-present feedback at 05:00 before the 06:00 export.
+Note: export sanitizes '/' and other path/link-hostile chars in slugs
+(`_safe_slug`) so crypto-pair slugs like BTC/USDT no longer crash the writer.
 
 **Embeddings**: optional — set `VOYAGE_API_KEY` in .env to enable semantic
 search; without it everything runs FTS5-only.

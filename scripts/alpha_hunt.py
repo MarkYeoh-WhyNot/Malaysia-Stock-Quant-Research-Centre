@@ -156,6 +156,7 @@ def _class_min_trades(interval: str) -> int:
 def stage_a(pairs, timeframes, include_short=True, verbose=True):
     """Screen every candidate on TRAIN+VAL only. Returns (records, n_trials)."""
     from agents.backtest_engineer.backtest_engineer import BacktestEngineer
+    from agents.backtest_engineer import engine
     from agents.backtest_engineer.signal_dsl import signal_from_dsl
     from agents.data_engineer.data_engineer import DataEngineer
     from config.settings import FETCH_DAYS_BY_INTERVAL
@@ -187,10 +188,10 @@ def stage_a(pairs, timeframes, include_short=True, verbose=True):
                     n_trials += 1
                     try:
                         sig = signal_from_dsl(df, tree)
-                        p_tr = eng._compute_performance(
-                            train_df, sig.loc[train_df.index], tf)
-                        p_va = eng._compute_performance(
-                            val_df, sig.loc[val_df.index], tf)
+                        p_tr = engine._compute_performance(
+                            eng, train_df, sig.loc[train_df.index], tf)
+                        p_va = engine._compute_performance(
+                            eng, val_df, sig.loc[val_df.index], tf)
                     except Exception as exc:
                         records.append({"pair": pair, "tf": tf, "config": name,
                                         "short": short, "error": str(exc)[:80]})

@@ -175,12 +175,14 @@ class ResearchDaemon:
             self._process_gate0, self._process_stage1, self._process_optimizer_queue,
             self._process_stage2,
             self._process_red_blue, self._process_stage3, self._process_paper_trading,
+            self._process_fidelity_audit,
             self._daily_knowledge_hunt, self._process_alpha_seeds,
             self._process_morning_briefing, self._process_klse_refresh,
             self._process_screener_ideas, self._process_cpo_daily,
             self._process_analyst_monitor, self._process_db_maintenance,
-            self._process_graph_maintain, self._process_vault_export,
-            self._process_funnel_report,
+            self._process_graph_maintain, self._process_evidence_ingest,
+            self._process_graph_health_check, self._process_feedback_ingest,
+            self._process_vault_export, self._process_funnel_report,
         )
         for step in steps:
             await step()
@@ -709,6 +711,200 @@ class ResearchDaemon:
             except Exception as e:
                 logger.error(f"[Stage4a] Error {row['id']}: {e}")
 
+    # ── Governance fidelity audit — run inspectors and roll up findings ────────
+
+    async def _process_fidelity_audit(self):
+        """Run all L0 governance inspectors and record findings.
+
+        Each inspector validates a specific invariant (parser honesty, backtest
+        fidelity, portfolio risk, data quality, etc.) and records a Finding to
+        governance_findings. This method instantiates inspectors, calls inspect()
+        with available daemon-loop data, and persists results.
+
+        Inspectors that require specific live backtest/portfolio state are
+        skipped with a comment explaining why (to be wired when their ctx
+        becomes naturally available in the daemon loop).
+        """
+        from governance.inspectors import (
+            DSLRepresentabilityChecker,
+            LeafSemanticsAuditor,
+            NegativeMappingGuard,
+            KillSwitchInspector,
+            SourceHealthInspector,
+            ShadowNAVInspector,
+            ConcentrationCorrelationInspector,
+            # Inspectors requiring live backtest context (skipped for now):
+            # PnLConsistencyInspector, FundingCostAuditor, FillConventionAuditor,
+            # CostModelAuditor, MetricConsistencyAuditor, RegimeAttributionAuditor,
+            # CapacityAggregationInspector
+        )
+        from agents.backtest_engineer import signal_dsl
+
+        findings_recorded = 0
+        blockers_found = 0
+
+        # ── DSL Representability Checker ──────────────────────────────────────
+        # Audit the current state of signal_dsl.LEAVES registry for honesty
+        try:
+            checker = DSLRepresentabilityChecker()
+            # Simple check: LEAVES registry is populated and all leaves have
+            # valid structure. This runs without live data.
+            finding = checker.inspect(
+                scope="dsl_registry",
+                ctx={
+                    "leaf_registry": signal_dsl.LEAVES,
+                    "expected_representable": None,
+                    "parse_result": {"representable": True, "dsl": {}},
+                },
+            )
+            if finding:
+                checker.record(finding)
+                findings_recorded += 1
+                if finding.severity == "BLOCKER":
+                    blockers_found += 1
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] DSLRepresentabilityChecker failed: {e}")
+
+        # ── Leaf Semantics Auditor ───────────────────────────────────────────
+        # Audit leaf semantic correctness without live data
+        try:
+            auditor = LeafSemanticsAuditor()
+            # Check that all leaves in the registry have correct semantic mappings
+            finding = auditor.inspect(
+                scope="leaf_semantics",
+                ctx={"leaf_registry": signal_dsl.LEAVES},
+            )
+            if finding:
+                auditor.record(finding)
+                findings_recorded += 1
+                if finding.severity == "BLOCKER":
+                    blockers_found += 1
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] LeafSemanticsAuditor failed: {e}")
+
+        # ── Negative Mapping Guard ───────────────────────────────────────────
+        # Audit negative mappings in the DSL for correctness
+        try:
+            guard = NegativeMappingGuard()
+            finding = guard.inspect(
+                scope="negative_mappings",
+                ctx={"leaf_registry": signal_dsl.LEAVES},
+            )
+            if finding:
+                guard.record(finding)
+                findings_recorded += 1
+                if finding.severity == "BLOCKER":
+                    blockers_found += 1
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] NegativeMappingGuard failed: {e}")
+
+        # ── Source Health Inspector ──────────────────────────────────────────
+        # Check each configured data source (Yahoo, KLSE, Binance, etc.)
+        try:
+            inspector = SourceHealthInspector()
+            sources = [
+                "yahoo",
+                "klse_screener",
+            ]
+            # Crypto-only sources
+            from config.settings import MARKET_MODE
+            if MARKET_MODE == "crypto":
+                sources.extend(["binance", "coingecko", "defillama"])
+
+            for source in sources:
+                try:
+                    finding = inspector.inspect(
+                        scope=f"data_source:{source}",
+                        ctx={"source": source, "market_mode": MARKET_MODE},
+                    )
+                    if finding:
+                        inspector.record(finding)
+                        findings_recorded += 1
+                        if finding.severity == "BLOCKER":
+                            blockers_found += 1
+                except Exception as e:
+                    logger.debug(
+                        f"[FidelityAudit] SourceHealthInspector/{source} failed: {e}"
+                    )
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] SourceHealthInspector init failed: {e}")
+
+        # ── Kill-Switch Inspector ───────────────────────────────────────────
+        # Surface hard-stop triggers in paper-trading strategies
+        try:
+            inspector = KillSwitchInspector()
+            ks = self.risk_monitor.check_kill_switches()
+            finding = inspector.inspect(
+                scope="portfolio_risk",
+                ctx={"kill_switches": ks or {}},
+            )
+            if finding:
+                inspector.record(finding)
+                findings_recorded += 1
+                if finding.severity == "BLOCKER":
+                    blockers_found += 1
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] KillSwitchInspector failed: {e}")
+
+        # ── Shadow NAV Inspector ────────────────────────────────────────────
+        # Audit paper equity NAV consistency (needs live paper_trades / paper_equity data)
+        try:
+            inspector = ShadowNAVInspector()
+            # Collect active stage4a ideas with paper trades
+            with db_session() as conn:
+                active_ideas = conn.execute(
+                    "SELECT DISTINCT idea_id FROM paper_trades "
+                    "WHERE status='open' LIMIT 10"
+                ).fetchall()
+            for row in active_ideas:
+                try:
+                    idea_id = row["idea_id"]
+                    finding = inspector.inspect(
+                        scope=f"idea:{idea_id}",
+                        ctx={"idea_id": idea_id},
+                    )
+                    if finding:
+                        inspector.record(finding)
+                        findings_recorded += 1
+                        if finding.severity == "BLOCKER":
+                            blockers_found += 1
+                except Exception as e:
+                    logger.debug(
+                        f"[FidelityAudit] ShadowNAVInspector/idea:{row.get('idea_id')} failed: {e}"
+                    )
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] ShadowNAVInspector init failed: {e}")
+
+        # ── Concentration/Correlation Inspector ────────────────────────────
+        # Audit portfolio concentration and correlation risk
+        try:
+            inspector = ConcentrationCorrelationInspector()
+            finding = inspector.inspect(
+                scope="portfolio_correlation",
+                ctx={},
+            )
+            if finding:
+                inspector.record(finding)
+                findings_recorded += 1
+                if finding.severity == "BLOCKER":
+                    blockers_found += 1
+        except Exception as e:
+            logger.warning(f"[FidelityAudit] ConcentrationCorrelationInspector failed: {e}")
+
+        # Skipped inspectors (require specific backtest run / fill simulation context):
+        # - PnLConsistencyInspector: needs a specific backtest_run id
+        # - FundingCostAuditor: needs live funding rate data (crypto) / check
+        # - FillConventionAuditor: needs order fills from execution_simulator
+        # - CostModelAuditor: needs fee_schedules + backtest params
+        # - MetricConsistencyAuditor: needs backtest_run metrics
+        # - RegimeAttributionAuditor: needs regime tercile bucketing
+        # - CapacityAggregationInspector: needs position sizing + portfolio state
+
+        logger.info(
+            f"[FidelityAudit] Complete — {findings_recorded} findings recorded, "
+            f"{blockers_found} blockers"
+        )
+
     # ── Hourly alpha seed processing ─────────────────────────────────────────
 
     async def _process_alpha_seeds(self):
@@ -879,6 +1075,61 @@ class ResearchDaemon:
                 )
         except Exception as e:
             logger.error(f"[GraphMaintain] Error: {e}", exc_info=True)
+
+    # ── Evidence-graph ingest — frequent + cheap, deterministic (no LLM) ──────
+
+    async def _process_evidence_ingest(self):
+        """Promote operational rows (strategies, backtests, gate decisions,
+        findings) into the knowledge graph + seed aliases. Idempotent; runs on a
+        30-min gap so evidence appears in the graph soon after it is produced."""
+        if not self._job_due("evidence_ingest", min_gap=timedelta(minutes=30)):
+            return
+        try:
+            from knowledge.ingestion.evidence_graph import ingest_all
+            from knowledge.ingestion.alias_seeder import seed_aliases
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, seed_aliases)
+            result = await loop.run_in_executor(None, ingest_all)
+            self._mark_job_run("evidence_ingest")
+            logger.info(f"[EvidenceIngest] {result}")
+        except Exception as e:
+            logger.error(f"[EvidenceIngest] Error: {e}", exc_info=True)
+
+    # ── Graph health check — 04:00 UTC daily (anti-garbage governance) ────────
+
+    async def _process_graph_health_check(self):
+        """Enforce the graph's discipline rules and record violations as
+        governance findings. Blockers are logged loudly, not fatal."""
+        if not self._job_due("graph_health_check", daily_at_hour=4):
+            return
+        try:
+            from scripts.graph_health_check import run_health_check
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: run_health_check(record=True))
+            self._mark_job_run("graph_health_check")
+            if result.get("blockers"):
+                logger.error(f"[GraphHealth] {result['blockers']} BLOCKER(s) in the knowledge graph")
+        except Exception as e:
+            logger.error(f"[GraphHealth] Error: {e}", exc_info=True)
+
+    # ── Obsidian feedback ingest — 05:00 UTC, just before the vault export ────
+
+    async def _process_feedback_ingest(self):
+        """Read human feedback from vault/feedback/ back into the loop (verdicts,
+        notes, ratings). Idempotent — a no-op when nothing changed. Transport
+        (git pull of the feedback zone) happens outside the daemon; this ingests
+        whatever is present, and runs before the 06:00 export so freshly-created
+        note nodes appear in the same day's vault."""
+        if not self._job_due("feedback_ingest", daily_at_hour=5):
+            return
+        try:
+            from scripts.ingest_obsidian_feedback import ingest_dir
+            result = await asyncio.get_event_loop().run_in_executor(None, ingest_dir)
+            self._mark_job_run("feedback_ingest")
+            if result.get("applied"):
+                logger.info(f"[FeedbackIngest] {result}")
+        except Exception as e:
+            logger.error(f"[FeedbackIngest] Error: {e}", exc_info=True)
 
     # ── Obsidian vault export — 06:00 UTC (14:00 MYT) ─────────────────────────
 
