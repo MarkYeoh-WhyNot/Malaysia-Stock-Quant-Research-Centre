@@ -275,7 +275,8 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
             proc = subprocess.run(
                 [sys.executable, "-m", "pytest", tmp_test_path, "-q"],
                 cwd=_REPO_ROOT, capture_output=True, text=True, timeout=60,
-                env={**os.environ, "PYTHONPATH": _REPO_ROOT})
+                env={**os.environ, "PYTHONPATH": _REPO_ROOT,
+                    "PYTHONDONTWRITEBYTECODE": "1"})
             return {"passed": proc.returncode == 0, "output": proc.stdout + proc.stderr}
         except Exception as exc:
             return {"passed": False, "output": str(exc)}
@@ -339,7 +340,8 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
         proc = subprocess.run(
             [sys.executable, "-m", "pytest", test_path, "-q"],
             cwd=_REPO_ROOT, capture_output=True, text=True, timeout=60,
-            env={**os.environ, "PYTHONPATH": _REPO_ROOT})
+            env={**os.environ, "PYTHONPATH": _REPO_ROOT,
+                "PYTHONDONTWRITEBYTECODE": "1"})
         if proc.returncode != 0:
             os.remove(leaf_path)
             os.remove(test_path)

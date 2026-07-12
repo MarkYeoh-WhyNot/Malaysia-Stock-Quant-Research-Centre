@@ -65,13 +65,28 @@ def _purge():
     with db_session() as conn:
         conn.execute("DELETE FROM leaf_synthesis_attempts WHERE idea_id=?", (_IDEA_ID,))
         conn.execute("DELETE FROM alpha_ideas WHERE id=?", (_IDEA_ID,))
-    for d, prefix in ((_GENERATED_DIR, ""), (_TESTS_DIR, "test_leaves_generated_")):
+    # Bytecode caches for these dynamically-written modules must be cleaned
+    # too — a stale .pyc from a PREVIOUS test's (working) code can silently
+    # outlive the deleted .py source and get reused for a LATER test's
+    # (deliberately buggy) rewrite of the same module name, since
+    # PYTHONDONTWRITEBYTECODE only prevents the leaf_synthesizer's OWN
+    # subprocess runs from writing new ones, not this process's imports
+    # (e.g. the happy-path test's importlib.reload).
+    for d in (_GENERATED_DIR, _TESTS_DIR):
         for fname in os.listdir(d):
             if _LEAF_NAME in fname:
                 try:
                     os.remove(os.path.join(d, fname))
                 except OSError:
                     pass
+        pycache = os.path.join(d, "__pycache__")
+        if os.path.isdir(pycache):
+            for fname in os.listdir(pycache):
+                if _LEAF_NAME in fname:
+                    try:
+                        os.remove(os.path.join(pycache, fname))
+                    except OSError:
+                        pass
 
 
 @pytest.fixture(autouse=True)
