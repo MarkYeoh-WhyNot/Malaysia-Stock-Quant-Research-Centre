@@ -258,13 +258,29 @@ class ResearchDaemon:
             conn.execute(
                 "UPDATE optimizer_runs SET status='running', "
                 "started_at=datetime('now') WHERE id=?", (job["id"],))
-        logger.info(f"[Optimizer] sweep starting for idea [{job['idea_id']}] "
-                    f"(seed={job['seed']}, n={job['n_configs']})")
+            _idea = conn.execute(
+                "SELECT factor_formula FROM alpha_ideas WHERE id=?",
+                (job["idea_id"],)).fetchone()
+        # Cross-sectional ideas ("xs:" spec) sweep factor/basket params via
+        # run_xs_sweep; DSL ideas sweep tree params via run_sweep. Both write
+        # n_configs to this optimizer_runs row, so the winner's gated run
+        # charges the full search to its deflated-PSR hurdle identically.
+        _is_xs = bool(_idea and (_idea["factor_formula"] or "").strip().startswith("xs:"))
+        logger.info(f"[Optimizer] {'xs ' if _is_xs else ''}sweep starting for "
+                    f"idea [{job['idea_id']}] (seed={job['seed']}, n={job['n_configs']})")
         try:
-            from agents.backtest_engineer.optimizer import run_sweep
-            result = await asyncio.to_thread(
-                run_sweep, job["idea_id"],
-                seed=job["seed"] or 42, n_configs=job["n_configs"] or 300)
+            if _is_xs:
+                from agents.backtest_engineer.optimizer import run_xs_sweep
+                from agents.backtest_engineer.optimizer import XS_DEFAULT_N_CONFIGS
+                result = await asyncio.to_thread(
+                    run_xs_sweep, job["idea_id"],
+                    seed=job["seed"] or 42,
+                    n_configs=job["n_configs"] or XS_DEFAULT_N_CONFIGS)
+            else:
+                from agents.backtest_engineer.optimizer import run_sweep
+                result = await asyncio.to_thread(
+                    run_sweep, job["idea_id"],
+                    seed=job["seed"] or 42, n_configs=job["n_configs"] or 300)
         except Exception as e:
             result = {"error": str(e)}
 
@@ -291,7 +307,25 @@ class ResearchDaemon:
                               ("n_evaluated", "n_eligible", "top", "seed")}),
                  _json.dumps(winner) if winner else None,
                  job["id"]))
-            if winner:
+            if winner and _is_xs:
+                # Promote the winning xs spec by REWRITING factor_formula —
+                # the "xs:" dispatch in backtest_engineer then routes the
+                # released idea straight to run_cross_sectional_backtest.
+                # Shape mirrors pipeline/sandbox.py's xs submission exactly
+                # (signal_type asserted by the dispatcher).
+                _spec = {"signal_type": "cross_sectional",
+                         "factor": winner["factor"],
+                         "top_n": winner["top_n"],
+                         "bottom_n": winner["bottom_n"],
+                         "rebalance_bars": winner["rebalance_bars"],
+                         "interval": winner["interval"]}
+                conn.execute(
+                    "UPDATE alpha_ideas SET factor_formula=?, timeframe=?, "
+                    "stage='stage2', status='pending', updated_at=datetime('now') "
+                    "WHERE id=?",
+                    ("xs:" + _json.dumps(_spec, sort_keys=True),
+                     winner["interval"], job["idea_id"]))
+            elif winner:
                 # Promote winner config; release to the normal gated pipeline.
                 conn.execute(
                     "UPDATE alpha_ideas SET timeframe=?, ticker=?, stage='stage2', "
@@ -309,7 +343,22 @@ class ResearchDaemon:
         # Telegram: top-3 summary
         try:
             from scripts.alerts import send_alert
-            if winner:
+            if winner and _is_xs:
+                top3 = result["top"][:3]
+                lines = [f"  {i+1}. {t['factor']['name']}{t['factor']['params']} "
+                         f"top{t['top_n']}/bot{t['bottom_n']} rebal={t['rebalance_bars']} "
+                         f"val Sharpe {t['val_sharpe']:.2f} (IC {t['val_mean_ic']:.3f})"
+                         for i, t in enumerate(top3)]
+                send_alert(
+                    f"XS Optimizer done — idea [{job['idea_id']}]: winner "
+                    f"{winner['factor']['name']}{winner['factor']['params']} "
+                    f"top{winner['top_n']}/bot{winner['bottom_n']} "
+                    f"rebal={winner['rebalance_bars']} "
+                    f"(val {winner['val_sharpe']:.2f}, test slice untouched) from "
+                    f"{result['n_configs']} trials.\n" + "\n".join(lines) +
+                    "\nGated basket backtest queued with the raised deflated hurdle.",
+                    level="INFO")
+            elif winner:
                 top3 = result["top"][:3]
                 lines = [f"  {i+1}. {t['instrument']} {t['timeframe']} "
                          f"val Sharpe {t['val_sharpe']:.2f} ({t['val_trades']} trades)"
@@ -411,7 +460,13 @@ class ResearchDaemon:
                         logger.warning(f"[Stage2] RejectionMemory failed: {re}")
 
                 # ── Cross-sectional validation gate ───────────────────────────
-                if result.get("gate3_pass"):
+                # Basket ideas run their OWN IC gate inside
+                # run_cross_sectional_backtest — re-running the legacy
+                # single-name veto here would re-parse the "xs:" spec via the
+                # LLM fallback (garbage momentum default) and could un-park a
+                # passing winner. Skip it for run_type='cross_sectional'.
+                if (result.get("gate3_pass")
+                        and result.get("run_type") != "cross_sectional"):
                     await asyncio.sleep(1)
                     try:
                         cs = self.backtest_engineer.cross_sectional_test(

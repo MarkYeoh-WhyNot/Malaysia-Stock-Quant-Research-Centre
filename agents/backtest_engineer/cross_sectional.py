@@ -502,12 +502,12 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
 
     # Principal pass rule: deflated PSR (same machinery as the DSL path).
     from agents.backtest_engineer.stats import psr as _psr, deflated_sr_star
+    from agents.backtest_engineer.gates import recent_trial_count
     with db_session() as conn:
-        n_trials = conn.execute(
-            "SELECT COUNT(DISTINCT idea_id) AS n FROM backtest_runs "
-            "WHERE created_at >= datetime('now', ?)",
-            (f"-{int(GATE_CONFIG.deflation_window_days)} days",),
-        ).fetchone()["n"] + 1
+        # Same rolling-window count as the single-name path, with the same
+        # calib-% exclusion — a basket idea's hurdle must not be inflated by
+        # synthetic calibration probes either (gates.py, 2026-07-12).
+        n_trials = recent_trial_count(conn, int(GATE_CONFIG.deflation_window_days)) + 1
         try:
             _sw = conn.execute(
                 "SELECT COALESCE(SUM(n_configs),0) AS n FROM optimizer_runs "
