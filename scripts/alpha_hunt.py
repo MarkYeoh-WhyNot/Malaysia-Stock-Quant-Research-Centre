@@ -122,6 +122,28 @@ def _t_rank(short):
                       "window": 252, "max_pct": 0.5}}
 
 
+def _t_fund_level(thr, short):
+    # Funding carry: hold the side the crowd pays. Long when shorts pay
+    # (funding meaningfully negative per 8h), exit once longs start paying.
+    t = {"entry": {"leaf": "funding_level", "below": -thr},
+         "exit":  {"leaf": "funding_level", "above": 0.0}}
+    if short:
+        t["short_entry"] = {"leaf": "funding_level", "above": thr}
+        t["short_exit"]  = {"leaf": "funding_level", "below": 0.0}
+    return t
+
+
+def _t_fund_z(period, z, short):
+    # Contrarian funding-extreme reversion: fade crowded positioning vs the
+    # rate's own rolling history, exit when funding normalizes to its mean.
+    t = {"entry": {"leaf": "funding_zscore", "period": period, "below": -z},
+         "exit":  {"leaf": "funding_zscore", "period": period, "above": 0.0}}
+    if short:
+        t["short_entry"] = {"leaf": "funding_zscore", "period": period, "above": z}
+        t["short_exit"]  = {"leaf": "funding_zscore", "period": period, "below": 0.0}
+    return t
+
+
 CONFIGS = [
     ("sma_10_30",       "trend",      lambda s: _t_sma(10, 30, s)),
     ("sma_20_50",       "trend",      lambda s: _t_sma(20, 50, s)),
@@ -143,6 +165,13 @@ CONFIGS = [
     ("zscore_60_1.5",   "reversion",  lambda s: _t_zscore(60, 1.5, s)),
     ("volratio_20_2.5", "breakout",   lambda s: _t_volratio(20, 2.5, s)),
     ("rank_126_top20",  "momentum",   lambda s: _t_rank(s)),
+    # Funding carry — the one direction the 2026-07 campaign confirmed
+    # (finding-campaign-funding-carry-2026-07-ic-real). Perp-only data;
+    # pairs without funding history screen 0 trades and drop out honestly.
+    ("fund_lvl_1bp",    "carry",      lambda s: _t_fund_level(0.0001, s)),
+    ("fund_lvl_3bp",    "carry",      lambda s: _t_fund_level(0.0003, s)),
+    ("fund_z_60_2.0",   "carry",      lambda s: _t_fund_z(60, 2.0, s)),
+    ("fund_z_120_1.5",  "carry",      lambda s: _t_fund_z(120, 1.5, s)),
 ]
 
 
@@ -178,6 +207,16 @@ def stage_a(pairs, timeframes, include_short=True, verbose=True):
                 print(f"  [skip] {pair} {tf}: only {0 if df is None else len(df)} bars",
                       file=sys.stderr)
                 continue
+            # Carry configs need funding_rate, which the OHLCV fetch doesn't
+            # carry — attach once per (pair, tf), mirroring the Stage B seam
+            # (engine.py signal path). No history → all-NaN → the leaf never
+            # fires → 0 trades → ineligible, the honest outcome.
+            if any(fam == "carry" for _n, fam, _b in CONFIGS):
+                df = df.copy()
+                df["funding_rate"] = eng._fetch_funding_column(pair, df.index)
+                if df["funding_rate"].isna().all():
+                    print(f"  [note] {pair} {tf}: no funding history — carry "
+                          f"configs will screen 0 trades", file=sys.stderr)
             train_df, val_df, _test_df = eng._split(df)
 
             for name, family, build in CONFIGS:
@@ -351,6 +390,15 @@ def main():
                             "alpha_hunt_report.json")
     with open(out_path, "w") as fh:
         json.dump(report, fh, indent=1, default=str)
+
+    # Campaign verdicts belong in the knowledge graph — falsified directions
+    # and confirmed signals both — so the generator and red/blue retrieve
+    # them next cycle. Never fatal: a graph hiccup must not void the hunt.
+    try:
+        from knowledge.ingestion.campaign_findings import emit_alpha_hunt_findings
+        print(f"KG findings: {emit_alpha_hunt_findings(report)}", file=sys.stderr)
+    except Exception as exc:
+        print(f"KG findings write failed (non-fatal): {exc}", file=sys.stderr)
 
     print(json.dumps({"trials": n_trials, "eligible": len(eligible),
                       "finalists": len(finalists),

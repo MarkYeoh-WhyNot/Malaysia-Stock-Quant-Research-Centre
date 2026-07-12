@@ -121,7 +121,7 @@ class RedBlueTeam(BaseAgent):
         try:
             from knowledge.search.retriever import retrieve
             hits = retrieve((idea.get("hypothesis") or idea.get("title") or "")[:300],
-                            k=4, hops=2, node_types=["rejection_pattern", "note"])
+                            k=4, hops=2, node_types=["rejection_pattern", "note", "finding"])
             for r in hits:
                 flag = "⚠ CONTRADICTS: " if r["contradicts"] else ""
                 lines.append(f"• {flag}[{r['node_type']}] {r['title']}: "
