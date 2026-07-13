@@ -24,6 +24,33 @@ from config.settings import bars_per_day as _bars_per_day
 logger = logging.getLogger(__name__)
 
 
+def _is_subdaily_interval(interval: str) -> bool:
+    """True for hour/minute/second bars, False for day/week/month.
+
+    Parses the interval STRING (unit letters, digits stripped) rather than
+    looking up BARS_PER_YEAR — the profile table only carries the active
+    market's intervals (bursa has no "4h"), so a lookup would mis-classify a
+    crypto interval as daily whenever this runs under a different profile.
+    """
+    unit = "".join(c for c in (interval or "").lower() if c.isalpha())
+    return unit in ("h", "hr", "hrs", "hour", "hours",
+                    "m", "min", "mins", "minute", "minutes", "s", "sec", "secs")
+
+
+def series_date_key(ts, interval: str) -> str:
+    """Row key for a backtest_series point.
+
+    Daily-and-slower intervals key on the calendar date (YYYY-MM-DD).
+    Sub-daily intervals (4h/1h/15m…) MUST keep the intraday time, or every
+    bar on the same calendar day collapses to one key and collides on
+    backtest_series' UNIQUE(idea_id, date) — which raised, aborted the whole
+    persist block, and silently lost BOTH the equity curve and the trade
+    blotter for every sub-daily (crypto) backtest (idea 232, 2026-07-14).
+    Weekly/daily stay date-only so Bursa output is byte-identical.
+    """
+    return str(ts)[:16] if _is_subdaily_interval(interval) else str(ts)[:10]
+
+
 def _funding_bar_sum(funding: pd.DataFrame, bar_index: pd.DatetimeIndex) -> pd.Series:
     """Resample 8h funding settlements onto a bar index with NO smearing.
 

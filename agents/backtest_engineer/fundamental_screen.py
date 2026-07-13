@@ -501,7 +501,7 @@ def run_fundamental_screen_backtest(engine, idea_id: int, row: dict) -> dict:
         with db_session() as conn:
             conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
             rows_eq = [
-                (idea_id, str(d)[:10],
+                (idea_id, engine_mod.series_date_key(d, interval),
                  float(v) - 1.0,
                  float(bench_curve.iloc[i]) - 1.0 if bench_curve is not None else 0.0,
                  float(dd_series.iloc[i]), 1 if i >= oos_start else 0)

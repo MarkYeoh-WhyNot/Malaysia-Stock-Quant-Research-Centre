@@ -697,7 +697,7 @@ def run_cross_sectional_backtest(engine, idea_id: int, row: dict,
         with db_session() as conn:
             conn.execute("DELETE FROM backtest_series WHERE idea_id=?", (idea_id,))
             rows_eq = [
-                (idea_id, str(d)[:10], float(v) - 1.0,
+                (idea_id, engine_mod.series_date_key(d, interval), float(v) - 1.0,
                  float(bench_nav.iloc[i]) - 1.0, float(dd_series.iloc[i]),
                  1 if i >= oos_start else 0)
                 for i, (d, v) in enumerate(zip(nav.index, nav.values))
