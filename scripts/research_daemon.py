@@ -192,6 +192,25 @@ class ResearchDaemon:
 
     # ── Stage 0 — novelty / logic screen ─────────────────────────────────────
 
+    def _gate0_reason_category(self, result: dict) -> str | None:
+        """Build the precise rejection_patterns/strategy_cemetery bucket from
+        Gate 0's own structured scores instead of keyword-guessing Claude's
+        prose rationale (P2-5, 2026-07-13 audit): free-text matching on
+        "overfit" alone was mis-bucketing ~88% of Bursa cemetery rows as
+        "overfitting" purely because the rationale reviews all five scored
+        dimensions, even when a DIFFERENT dimension was the actual (more
+        severe) failure. Checked in order of how unambiguous each signal is;
+        a pure logic-score failure has no clean structured bucket, so it
+        returns None and falls through to keyword classification."""
+        if result.get("data_quality_score", 1.0) < 0.70:
+            return "data_quality"
+        if result.get("overfitting_risk", 0.0) > 0.40:
+            return "overfitting"
+        if (result.get("claude_feasibility", 1.0) < 0.70
+                or result.get("feasibility_score", 1.0) < 0.60):
+            return "infeasible"
+        return None
+
     async def _process_gate0(self):
         with db_session() as conn:
             pending = conn.execute(
@@ -211,7 +230,8 @@ class ResearchDaemon:
                     try:
                         from knowledge.ingestion.rejection_memory import RejectionMemory
                         RejectionMemory().record_rejection(
-                            row["id"], result.get("rationale", ""), "gate0"
+                            row["id"], result.get("rationale", ""), "gate0",
+                            reason_category=self._gate0_reason_category(result),
                         )
                     except Exception as re:
                         logger.warning(f"[Gate0] RejectionMemory failed: {re}")
@@ -457,7 +477,14 @@ class ResearchDaemon:
                             f"val_sharpe={result.get('val', {}).get('sharpe', 0):.2f} "
                             f"test_sharpe={result.get('test', {}).get('sharpe', 0):.2f}"
                         )
-                        RejectionMemory().record_rejection(row["id"], reason, "stage2")
+                        # Explicit: this call site only fires when gate3_pass
+                        # (the PSR/Sharpe-vs-noise principal rule) failed —
+                        # unambiguously "low_sharpe", not a keyword guess on
+                        # the "sharpe" substring (P2-5, 2026-07-13 audit —
+                        # that bare keyword was also catching unrelated
+                        # longer rejection texts that merely mentioned it).
+                        RejectionMemory().record_rejection(
+                            row["id"], reason, "stage2", reason_category="low_sharpe")
                     except Exception as re:
                         logger.warning(f"[Stage2] RejectionMemory failed: {re}")
 
@@ -527,7 +554,11 @@ class ResearchDaemon:
                         )
                         try:
                             from knowledge.ingestion.rejection_memory import RejectionMemory
-                            RejectionMemory().record_rejection(row["id"], reason, "stage2_cs")
+                            # Explicit: this is always a cross-sectional
+                            # breadth/IC failure by construction — "no_edge",
+                            # not a keyword guess (P2-5, 2026-07-13 audit).
+                            RejectionMemory().record_rejection(
+                                row["id"], reason, "stage2_cs", reason_category="no_edge")
                         except Exception as re:
                             logger.warning(f"[Stage2-CS] RejectionMemory failed: {re}")
                     else:

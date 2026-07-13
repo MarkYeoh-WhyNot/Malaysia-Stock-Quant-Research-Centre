@@ -43,6 +43,20 @@ _REASON_CATEGORY_KEYWORDS = {
     "unrepresentable": ["not representable", "cannot be expressed", "not available in the "
                         "condition set", "not a standard technical indicator", "custom "
                         "derived metric", "requires computing a custom", "not encoded"],
+    # Added 2026-07-13 (P2-5 audit): checked before "overfitting" and
+    # "infeasible" — free-text gate0 rationale said "NOT reliably available"
+    # far more often than the plain "not available" infeasible already
+    # matched, and it was falling through to "other" every time.
+    "data_quality": ["not reliably available", "data unavailability", "data_quality fail",
+                     "data quality fail"],
+    # 2026-07-13 audit finding: this keyword alone was mis-bucketing ~88% of
+    # Bursa strategy_cemetery rows and ~18% of crypto's — Claude's gate0
+    # rationale routinely reviews ALL FIVE scored dimensions in prose, so
+    # "overfit" often appears even when a DIFFERENT dimension was the actual
+    # (more severe) failure. Left as a keyword fallback for callers that
+    # don't have a structured score to pass explicitly, but gate0 (the
+    # dominant source) now bypasses this entirely — see
+    # scripts/research_daemon.py::_gate0_reason_category.
     "overfitting":  ["overfit", "curve fit", "data snoop", "in-sample", "look-ahead"],
     "no_edge":      ["no edge", "random", "weak factor", "low ic", "low sharpe", "below threshold"],
     "infeasible":   ["infeasible", "short sell", "pairs", "intraday", "not available", "no data",
@@ -61,12 +75,17 @@ _REASON_CATEGORY_KEYWORDS = {
 }
 
 
-def _classify(text: str, keyword_map: dict, default: str = "other") -> str:
+def _classify(text: str, keyword_map: dict, default: str = "other") -> tuple[str, str | None]:
+    """Returns (label, matched_keyword) — matched_keyword is None when the
+    default fired (no keyword matched). Traces WHY a piece of text landed in
+    a bucket, so a future mis-classification can be diagnosed instead of
+    being a black box (P2-5, 2026-07-13 audit)."""
     text_lower = text.lower()
     for label, keywords in keyword_map.items():
-        if any(kw in text_lower for kw in keywords):
-            return label
-    return default
+        for kw in keywords:
+            if kw in text_lower:
+                return label, kw
+    return default, None
 
 
 # Phase 5.5 — revival conditions template per rejection reason (audit §5.4).
@@ -127,10 +146,16 @@ class RejectionMemory:
                 return
 
             blob = f"{row['title']} {row['hypothesis'] or ''} {row['factor_formula'] or ''} {reason}"
-            factor_type     = _classify(blob, _FACTOR_TYPE_KEYWORDS, "other")
-            sector          = _classify(blob, _SECTOR_KEYWORDS, "general")
-            reason_category = reason_category or _classify(
-                reason or blob, _REASON_CATEGORY_KEYWORDS, "other")
+            factor_type, _   = _classify(blob, _FACTOR_TYPE_KEYWORDS, "other")
+            sector, _        = _classify(blob, _SECTOR_KEYWORDS, "general")
+            if reason_category:
+                # Caller already knows the precise bucket (a structured score,
+                # not a text guess) — never overwritten by keyword matching.
+                classified_by = f"explicit:{reason_category}"
+            else:
+                reason_category, matched_kw = _classify(
+                    reason or blob, _REASON_CATEGORY_KEYWORDS, "other")
+                classified_by = matched_kw  # None when the "other" default fired
 
             with db_session() as conn:
                 # Update rejection_reason on the idea
@@ -159,12 +184,14 @@ class RejectionMemory:
                 conn.execute("""
                     INSERT INTO strategy_cemetery
                       (idea_id, strategy_name, factor_type, sector,
-                       rejected_at_stage, rejection_reason, revival_conditions)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                       rejected_at_stage, rejection_reason, revival_conditions,
+                       classified_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     idea_id, row["title"] or f"idea {idea_id}",
                     factor_type, sector, stage, (reason or "")[:500],
                     _REVIVAL_CONDITIONS.get(reason_category, _REVIVAL_CONDITIONS["other"]),
+                    classified_by,
                 ))
 
             logger.info(

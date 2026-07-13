@@ -662,6 +662,21 @@ def init_db(db_path: Path = DB_PATH):
             "CREATE INDEX IF NOT EXISTS idx_cemetery_family "
             "ON strategy_cemetery(factor_type, sector)")
 
+        # classified_by: how reason_category was determined — "explicit:..."
+        # for a caller-supplied category (bypasses keyword guessing entirely),
+        # the matched keyword string for a _classify() hit, or NULL for a
+        # fall-through default. Lets future mis-classification be traced back
+        # to its cause instead of being a black box (P2-5, 2026-07-13 audit —
+        # found gate0's free-text keyword matching was mis-bucketing ~88% of
+        # Bursa rejections as "overfitting" purely because Claude's rationale
+        # mentions that dimension alongside others, even when it wasn't the
+        # actual failure reason).
+        try:
+            conn.execute("ALTER TABLE strategy_cemetery ADD COLUMN classified_by TEXT")
+            logger.info("Migration applied: strategy_cemetery.classified_by column added")
+        except Exception:
+            pass
+
         # Phase 6.3: post-trade reconciliation (audit §11.3/§14). Paper trading
         # has no independent fill source to reconcile against yet — expected and
         # actual are computed from the same cost model by construction — but the

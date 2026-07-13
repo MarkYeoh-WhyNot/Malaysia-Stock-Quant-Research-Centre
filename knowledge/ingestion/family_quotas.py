@@ -16,7 +16,8 @@ from data.database import db_session
 
 def classify_family(text: str) -> str:
     """Same factor_type taxonomy as RejectionMemory (momentum/value/quality/...)."""
-    return _classify(text, _FACTOR_TYPE_KEYWORDS, "other")
+    label, _ = _classify(text, _FACTOR_TYPE_KEYWORDS, "other")
+    return label
 
 
 def build_genome(title: str, hypothesis: str, factor_formula: str,
