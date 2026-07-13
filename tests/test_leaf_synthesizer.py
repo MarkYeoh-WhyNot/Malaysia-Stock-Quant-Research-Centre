@@ -1,9 +1,13 @@
 """LeafSynthesizer: turns a genuinely-unrepresentable formula into a new,
-tested DSL leaf instead of a permanent dead end. All three model-call stages
-(plan/code/review) are monkeypatched — this suite tests the ORCHESTRATION
-(routing, validation, the deterministic safety scan, real test execution,
-file landing, loadability) not real LLM behavior. Git commit is monkeypatched
-out entirely — this suite must never touch the real repo's git history.
+tested DSL leaf instead of a permanent dead end. All model-call stages
+(plan/code/review/reference) are monkeypatched — this suite tests the
+ORCHESTRATION (routing, validation, the deterministic safety scan, real
+differential/property test execution, file landing, loadability) not real
+LLM behavior. The differential/property test mechanism itself runs FOR REAL
+(real subprocess, real pandas execution against the mocked compute_code
+strings) since it's pure code execution, not an LLM call — that's the part
+most worth testing end-to-end. Git commit is monkeypatched out entirely —
+this suite must never touch the real repo's git history.
 
 House pattern: share the local DB, isolate by idea_id / leaf_name prefix,
 clean up before + after (including any files actually written to
@@ -35,28 +39,63 @@ _PLAN_FEASIBLE = {
     },
 }
 
+# Deliberately WRONG hand-typed expected_output (the CMF-bug scenario): the
+# correct answer for "close below prior close" on [10,9,11,8,12] is
+# [F,T,F,T,F] (matches _PLAN_FEASIBLE above) — this fixture claims [T]*5.
+_PLAN_FEASIBLE_BAD_WORKED_EXAMPLE = dict(
+    _PLAN_FEASIBLE,
+    worked_example=dict(_PLAN_FEASIBLE["worked_example"],
+                        expected_output=[True, True, True, True, True]))
+
 _CODE_OK = {
     "compute_code": (
         f"def _leaf_{_LEAF_NAME}(df, node):\n"
         f"    return df[\"close\"] < df[\"close\"].shift(1)\n"
     ),
-    "test_code": (
-        "import pandas as pd\n"
-        f"from agents.backtest_engineer.leaves_generated.{_LEAF_NAME} import _leaf_{_LEAF_NAME}\n\n"
-        "def test_worked_example():\n"
-        "    df = pd.DataFrame({\"close\": [10, 9, 11, 8, 12]})\n"
-        f"    result = _leaf_{_LEAF_NAME}(df, {{\"period\": 3}})\n"
-        "    assert list(result.fillna(False)) == [False, True, False, True, False]\n"
-    ),
 }
+
+# A deliberately different STYLE (loop, not vectorized) but the SAME correct
+# logic — mirrors what the REVIEW stage's real Sonnet call is prompted to
+# produce, and what the live validation probe (2026-07-13) confirmed Sonnet
+# actually does produce for a real formula (Chaikin Money Flow).
+_REFERENCE_OK = (
+    f"def _leaf_{_LEAF_NAME}_reference(df, node):\n"
+    f"    closes = list(df['close'])\n"
+    f"    n = len(closes)\n"
+    f"    results = [False] * n\n"
+    f"    for i in range(1, n):\n"
+    f"        if closes[i] < closes[i - 1]:\n"
+    f"            results[i] = True\n"
+    f"    return pd.Series(results, index=df.index)\n"
+)
 
 _CODE_BUGGY = {
     "compute_code": (
         f"def _leaf_{_LEAF_NAME}(df, node):\n"
         f"    return df[\"close\"] > df[\"close\"].shift(1)\n"  # flipped, wrong
     ),
-    "test_code": _CODE_OK["test_code"],
 }
+
+# Both the candidate AND the "reference" peek at FUTURE data the same way —
+# isolates the test to the DETERMINISTIC prefix-stability property check,
+# independent of whether Sonnet's prose safety verdict or the differential
+# comparison would also have caught it.
+_CODE_LOOKAHEAD = {
+    "compute_code": (
+        f"def _leaf_{_LEAF_NAME}(df, node):\n"
+        f"    return df[\"close\"] < df[\"close\"].shift(-1)\n"  # future close
+    ),
+}
+_REFERENCE_LOOKAHEAD = (
+    f"def _leaf_{_LEAF_NAME}_reference(df, node):\n"
+    f"    closes = list(df['close'])\n"
+    f"    n = len(closes)\n"
+    f"    results = [False] * n\n"
+    f"    for i in range(n - 1):\n"
+    f"        if closes[i] < closes[i + 1]:\n"
+    f"            results[i] = True\n"
+    f"    return pd.Series(results, index=df.index)\n"
+)
 
 _REVIEW_OK = {"safety_pass": True, "safety_notes": "no lookahead, pure function",
               "duplicate_of": None}
@@ -113,8 +152,12 @@ def _setup():
     _purge()
 
 
-def _patch_stage(monkeypatch, plan=None, code=None, review=None, plan_calls=None):
-    """Route call_claude_json by task_label to canned per-stage responses."""
+def _patch_stage(monkeypatch, plan=None, code=None, review=None, reference=None,
+                 plan_calls=None):
+    """Route call_claude_json by task_label to canned per-stage responses.
+    `reference` is the loop-styled reference implementation SOURCE STRING
+    (not a dict) — wrapped into the {"reference_code": ...} shape
+    _generate_reference_impl expects."""
     def fake(self, system, messages, model=None, max_tokens=4096, task_label="",
             raise_on_error=False):
         if plan_calls is not None:
@@ -131,10 +174,24 @@ def _patch_stage(monkeypatch, plan=None, code=None, review=None, plan_calls=None
             if review is None:
                 raise AssertionError("review stage should not have been called")
             return review
+        if task_label == "leaf_synth_reference":
+            if reference is None:
+                raise AssertionError("reference stage should not have been called")
+            return {"reference_code": reference}
         raise AssertionError(f"unexpected task_label {task_label!r}")
     monkeypatch.setattr(LeafSynthesizer, "call_claude_json", fake)
     monkeypatch.setattr(LeafSynthesizer, "_git_commit_and_maybe_push",
                         lambda self, *a, **kw: "fake-sha-0000000")
+
+
+def _redirect_runtime_dirs(monkeypatch, tmp_path):
+    """Every test that might reach an APPROVED leaf must redirect the
+    runtime-volume dual-write so it never touches the real repo's default
+    runtime dir (data/leaves_generated/)."""
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR",
+                        str(tmp_path / "leaves_generated"))
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR",
+                        str(tmp_path / "leaves_generated" / "tests"))
 
 
 def _last_attempt():
@@ -147,11 +204,9 @@ def _last_attempt():
 # ── happy path ───────────────────────────────────────────────────────────────
 
 def test_full_pipeline_approves_lands_and_loads_the_new_leaf(monkeypatch, tmp_path):
-    # Redirect the runtime-volume dual-write so this test never touches the
-    # real repo's default runtime dir (data/leaves_generated/).
-    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(tmp_path / "leaves_generated"))
-    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(tmp_path / "leaves_generated" / "tests"))
-    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
+    _redirect_runtime_dirs(monkeypatch, tmp_path)
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK,
+                reference=_REFERENCE_OK)
     result = LeafSynthesizer().synthesize(
         _IDEA_ID, "test hypothesis", "test formula", "not representable")
 
@@ -231,7 +286,6 @@ def test_banned_token_in_generated_code_is_rejected_without_calling_review(monke
             f"    import os\n    os.system('echo hi')\n"
             f"    return df[\"close\"] < df[\"close\"].shift(1)\n"
         ),
-        "test_code": _CODE_OK["test_code"],
     }
     calls = []
     _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=unsafe_code, plan_calls=calls)
@@ -242,18 +296,89 @@ def test_banned_token_in_generated_code_is_rejected_without_calling_review(monke
 
 
 def test_sonnet_safety_fail_rejects_even_if_test_would_pass(monkeypatch):
-    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_UNSAFE)
+    calls = []
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_UNSAFE,
+                plan_calls=calls)
     result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
     assert result["status"] == "safety_rejected"
+    assert "leaf_synth_reference" not in calls  # never reaches differential testing
     assert not os.path.exists(os.path.join(_GENERATED_DIR, f"{_LEAF_NAME}.py"))
 
 
-def test_failing_generated_test_blocks_approval_even_if_sonnet_approves(monkeypatch):
-    """The deterministic test-execution gate, not the LLM's safety verdict,
-    has final say — a wrong compute function must never land."""
-    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_BUGGY, review=_REVIEW_OK)
+def test_differential_mismatch_on_random_data_blocks_approval(monkeypatch):
+    """The deterministic differential-test gate, not the LLM's own safety
+    verdict, has final say — a wrong compute function must never land, even
+    when it happens to agree with the reference on the one hand-typed
+    worked example (an inverted comparison disagrees with the correct
+    reference on almost every randomly generated bar)."""
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_BUGGY, review=_REVIEW_OK,
+                reference=_REFERENCE_OK)
     result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
     assert result["status"] == "test_failed"
+    assert not os.path.exists(os.path.join(_GENERATED_DIR, f"{_LEAF_NAME}.py"))
+    row = _last_attempt()
+    assert "differential mismatch" in row["review_notes"]
+
+
+def test_reference_stage_failure_rejects(monkeypatch):
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK,
+                reference=None)
+
+    def fail_reference(self, *a, **kw):
+        raise AssertionError("reference stage should not have been called")
+    # Route reference to raise inside call_claude_json instead of asserting via
+    # the shared fake — simplest way to simulate "the API call itself failed".
+    def fake(self, system, messages, model=None, max_tokens=4096, task_label="",
+            raise_on_error=False):
+        if task_label == "leaf_synth_plan":
+            return _PLAN_FEASIBLE
+        if task_label == "leaf_synth_code":
+            return _CODE_OK
+        if task_label == "leaf_synth_review":
+            return _REVIEW_OK
+        if task_label == "leaf_synth_reference":
+            raise RuntimeError("simulated API failure")
+        raise AssertionError(f"unexpected task_label {task_label!r}")
+    monkeypatch.setattr(LeafSynthesizer, "call_claude_json", fake)
+
+    result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
+    assert result["status"] == "reference_failed"
+
+
+# ── P2-3 (2026-07-13): the REVIEW gate no longer trusts PLAN's own hand-typed
+# worked_example as ground truth — a real live dry-run found Opus got a 7-bar
+# rolling-window sum wrong TWICE, rejecting Haiku's CORRECT code. Differential
+# testing against an independently-written Sonnet reference replaces that
+# oracle; property checks catch lookahead/mutation mechanically. ────────────
+
+def test_worked_example_arithmetic_error_does_not_block_approval(monkeypatch, tmp_path):
+    """The exact bug found live: PLAN's hand-typed expected_output is WRONG,
+    but Haiku's code is correct and agrees with an independent reference
+    implementation on every trial including the worked_example's own input.
+    Must still be approved, with the mismatch recorded as telemetry only."""
+    _redirect_runtime_dirs(monkeypatch, tmp_path)
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE_BAD_WORKED_EXAMPLE, code=_CODE_OK,
+                review=_REVIEW_OK, reference=_REFERENCE_OK)
+    result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
+
+    assert result["status"] == "approved"
+    row = _last_attempt()
+    assert "PLAN arithmetic error" in row["review_notes"]
+    assert "not a code defect" in row["review_notes"]
+
+
+def test_prefix_stability_property_check_catches_lookahead_even_if_reference_agrees(monkeypatch):
+    """Both the candidate and the reference peek at FUTURE data the same
+    way, so they AGREE with each other on every trial — differential testing
+    alone would wrongly approve this. The deterministic prefix-stability
+    check must catch it independently, since Sonnet's own prose safety
+    verdict is mocked to approve here too (isolating this specific check)."""
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_LOOKAHEAD, review=_REVIEW_OK,
+                reference=_REFERENCE_LOOKAHEAD)
+    result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
+    assert result["status"] == "property_failed"
+    row = _last_attempt()
+    assert "prefix-stability" in row["review_notes"]
     assert not os.path.exists(os.path.join(_GENERATED_DIR, f"{_LEAF_NAME}.py"))
 
 
@@ -266,7 +391,8 @@ def test_approved_leaf_dual_written_to_runtime_volume_and_audit_table(monkeypatc
     runtime_tests = runtime_generated / "tests"
     monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(runtime_generated))
     monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(runtime_tests))
-    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK,
+                reference=_REFERENCE_OK)
 
     result = LeafSynthesizer().synthesize(
         _IDEA_ID, "test hypothesis", "test formula", "not representable")
@@ -288,7 +414,8 @@ def test_runtime_volume_write_failure_does_not_block_approval(monkeypatch, tmp_p
     unwritable.write_text("blocking a directory from being created here")
     monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(unwritable / "leaves_generated"))
     monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(unwritable / "leaves_generated" / "tests"))
-    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK,
+                reference=_REFERENCE_OK)
 
     result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
     assert result["status"] == "approved"
