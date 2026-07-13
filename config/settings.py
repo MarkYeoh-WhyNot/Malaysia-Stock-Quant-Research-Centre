@@ -60,6 +60,15 @@ LEAF_SYNTH_DAILY_BUDGET_USD = float(os.getenv("LEAF_SYNTH_DAILY_BUDGET_USD", "10
 # decision, not something this feature silently assumes.
 LEAF_SYNTH_AUTO_PUSH      = os.getenv("LEAF_SYNTH_AUTO_PUSH", "false").lower() == "true"
 
+# Global daily cap on the deterministic, zero-LLM-cost auto-ideation
+# mechanisms (revisit_scan + finding_driven_candidates, pipeline/
+# throughput_guard.py) — 2026-07-13 self-audit: these insert straight into
+# stage2/pending (bypassing gate0), so unlike organic ideas nearly every one
+# reaches a real backtest, raising recent_trial_count() -> the deflated-
+# Sharpe hurdle for every idea in the system. See
+# docs/auto_ideation_throughput.md for the arithmetic behind the default.
+AUTO_IDEAS_DAILY_CAP = int(os.getenv("AUTO_IDEAS_DAILY_CAP", "20"))
+
 # ── Market identity (from profile) ────────────────────────────────────────────
 MARKET          = _P.MARKET
 MARKET_CURRENCY = _P.MARKET_CURRENCY

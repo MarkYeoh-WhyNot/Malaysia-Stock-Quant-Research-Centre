@@ -1227,6 +1227,11 @@ class ResearchDaemon:
         more frequent scans cost nothing but a little query load."""
         if not self._job_due("revisit_scan", min_gap=timedelta(hours=6)):
             return
+        from pipeline.throughput_guard import auto_ideation_cap_reached
+        if auto_ideation_cap_reached():
+            logger.info("[Revisit] Skipped — AUTO_IDEAS_DAILY_CAP reached for today")
+            self._mark_job_run("revisit_scan")
+            return
         try:
             from pipeline.revisit import run_revisit_scan
             result = run_revisit_scan()
@@ -1249,6 +1254,11 @@ class ResearchDaemon:
         executor needed; the submitted ideas are backtested at
         _process_stage2's own pace like any other idea."""
         if not self._job_due("finding_driven_candidates", min_gap=timedelta(hours=6)):
+            return
+        from pipeline.throughput_guard import auto_ideation_cap_reached
+        if auto_ideation_cap_reached():
+            logger.info("[FindingCandidates] Skipped — AUTO_IDEAS_DAILY_CAP reached for today")
+            self._mark_job_run("finding_driven_candidates")
             return
         try:
             from pipeline.finding_candidates import run_finding_driven_candidates
@@ -1335,6 +1345,32 @@ class ResearchDaemon:
                 "plain_gen": generated - kb_gen,
                 "plain_gate0": gate0_pass - kb_gate0}
 
+    def _auto_mechanism_counts(self, hours: int) -> dict:
+        """Total volume/spend of the auto-ideation mechanisms (P1-4,
+        2026-07-13) — makes the daily activity these produce visible
+        instead of silently accumulating (see docs/auto_ideation_throughput.md)."""
+        since = f"-{hours} hours"
+        with db_session() as conn:
+            revisit = conn.execute(
+                "SELECT COUNT(*) AS n FROM alpha_ideas WHERE slug LIKE 'revisit-%' "
+                "AND created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+            finding_driven = conn.execute(
+                "SELECT COUNT(*) AS n FROM alpha_ideas "
+                "WHERE (slug LIKE 'auto-finding-%' OR slug LIKE 'rg-%') "
+                "AND created_at >= datetime('now', ?)", (since,)).fetchone()["n"]
+            leaf = conn.execute(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd),0) AS cost, "
+                "COALESCE(SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END),0) AS approved "
+                "FROM leaf_synthesis_attempts WHERE created_at >= datetime('now', ?)",
+                (since,)).fetchone()
+        from pipeline.throughput_guard import auto_submissions_today
+        from config.settings import AUTO_IDEAS_DAILY_CAP
+        return {"revisit": revisit, "finding_driven": finding_driven,
+                "leaf_attempts": leaf["n"], "leaf_approved": leaf["approved"],
+                "leaf_cost": round(leaf["cost"], 2),
+                "quota_used_today": auto_submissions_today(),
+                "quota_cap": AUTO_IDEAS_DAILY_CAP}
+
     async def _process_funnel_report(self):
         """Daily pipeline throughput report + silent-zero-throughput alert.
 
@@ -1348,13 +1384,19 @@ class ResearchDaemon:
             week = self._funnel_counts(168)
             def _rate(passed, gen):
                 return f"{passed}/{gen} ({passed / gen:.0%})" if gen else "0/0"
+            auto = self._auto_mechanism_counts(24)
             msg = (
                 f"Funnel 24h: generated={day['generated']} → gate0={day['gate0_pass']} "
                 f"→ backtest-pass={day['stage2_pass']} → red-blue={day['stage3_pass']} | "
                 f"7d: {week['generated']} → {week['gate0_pass']} "
                 f"→ {week['stage2_pass']} → {week['stage3_pass']}\n"
                 f"KB utility 7d — grounded gate0: {_rate(week['kb_gate0'], week['kb_gen'])} "
-                f"vs ungrounded: {_rate(week['plain_gate0'], week['plain_gen'])}"
+                f"vs ungrounded: {_rate(week['plain_gate0'], week['plain_gen'])}\n"
+                f"Auto-mechanisms 24h: revisit={auto['revisit']} "
+                f"finding-driven={auto['finding_driven']} "
+                f"(daily quota {auto['quota_used_today']}/{auto['quota_cap']}) | "
+                f"leaf-synth: {auto['leaf_attempts']} attempt(s), "
+                f"{auto['leaf_approved']} approved, ${auto['leaf_cost']}"
             )
             logger.info(f"[Funnel] {msg}")
             with db_session() as conn:
