@@ -41,3 +41,12 @@ finnhub-python>=2.4.0
 
 # Crypto exchange data (Binance spot OHLCV via ccxt — dual-market crypto mode)
 ccxt>=4.0.0
+
+# pytest is a PRODUCTION dependency, not dev-only: LeafSynthesizer's REVIEW
+# stage runs the LLM-generated worked-example test via `python -m pytest` in
+# a subprocess as its deterministic safety gate (agents/leaf_synthesizer/
+# leaf_synthesizer.py). Without it in the deployed image, every real
+# synthesis attempt silently dead-ends at status=test_failed with "No module
+# named pytest" (found by the 2026-07-13 P1-2 real dry-run — never caught by
+# the test suite because it always ran inside a dev venv that already had it).
+pytest>=8.0.0

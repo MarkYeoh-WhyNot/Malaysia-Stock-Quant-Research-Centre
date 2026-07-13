@@ -353,3 +353,19 @@ def test_signal_dsl_runtime_volume_overrides_package_dir_on_name_clash(tmp_path,
         assert generated[_LEAF_NAME]["shape_card"] == "from runtime volume"
     finally:
         os.remove(package_leaf_path)
+
+
+# ── P1-2 real dry-run finding (2026-07-13): the production image has no
+# pytest, so REVIEW's `python -m pytest` subprocess silently dead-ended every
+# real synthesis attempt at status=test_failed with "No module named pytest"
+# — invisible to this suite since it always ran inside a dev venv that
+# already had pytest. Pin the fix source so it can't silently regress. ──────
+
+def test_pytest_is_pinned_as_a_production_dependency():
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    lock_text = open(os.path.join(repo_root, "requirements.lock")).read()
+    assert any(line.strip().lower().startswith("pytest==")
+              for line in lock_text.splitlines()), (
+        "requirements.lock must pin pytest — LeafSynthesizer's REVIEW stage "
+        "runs generated tests via `python -m pytest` in the deployed image, "
+        "not just in a dev venv")
