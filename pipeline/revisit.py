@@ -14,10 +14,16 @@ Three triggers, each answering a different question:
                           reliable auto-detector exists; data_source_events
                           rows are a manual convention (insert one, the scan
                           consumes it once).
-  (iii) contradicting finding — a new `finding` node (campaign_findings.py)
-                          carries a `contradicts` edge to a `rejection_pattern`
-                          node — the verdict that killed a whole factor/sector/
-                          reason class may itself be wrong now.
+  (iii) contradicting finding — a new `finding-campaign-*` node
+                          (campaign_findings.py) carries a heuristic-origin
+                          `contradicts` edge to a `rejection_pattern` node —
+                          the verdict that killed a whole factor/sector/reason
+                          class may itself be wrong now. Deliberately does NOT
+                          trust LLM-extracted contradicts edges (2026-07-13
+                          audit found the graph extractor's ones frequently
+                          backwards or duplicate-idea confusion, even at high
+                          confidence weight) — only this module's own
+                          deterministic edges count.
 
 Every revival is a NEW alpha_ideas row (parent_idea_id lineage) entering at
 stage2/pending and flowing through the ordinary backtest_idea path — so it is
@@ -112,13 +118,36 @@ def detect_triggers() -> list[dict]:
                              "description": r["description"]})
             conn.execute("UPDATE data_source_events SET consumed=1 WHERE id=?", (r["id"],))
 
+        # 2026-07-13 audit (P2-6): pulled every live contradicts edge in both
+        # markets and hand-checked it. Two findings, both severe: (1) this
+        # query never actually checked the SOURCE node's type, contrary to
+        # its own docstring's "a new finding node..." — ANY node reaching a
+        # rejection_pattern via a contradicts edge fired this trigger,
+        # including plain ideas, techniques, and concepts the extractor
+        # mislabeled. (2) 100% of live contradicts edges are origin='llm',
+        # averaging weight 0.80-0.82 — and they were WRONG at high
+        # confidence just as often as low: ideas explicitly derived FROM a
+        # finding labeled as contradicting that same finding, near-duplicate
+        # ideas about the identical strategy labeled as contradicting each
+        # other, technique-usage relationships inverted into contradictions.
+        # Weight did not correlate with correctness in the sample, so a
+        # weight threshold alone is not a meaningful filter here. Now
+        # requires BOTH the source to be a genuine finding-campaign-* node
+        # (knowledge/ingestion/campaign_findings.py, deterministic) AND
+        # origin='heuristic' (that module's own add_edge calls, weight=1.0
+        # by construction) — no live edge currently qualifies, which is the
+        # honest outcome given what the audit found, not a bug in this fix.
         last_seen = int(_snapshot(conn, "finding_scan:last_node_id") or 0)
         max_seen = last_seen
         for r in conn.execute(
                 "SELECT e.source_id AS finding_id, n.id AS pattern_id, n.slug AS pattern_slug "
-                "FROM kb_edges e JOIN kb_nodes n ON n.id = e.target_id "
+                "FROM kb_edges e "
+                "JOIN kb_nodes n ON n.id = e.target_id "
+                "JOIN kb_nodes s ON s.id = e.source_id "
                 "WHERE e.relation='contradicts' AND e.source_id > ? "
-                "AND n.node_type='rejection_pattern'", (last_seen,)):
+                "AND n.node_type='rejection_pattern' "
+                "AND s.node_type='finding' AND s.slug LIKE 'finding-campaign-%' "
+                "AND e.origin='heuristic'", (last_seen,)):
             triggers.append({"type": "contradicting_finding",
                              "finding_id": r["finding_id"],
                              "pattern_slug": r["pattern_slug"]})

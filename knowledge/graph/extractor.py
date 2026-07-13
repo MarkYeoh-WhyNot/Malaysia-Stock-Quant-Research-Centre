@@ -24,7 +24,19 @@ Output only valid JSON."""
 
 RELATION_GUIDE = """Relations (choose the most specific that applies):
 - supports: this note provides evidence FOR the target's claim/technique
-- contradicts: this note provides evidence AGAINST the target
+- contradicts: this note provides evidence AGAINST the target's SPECIFIC CLAIM
+  — the two must be making OPPOSING assertions about the same question, not
+  merely be related. NEVER use contradicts for: the same strategy proposed
+  again with different tickers/wording (that is a DUPLICATE, not a
+  contradiction — do not link it at all, or use "mentions" at low weight if
+  you must); a note that USES or was DERIVED FROM the target (use
+  uses_technique/derived_from); a note that was rejected for the same
+  pattern the target describes (that AGREES with/confirms the target, the
+  opposite of contradicting it). Reserve contradicts for when you can state,
+  in the "reason" field, the specific opposing claim each side makes — if
+  you cannot articulate two conflicting assertions, do not use this relation
+  (2026-07-13: an audit found this the single most misused relation in this
+  extractor, frequently applied backwards).
 - refines: this note adds nuance/parameters/conditions to the target
 - derived_from: this note's idea originates from the target
 - about_ticker: the note is specifically about the target stock/concept

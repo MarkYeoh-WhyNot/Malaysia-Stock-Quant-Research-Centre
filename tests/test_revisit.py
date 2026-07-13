@@ -34,8 +34,11 @@ def _purge():
                      "'finding_scan:last_node_id')", (_PREFIX + "%",))
         conn.execute("DELETE FROM data_source_events WHERE source_name LIKE ?",
                      (_PREFIX + "%",))
+        # Substring match (not just prefix) — P2-6 tests need slugs like
+        # "finding-campaign-{_PREFIX}real" where the required
+        # 'finding-campaign-' literal must come BEFORE _PREFIX.
         kb_ids = [r["id"] for r in conn.execute(
-            "SELECT id FROM kb_nodes WHERE slug LIKE ?", (_PREFIX + "%",))]
+            "SELECT id FROM kb_nodes WHERE slug LIKE ?", (f"%{_PREFIX}%",))]
         for nid in kb_ids:
             conn.execute("DELETE FROM kb_edges WHERE source_id=? OR target_id=?",
                          (nid, nid))
@@ -280,10 +283,13 @@ def test_detect_triggers_reports_regime_flip_only_on_change():
 
 
 def test_detect_triggers_finding_contradicts_rejection_pattern():
+    """Positive case: a genuine finding-campaign-* node's heuristic-origin
+    contradicts edge fires the trigger normally."""
     pattern_id = store.upsert_node(
         "rejection_pattern", slug=_PREFIX + "pattern", title="test pattern")
-    finding_id = store.upsert_node("finding", slug=_PREFIX + "finding", title="x")
-    store.add_edge(finding_id, pattern_id, "contradicts")
+    finding_id = store.upsert_node(
+        "finding", slug=f"finding-campaign-{_PREFIX}real", title="x")
+    store.add_edge(finding_id, pattern_id, "contradicts", origin="heuristic")
 
     import unittest.mock as mock
     with mock.patch.object(revisit, "_current_vol_tercile", return_value=None), \
@@ -296,3 +302,60 @@ def test_detect_triggers_finding_contradicts_rejection_pattern():
     assert len(hits) == 1
     assert not any(t["type"] == "contradicting_finding" and t["finding_id"] == finding_id
                   for t in again)
+
+
+# ── P2-6 (2026-07-13 audit): contradicts edges from the graph extractor are
+# unreliable (LLM-origin, frequently backwards even at 0.88-0.95 weight) —
+# the trigger must ignore them regardless of confidence, and must ignore a
+# genuine finding node that isn't the deterministic campaign-findings kind. ──
+
+def test_detect_triggers_ignores_llm_origin_contradicts_even_at_high_weight():
+    pattern_id = store.upsert_node(
+        "rejection_pattern", slug=_PREFIX + "pattern2", title="test pattern 2")
+    finding_id = store.upsert_node(
+        "finding", slug=f"finding-campaign-{_PREFIX}llm", title="y")
+    store.add_edge(finding_id, pattern_id, "contradicts", weight=0.95, origin="llm")
+
+    import unittest.mock as mock
+    with mock.patch.object(revisit, "_current_vol_tercile", return_value=None), \
+         mock.patch.object(revisit, "_current_macro_regime", return_value=None):
+        triggers = revisit.detect_triggers()
+
+    assert not any(t["type"] == "contradicting_finding" and t["finding_id"] == finding_id
+                  for t in triggers)
+
+
+def test_detect_triggers_ignores_non_finding_source_node():
+    """Regression: the query previously never checked the source node's
+    type at all — a plain idea's contradicts edge to a rejection_pattern
+    must not fire this trigger, even with heuristic origin."""
+    pattern_id = store.upsert_node(
+        "rejection_pattern", slug=_PREFIX + "pattern3", title="test pattern 3")
+    idea_node_id = store.upsert_node("idea", slug=_PREFIX + "not-a-finding", title="z")
+    store.add_edge(idea_node_id, pattern_id, "contradicts", origin="heuristic")
+
+    import unittest.mock as mock
+    with mock.patch.object(revisit, "_current_vol_tercile", return_value=None), \
+         mock.patch.object(revisit, "_current_macro_regime", return_value=None):
+        triggers = revisit.detect_triggers()
+
+    assert not any(t["type"] == "contradicting_finding" and t["finding_id"] == idea_node_id
+                  for t in triggers)
+
+
+def test_detect_triggers_ignores_finding_node_outside_campaign_namespace():
+    """A node_type='finding' that isn't from campaign_findings.py's
+    deterministic finding-campaign-* namespace (e.g. one the LLM extractor
+    itself created) must not qualify either."""
+    pattern_id = store.upsert_node(
+        "rejection_pattern", slug=_PREFIX + "pattern4", title="test pattern 4")
+    finding_id = store.upsert_node("finding", slug=_PREFIX + "not-campaign-slug", title="w")
+    store.add_edge(finding_id, pattern_id, "contradicts", origin="heuristic")
+
+    import unittest.mock as mock
+    with mock.patch.object(revisit, "_current_vol_tercile", return_value=None), \
+         mock.patch.object(revisit, "_current_macro_regime", return_value=None):
+        triggers = revisit.detect_triggers()
+
+    assert not any(t["type"] == "contradicting_finding" and t["finding_id"] == finding_id
+                  for t in triggers)
