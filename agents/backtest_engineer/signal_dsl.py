@@ -23,6 +23,7 @@ regime (like the legacy sma_crossover behaviour).
 import hashlib
 import json
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -399,30 +400,59 @@ LEAVES = {
 
 
 def _load_generated_leaves() -> dict:
-    """Auto-load AI-synthesized leaves (agents/leaf_synthesizer/) from
-    agents/backtest_engineer/leaves_generated/ — physically separate from
-    this hand-authored catalog for auditability. Each module exports
-    LEAF_NAME (str) and LEAF_SPEC (dict, same shape as an entry above).
-    A single bad generated module is logged and skipped, never fatal — the
-    hand-authored catalog must always import cleanly."""
+    """Auto-load AI-synthesized leaves (agents/leaf_synthesizer/) from two
+    places: agents/backtest_engineer/leaves_generated/ (physically separate
+    from this hand-authored catalog, for auditability — but that's an image
+    layer in production, wiped on every rebuild) and
+    $OPENCLAW_RUNTIME_DIR/leaves_generated/ (the persistent volume
+    LeafSynthesizer dual-writes to — the real source of truth in prod). Each
+    module exports LEAF_NAME (str) and LEAF_SPEC (dict, same shape as an
+    entry above). A single bad generated module is logged and skipped, never
+    fatal — the hand-authored catalog must always import cleanly. When the
+    same leaf name exists in both places, the runtime volume copy wins
+    (loaded second, overwrites)."""
     import importlib
+    import importlib.util
     import pkgutil
     generated: dict = {}
     try:
         from agents.backtest_engineer import leaves_generated as _pkg
     except ImportError:
-        return generated
-    for _, modname, _ in pkgutil.iter_modules(_pkg.__path__):
-        try:
-            mod = importlib.import_module(
-                f"agents.backtest_engineer.leaves_generated.{modname}")
-            name, spec = getattr(mod, "LEAF_NAME", None), getattr(mod, "LEAF_SPEC", None)
-            if name and spec:
-                generated[name] = spec
-            else:
-                logger.warning(f"[signal_dsl] {modname} missing LEAF_NAME/LEAF_SPEC — skipped")
-        except Exception as exc:
-            logger.warning(f"[signal_dsl] failed to load generated leaf {modname}: {exc}")
+        _pkg = None
+    if _pkg is not None:
+        for _, modname, _ in pkgutil.iter_modules(_pkg.__path__):
+            try:
+                mod = importlib.import_module(
+                    f"agents.backtest_engineer.leaves_generated.{modname}")
+                name, spec = getattr(mod, "LEAF_NAME", None), getattr(mod, "LEAF_SPEC", None)
+                if name and spec:
+                    generated[name] = spec
+                else:
+                    logger.warning(f"[signal_dsl] {modname} missing LEAF_NAME/LEAF_SPEC — skipped")
+            except Exception as exc:
+                logger.warning(f"[signal_dsl] failed to load generated leaf {modname}: {exc}")
+
+    runtime_dir = os.environ.get("OPENCLAW_RUNTIME_DIR")
+    runtime_leaves_dir = os.path.join(runtime_dir, "leaves_generated") if runtime_dir else None
+    if runtime_leaves_dir and os.path.isdir(runtime_leaves_dir):
+        for fname in sorted(os.listdir(runtime_leaves_dir)):
+            if not fname.endswith(".py") or fname.startswith("_"):
+                continue
+            modname = fname[:-3]
+            fpath = os.path.join(runtime_leaves_dir, fname)
+            try:
+                mod_spec = importlib.util.spec_from_file_location(
+                    f"_runtime_leaves_generated_{modname}", fpath)
+                mod = importlib.util.module_from_spec(mod_spec)
+                mod_spec.loader.exec_module(mod)
+                name, spec = getattr(mod, "LEAF_NAME", None), getattr(mod, "LEAF_SPEC", None)
+                if name and spec:
+                    generated[name] = spec
+                else:
+                    logger.warning(f"[signal_dsl] runtime leaf {modname} missing "
+                                   f"LEAF_NAME/LEAF_SPEC — skipped")
+            except Exception as exc:
+                logger.warning(f"[signal_dsl] failed to load runtime leaf {modname}: {exc}")
     return generated
 
 

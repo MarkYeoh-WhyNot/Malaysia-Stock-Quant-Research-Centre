@@ -10,9 +10,11 @@ clean up before + after (including any files actually written to
 leaves_generated/ and tests/ by the "approved" path).
 """
 import os
+import shutil
 
 import pytest
 
+import agents.leaf_synthesizer.leaf_synthesizer as leaf_synthesizer_mod
 from agents.leaf_synthesizer.leaf_synthesizer import LeafSynthesizer, _GENERATED_DIR, _TESTS_DIR
 from data.database import db_session, init_db
 
@@ -72,7 +74,17 @@ def _purge():
     # PYTHONDONTWRITEBYTECODE only prevents the leaf_synthesizer's OWN
     # subprocess runs from writing new ones, not this process's imports
     # (e.g. the happy-path test's importlib.reload).
-    for d in (_GENERATED_DIR, _TESTS_DIR):
+    # Also sweep the default (unpatched) runtime-volume dirs — belt-and-
+    # suspenders for any test that lands a real leaf without monkeypatching
+    # leaf_synthesizer_mod._RUNTIME_GENERATED_DIR/_RUNTIME_TESTS_DIR, so a
+    # stray file there can never leak into the next `pytest` collection
+    # (data/leaves_generated/ matches the test_*.py discovery pattern).
+    dirs = [_GENERATED_DIR, _TESTS_DIR,
+           leaf_synthesizer_mod._RUNTIME_GENERATED_DIR,
+           leaf_synthesizer_mod._RUNTIME_TESTS_DIR]
+    for d in dirs:
+        if not os.path.isdir(d):
+            continue
         for fname in os.listdir(d):
             if _LEAF_NAME in fname:
                 try:
@@ -134,7 +146,11 @@ def _last_attempt():
 
 # ── happy path ───────────────────────────────────────────────────────────────
 
-def test_full_pipeline_approves_lands_and_loads_the_new_leaf(monkeypatch):
+def test_full_pipeline_approves_lands_and_loads_the_new_leaf(monkeypatch, tmp_path):
+    # Redirect the runtime-volume dual-write so this test never touches the
+    # real repo's default runtime dir (data/leaves_generated/).
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(tmp_path / "leaves_generated"))
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(tmp_path / "leaves_generated" / "tests"))
     _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
     result = LeafSynthesizer().synthesize(
         _IDEA_ID, "test hypothesis", "test formula", "not representable")
@@ -239,3 +255,101 @@ def test_failing_generated_test_blocks_approval_even_if_sonnet_approves(monkeypa
     result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
     assert result["status"] == "test_failed"
     assert not os.path.exists(os.path.join(_GENERATED_DIR, f"{_LEAF_NAME}.py"))
+
+
+# ── P0-1 persistence (2026-07-13 self-audit): production containers have no
+# git binary and /app is an ephemeral image layer, so approved leaves must
+# survive via the runtime volume + audit table, not git. ──────────────────────
+
+def test_approved_leaf_dual_written_to_runtime_volume_and_audit_table(monkeypatch, tmp_path):
+    runtime_generated = tmp_path / "leaves_generated"
+    runtime_tests = runtime_generated / "tests"
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(runtime_generated))
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(runtime_tests))
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
+
+    result = LeafSynthesizer().synthesize(
+        _IDEA_ID, "test hypothesis", "test formula", "not representable")
+    assert result["status"] == "approved"
+
+    assert (runtime_generated / f"{_LEAF_NAME}.py").exists()
+    assert (runtime_tests / f"test_leaves_generated_{_LEAF_NAME}.py").exists()
+
+    row = _last_attempt()
+    assert row["module_source"]
+    assert f"_leaf_{_LEAF_NAME}" in row["module_source"]
+
+
+def test_runtime_volume_write_failure_does_not_block_approval(monkeypatch, tmp_path):
+    """The runtime volume is best-effort — if it's unwritable for some reason,
+    the audit table's module_source is the fallback of last resort, so
+    approval must still succeed rather than crash the caller."""
+    unwritable = tmp_path / "not_a_dir"
+    unwritable.write_text("blocking a directory from being created here")
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_GENERATED_DIR", str(unwritable / "leaves_generated"))
+    monkeypatch.setattr(leaf_synthesizer_mod, "_RUNTIME_TESTS_DIR", str(unwritable / "leaves_generated" / "tests"))
+    _patch_stage(monkeypatch, plan=_PLAN_FEASIBLE, code=_CODE_OK, review=_REVIEW_OK)
+
+    result = LeafSynthesizer().synthesize(_IDEA_ID, "h", "f", "r")
+    assert result["status"] == "approved"
+    row = _last_attempt()
+    assert row["module_source"]  # audit table still has the source
+
+
+def test_git_commit_skips_cleanly_when_no_git_binary(monkeypatch):
+    """Production containers have no git binary — this must be a deliberate,
+    logged no-op, never a caught exception masquerading as one."""
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    sha = LeafSynthesizer()._git_commit_and_maybe_push(
+        _LEAF_NAME, "/tmp/fake_leaf.py", "/tmp/fake_test.py")
+    assert sha is None
+
+
+def test_signal_dsl_loads_leaf_from_runtime_volume(tmp_path, monkeypatch):
+    """After a docker rebuild wipes agents/backtest_engineer/leaves_generated/
+    (image layer), the runtime volume copy must still be loadable."""
+    runtime_generated = tmp_path / "leaves_generated"
+    runtime_generated.mkdir()
+    (runtime_generated / "probe_runtime_leaf.py").write_text(
+        'def _leaf_probe_runtime_leaf(df, node):\n'
+        '    return df["close"] > 0\n\n'
+        'LEAF_NAME = "probe_runtime_leaf"\n'
+        'LEAF_SPEC = {"compute": _leaf_probe_runtime_leaf, "columns": ["close"], '
+        '"params": {}, "shape_card": "probe"}\n'
+    )
+    monkeypatch.setenv("OPENCLAW_RUNTIME_DIR", str(tmp_path))
+
+    from agents.backtest_engineer.signal_dsl import _load_generated_leaves
+    generated = _load_generated_leaves()
+    assert "probe_runtime_leaf" in generated
+    assert generated["probe_runtime_leaf"]["columns"] == ["close"]
+
+
+def test_signal_dsl_runtime_volume_overrides_package_dir_on_name_clash(tmp_path, monkeypatch):
+    """Per the plan: when the same leaf name exists in both places, the
+    runtime volume — the real source of truth in prod — wins."""
+    runtime_generated = tmp_path / "leaves_generated"
+    runtime_generated.mkdir()
+    (runtime_generated / f"{_LEAF_NAME}.py").write_text(
+        f'def _leaf_{_LEAF_NAME}(df, node):\n'
+        f'    return df["close"] > 0\n\n'
+        f'LEAF_NAME = "{_LEAF_NAME}"\n'
+        f'LEAF_SPEC = {{"compute": _leaf_{_LEAF_NAME}, "columns": ["close"], '
+        f'"params": {{}}, "shape_card": "from runtime volume"}}\n'
+    )
+    monkeypatch.setenv("OPENCLAW_RUNTIME_DIR", str(tmp_path))
+    package_leaf_path = os.path.join(_GENERATED_DIR, f"{_LEAF_NAME}.py")
+    with open(package_leaf_path, "w") as fh:
+        fh.write(
+            f'def _leaf_{_LEAF_NAME}(df, node):\n'
+            f'    return df["close"] < 0\n\n'
+            f'LEAF_NAME = "{_LEAF_NAME}"\n'
+            f'LEAF_SPEC = {{"compute": _leaf_{_LEAF_NAME}, "columns": ["close"], '
+            f'"params": {{}}, "shape_card": "from package dir"}}\n'
+        )
+    try:
+        from agents.backtest_engineer.signal_dsl import _load_generated_leaves
+        generated = _load_generated_leaves()
+        assert generated[_LEAF_NAME]["shape_card"] == "from runtime volume"
+    finally:
+        os.remove(package_leaf_path)

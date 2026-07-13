@@ -23,17 +23,30 @@ cost tracking every other agent already uses:
 
 Approved leaves are written to agents/backtest_engineer/leaves_generated/
 (physically separate from the hand-authored core catalog, for
-auditability) and auto-loaded by signal_dsl.py at import time. Every
-attempt — approved or not — is logged to leaf_synthesis_attempts.
+auditability) AND dual-written to $OPENCLAW_RUNTIME_DIR/leaves_generated/
+(the persistent volume) — the package dir is an image layer that evaporates
+on the next docker build, so the runtime-volume copy is the real source of
+truth in production. signal_dsl.py auto-loads from both at import time,
+runtime volume taking priority on a name clash. Every attempt — approved or
+not — is logged to leaf_synthesis_attempts, including the full generated
+module source on approval (belt-and-suspenders: even if both file copies
+are lost, the source is never gone).
 
-Git: commits locally on approval always; pushes to origin only if
-LEAF_SYNTH_AUTO_PUSH=true (off by default — see config/settings.py for why).
+Git: production containers have no git binary at all, so this was always a
+best-effort local commit that silently failed there (2026-07-13 self-audit).
+Where git IS available it still commits locally (push only if
+LEAF_SYNTH_AUTO_PUSH=true, off by default), but nothing in this pipeline
+depends on that succeeding — see _persist_to_runtime_volume and the
+approval-time WATCH alert for the mechanism that actually survives a
+rebuild. Approved leaves not yet in git can be recovered with
+scripts/export_synthesized_leaves.py.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,12 +54,15 @@ import tempfile
 from agents.base_agent import BaseAgent, get_agent_daily_spend
 from config.settings import (
     MODEL_FAST, MODEL_HEAVY, LEAF_SYNTH_AUTO_PUSH, LEAF_SYNTH_DAILY_BUDGET_USD,
+    RUNTIME_DIR,
 )
 from data.database import db_session
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _GENERATED_DIR = os.path.join(_REPO_ROOT, "agents", "backtest_engineer", "leaves_generated")
 _TESTS_DIR = os.path.join(_REPO_ROOT, "tests")
+_RUNTIME_GENERATED_DIR = os.path.join(str(RUNTIME_DIR), "leaves_generated")
+_RUNTIME_TESTS_DIR = os.path.join(_RUNTIME_GENERATED_DIR, "tests")
 
 _LEAF_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{2,40}$")
 
@@ -126,17 +142,21 @@ class LeafSynthesizer(BaseAgent):
                                      status=review["status"], spec=spec, leaf_name=leaf_name,
                                      review_notes=review["notes"], cost_usd=cost_usd)
 
-        commit_sha = self._land(leaf_name, spec, code)
+        land_result = self._land(leaf_name, spec, code)
+        commit_sha = land_result["commit_sha"]
         self.log_daemon(
             "INFO", f"[{idea_id}] Leaf synthesis APPROVED: new leaf '{leaf_name}' "
-                    f"written to leaves_generated/, commit={commit_sha or 'local-only'}")
+                    f"written to leaves_generated/ + runtime volume "
+                    f"(persisted={land_result['runtime_persisted']}), "
+                    f"commit={commit_sha or 'not committed — see runtime volume + audit table'}")
+        self._alert_new_leaf(idea_id, leaf_name, spec, land_result["runtime_persisted"])
         return self._log_attempt(
             idea_id, hypothesis, rejection_reason, status="approved", spec=spec,
             leaf_name=leaf_name, review_notes=review["notes"], cost_usd=cost_usd,
             generated_file=os.path.join("agents/backtest_engineer/leaves_generated",
                                         f"{leaf_name}.py"),
             test_file=os.path.join("tests", f"test_leaves_generated_{leaf_name}.py"),
-            git_commit_sha=commit_sha)
+            git_commit_sha=commit_sha, module_source=land_result["module_source"])
 
     # ── Stage 1: PLAN (Opus) ────────────────────────────────────────────────
 
@@ -299,7 +319,7 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
             f"LEAF_SPEC = {json.dumps(spec_extra, indent=4)}\n"
         )
 
-    def _land(self, leaf_name: str, spec: dict, code: dict) -> str | None:
+    def _land(self, leaf_name: str, spec: dict, code: dict) -> dict:
         # LEAF_SPEC's "compute" must reference the real function object, not a
         # JSON-serializable value — build the module source with repr(), not
         # json.dumps, for that one field.
@@ -347,9 +367,47 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
             os.remove(test_path)
             raise RuntimeError(f"post-write test failed: {proc.stdout[-500:]}")
 
-        return self._git_commit_and_maybe_push(leaf_name, leaf_path, test_path)
+        runtime_persisted = self._persist_to_runtime_volume(leaf_name, source, code["test_code"])
+        commit_sha = self._git_commit_and_maybe_push(leaf_name, leaf_path, test_path)
+        return {"commit_sha": commit_sha, "module_source": source,
+               "runtime_persisted": runtime_persisted}
+
+    def _persist_to_runtime_volume(self, leaf_name: str, module_source: str,
+                                   test_source: str) -> bool:
+        """Dual-write the approved leaf + test to $OPENCLAW_RUNTIME_DIR/leaves_generated/
+        — the persistent volume, unlike agents/backtest_engineer/leaves_generated/
+        which lives on the image layer and is wiped on the next `docker compose
+        build`. Best-effort: a failure here is logged but never blocks approval,
+        since the audit table's module_source column is the final fallback."""
+        try:
+            os.makedirs(_RUNTIME_GENERATED_DIR, exist_ok=True)
+            os.makedirs(_RUNTIME_TESTS_DIR, exist_ok=True)
+            with open(os.path.join(_RUNTIME_GENERATED_DIR, f"{leaf_name}.py"), "w") as fh:
+                fh.write(module_source)
+            with open(os.path.join(_RUNTIME_TESTS_DIR,
+                                   f"test_leaves_generated_{leaf_name}.py"), "w") as fh:
+                fh.write(test_source)
+            return True
+        except Exception as exc:
+            self.log_daemon("WARN", f"Leaf synthesis: failed to persist '{leaf_name}' to "
+                                    f"runtime volume ({_RUNTIME_GENERATED_DIR}): {exc}")
+            return False
 
     def _git_commit_and_maybe_push(self, leaf_name: str, leaf_path: str, test_path: str) -> str | None:
+        """Opportunistic only — production containers have no git binary, so
+        this deliberately no-ops there instead of pretending (previously: a
+        caught FileNotFoundError logged as an ambiguous WARN, and the leaf
+        would then be silently lost on the next image rebuild since nothing
+        else persisted it). Where git IS present this still commits locally
+        for convenience, but _persist_to_runtime_volume + the audit table's
+        module_source column are what actually guarantee survival now."""
+        if shutil.which("git") is None:
+            self.log_daemon(
+                "INFO", f"Leaf synthesis: no git binary in this environment — "
+                        f"'{leaf_name}' not committed; recoverable from the runtime "
+                        f"volume or leaf_synthesis_attempts.module_source via "
+                        f"scripts/export_synthesized_leaves.py")
+            return None
         rel_paths = [os.path.relpath(p, _REPO_ROOT) for p in (leaf_path, test_path)]
         try:
             subprocess.run(["git", "add", *rel_paths], cwd=_REPO_ROOT, check=True,
@@ -364,7 +422,7 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
                                  capture_output=True, text=True, timeout=10).stdout.strip()
         except Exception as exc:
             self.log_daemon("WARN", f"Leaf synthesis git commit failed for "
-                                    f"'{leaf_name}' (files kept on disk): {exc}")
+                                    f"'{leaf_name}' (files kept on disk + runtime volume): {exc}")
             return None
         if LEAF_SYNTH_AUTO_PUSH:
             try:
@@ -375,22 +433,34 @@ existing leaf's semantics rather than being genuinely new. Respond with ONLY:
                                         f"'{leaf_name}' (committed locally only): {exc}")
         return sha
 
+    def _alert_new_leaf(self, idea_id: int, leaf_name: str, spec: dict,
+                        runtime_persisted: bool) -> None:
+        from scripts.alerts import send_alert
+        persisted_note = ("runtime volume + audit table" if runtime_persisted
+                          else "audit table only — runtime volume write FAILED, check logs")
+        send_alert(
+            f"LeafSynthesizer approved new DSL leaf '{leaf_name}' (idea #{idea_id}): "
+            f"{spec.get('description', '')}. Persisted to {persisted_note}. Pull it into "
+            f"git manually with scripts/export_synthesized_leaves.py if it should stay.",
+            level="WATCH")
+
     # ── Audit log ────────────────────────────────────────────────────────────
 
     def _log_attempt(self, idea_id, hypothesis, rejection_reason, *, status,
                      spec=None, leaf_name=None, review_notes=None, cost_usd=0.0,
-                     generated_file=None, test_file=None, git_commit_sha=None) -> dict:
+                     generated_file=None, test_file=None, git_commit_sha=None,
+                     module_source=None) -> dict:
         with db_session() as conn:
             conn.execute(
                 """INSERT INTO leaf_synthesis_attempts
                      (idea_id, hypothesis, rejection_reason, status, leaf_name,
                       spec_json, generated_file, test_file, review_notes,
-                      cost_usd, git_commit_sha)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                      cost_usd, git_commit_sha, module_source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (idea_id, (hypothesis or "")[:2000], (rejection_reason or "")[:1000],
                  status, leaf_name, json.dumps(spec) if spec else None,
                  generated_file, test_file, review_notes, round(cost_usd or 0.0, 4),
-                 git_commit_sha))
+                 git_commit_sha, module_source))
         return {"status": status, "leaf_name": leaf_name, "cost_usd": round(cost_usd or 0.0, 4)}
 
     def run(self, task: dict) -> dict:

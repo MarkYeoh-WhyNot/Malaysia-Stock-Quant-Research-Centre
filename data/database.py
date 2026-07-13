@@ -1001,6 +1001,16 @@ def init_db(db_path: Path = DB_PATH):
             )
         """)
 
+        # module_source: full generated module text, captured on approval —
+        # the container has no git binary and /app is an ephemeral image
+        # layer, so this audit row (plus the runtime-volume file copy) is the
+        # only thing guaranteed to survive a rebuild (2026-07-13 self-audit).
+        try:
+            conn.execute("ALTER TABLE leaf_synthesis_attempts ADD COLUMN module_source TEXT")
+            logger.info("Migration applied: leaf_synthesis_attempts.module_source column added")
+        except Exception:
+            pass
+
         # Paper trading: daily NAV series per idea (mark-to-market)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS paper_equity (
