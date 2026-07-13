@@ -746,6 +746,46 @@ full adopt/defer record):
 8. Never ingest docs with relevance < 0.40
 9. Never generate ideas before KB has >= 5 docs per angle
 10. Always test changes manually before restarting daemon
+11. **Concurrent sessions on this repo must each use a separate git worktree**
+    (Claude Code's EnterWorktree / `isolation: worktree`), or at minimum
+    stake out disjoint file/directory scopes agreed up front — never edit the
+    same files from two sessions in parallel. (2026-07-13: three sessions ran
+    concurrently against this repo in one night and avoided a collision only
+    by luck — each happened to touch different files. That's not a process,
+    it's a near-miss.)
+12. **Before every commit, run `git status` and review the full diff** —
+    confirm you're only staging files your OWN session actually meant to
+    change, never a broad `git add -A`/`git add .` that could sweep in
+    another concurrent session's in-progress edits.
+13. **Three deploy gotchas, easy to re-learn the hard way:**
+    - Production containers have **no `git` binary** (Dockerfile installs
+      only `curl sqlite3`) — anything that shells out to `git` inside a
+      container silently no-ops or fails; persistence there must go through
+      the runtime volume or the database, never git.
+    - **`docker compose restart` does NOT pick up code changes** — the image
+      must be rebuilt first: `docker compose build` then
+      `docker compose up -d --no-deps <services>`. A bare restart just
+      reruns the OLD image.
+    - **The live DB is `/app/runtime/openclaw.db`, NOT `/app/data`** —
+      `/app/data` holds source code (from the image's `COPY . .`); running
+      `sqlite3` against a path under `/app/data` silently creates an empty
+      file and "succeeds" instead of erroring. Always confirm the path
+      resolves into the mounted runtime volume before backing up or querying.
+14. **Verify a new daemon job live on the VPS before calling it done** —
+    after deploying, watch its actual log output run through at least one
+    real cycle. Passing tests is necessary but not sufficient; a job that
+    imports cleanly and passes mocked tests can still silently no-op in
+    production (e.g. a backfill step that never actually got wired into the
+    real code path — only caught by watching the first live run).
+15. **Weekly audit corner**: once a week, pick one subsystem this session
+    hasn't touched (candidates: `dashboard/api/server.py`,
+    `agents/portfolio_executor/`, `scripts/event_watcher.py`, or whatever's
+    gone longest without a look) and give it a focused, /code-review-level
+    pass. Record the outcome — fixes made, or "confirmed clean" — in
+    `docs/audit_log.md`. Every bug found in the 2026-07-13 self-audit was
+    something stumbled into while working on something else, never something
+    deliberately gone looking for — this is the deliberate-looking half of
+    that equation.
 
 ### KNOWN ISSUES LOG (update as fixed)
 | Status | Issue |
