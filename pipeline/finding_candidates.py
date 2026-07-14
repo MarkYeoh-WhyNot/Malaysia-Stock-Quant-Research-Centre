@@ -183,9 +183,13 @@ def submit_leaf_candidate(tree: dict, *, slug: str, title: str, hypothesis: str,
     Returns {"ok": False, "error": ...} on invalid tree or signature collision.
     """
     from agents.backtest_engineer.signal_dsl import canonical_signature, validate
+    from pipeline.idea_text import ensure_description
     errors = validate(tree)
     if errors:
         return {"ok": False, "error": f"invalid tree: {errors}"}
+    # Defensive: this is an unguarded param boundary — never store an empty
+    # description even if a future caller passes one (today's callers don't).
+    hypothesis = ensure_description(title, hypothesis, json.dumps(tree))
     signature = canonical_signature(tree, ticker)
     with db_session() as conn:
         dup = conn.execute(

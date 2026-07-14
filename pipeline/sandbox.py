@@ -19,6 +19,7 @@ import re
 from datetime import datetime
 
 from data.database import db_session
+from pipeline.idea_text import ensure_description
 # Ticker format + hard-blocked trading modes come from the active market profile
 # (Bursa: .KL codes, long-only; crypto: /USDT pairs, long/short perps). Daily
 # bars in every market.
@@ -145,6 +146,11 @@ def submit_sandbox_idea(brief: dict, run_backtest: bool = False,
         family = classify_family(f"{title} {hypothesis} {factor_formula}")
     except Exception:
         family = "other"
+
+    # Never store an empty description — synthesize from title/formula if the
+    # brief (Factor Sandbox form or Concierge tool) supplied no hypothesis.
+    # Done here, after factor_formula is finalized (basket ideas rewrite it above).
+    hypothesis = ensure_description(title, hypothesis, factor_formula)
 
     with db_session() as conn:
         dup = conn.execute(

@@ -1134,6 +1134,29 @@ svg text{font-family:var(--font-mono)}
       </div>
     </div>
 
+    <!-- 10. SIGNAL LOGIC INSPECTOR (the actual algorithm that was backtested) -->
+    <div class="panel">
+      <div class="panel-head"><span class="panel-title">Signal Logic (as backtested)</span></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+        The exact signal that ran — human-readable, with the parsed signal tree below as ground truth.
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;letter-spacing:1px;margin-bottom:4px">FACTOR FORMULA (spec)</div>
+        <div id="btl-factor-formula" style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
+          font-family:monospace;color:#a5f3fc;overflow-x:auto;white-space:pre-wrap;word-break:break-word"></div>
+      </div>
+      <div style="margin-bottom:12px">
+        <div style="font-size:11px;color:var(--muted);font-weight:700;letter-spacing:1px;margin-bottom:4px">ALGORITHM</div>
+        <pre id="btl-pseudocode" style="background:#ffffff08;border-radius:6px;padding:10px;font-size:12px;
+          font-family:monospace;color:#ddd;line-height:1.7;overflow-x:auto;margin:0"></pre>
+      </div>
+      <details>
+        <summary style="font-size:11px;color:var(--muted);cursor:pointer;user-select:none">Raw signal tree (params JSON)</summary>
+        <pre id="btl-params-json" style="background:#ffffff08;border-radius:6px;padding:10px;font-size:11px;
+          font-family:monospace;color:#94a3b8;line-height:1.5;overflow-x:auto;margin:6px 0 0"></pre>
+      </details>
+    </div>
+
   </div><!-- /#btl-metrics -->
 
   <!-- EMPTY STATE -->
@@ -2696,7 +2719,7 @@ async function openIdeaModal(id) {
     ['BT Drawdown', `<span style="${r.backtest_dd>0.2?'color:var(--red)':'color:var(--green)'}">${fmtPct(r.backtest_dd)}</span>`],
     ['Created', tsShort(r.created_at)],
   ].map(([k,v]) => `<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
-  document.getElementById('modal-hypothesis').innerHTML = `<b style="color:var(--muted);font-size:11px">HYPOTHESIS</b><br>${esc(r.hypothesis||'No hypothesis recorded')}`;
+  document.getElementById('modal-hypothesis').innerHTML = `<b style="color:var(--muted);font-size:11px">HYPOTHESIS</b><br>${esc(ideaDescription(r.hypothesis, r.title, r.factor_formula))}`;
   document.getElementById('modal-formula').innerHTML = `<b style="color:var(--muted);font-size:11px">FACTOR FORMULA</b><br>${esc(r.factor_formula||'—')}`;
 
   const latestPine = (d.backtest_runs && d.backtest_runs[0] && d.backtest_runs[0].pinescript) || '';
@@ -2761,6 +2784,97 @@ async function loadBacktestLab() {
   if (_btlCurrentId) { sel.value = _btlCurrentId; }
 }
 
+// Mirror of pipeline/idea_text.ensure_description — guarantees every idea shows
+// a description even for rows already in the DB with an empty hypothesis.
+function ideaDescription(hypothesis, title, factorFormula) {
+  const hyp = (hypothesis || '').trim();
+  if (hyp) return hyp;
+  const name = (title || '').trim() || 'Untitled idea';
+  const formula = (factorFormula || '').trim() || '(no formula specified)';
+  return `${name} — signal: ${formula}`;
+}
+
+// ── Signal Logic inspector: render the parsed signal tree (backtest_runs.params)
+// as readable pseudocode. Best-effort — any unknown leaf/shape falls back to its
+// raw JSON, and the Raw signal tree block below is always the ground truth.
+function _btlLeafText(n) {
+  const L = n.leaf;
+  const cmp = (below, above) => below != null ? `< ${below}` : `> ${above}`;
+  switch (L) {
+    case 'rsi':        return `RSI(${n.period}) ${cmp(n.below, n.above)}`;
+    case 'sma_cross':  return `SMA(${n.fast}) ${n.direction === 'below' ? '<' : '>'} SMA(${n.slow})`;
+    case 'ema_cross':  return `EMA(${n.fast}) ${n.direction === 'below' ? '<' : '>'} EMA(${n.slow})`;
+    case 'ma_level':   return `close ${n.direction === 'below' ? '<' : '>'} ${(n.ma_type || 'sma').toUpperCase()}(${n.period})`;
+    case 'momentum':   return `return(${n.period}) > ${n.min_return}`;
+    case 'reversal':   return `return(${n.period}) < ${n.max_return}`;
+    case 'bollinger':  return n.band === 'above_upper'
+                         ? `close > upper Bollinger(${n.period}, ${n.std})`
+                         : `close < lower Bollinger(${n.period}, ${n.std})`;
+    case 'macd':       return `MACD(${n.fast}, ${n.slow}, ${n.signal}) ${n.condition || 'bullish'}`;
+    case 'volume_ratio': return `volume > ${n.min_ratio}× avg_volume(${n.period})`;
+    case 'gap':        return `gap ${n.direction || 'up'} > ${n.min_pct}`;
+    case 'rolling_rank': {
+      const skip = n.skip ? `, skip ${n.skip}` : '';
+      const win = n.window || 252;
+      const thr = n.min_pct != null ? `≥ ${n.min_pct}` : `≤ ${n.max_pct}`;
+      return `pct_rank(return(${n.formation})${skip}, window ${win}) ${thr}`;
+    }
+    case 'div_days_to_ex': return `≤ ${n.max_days} trading days to ex-dividend`;
+    case 'cpo_change': return `CPO return(${n.period}) > ${n.min_pct}`;
+    case 'zscore':     return `zscore(close, ${n.period}) ${cmp(n.below, n.above)}`;
+    case 'funding_level':  return `funding_rate ${cmp(n.below, n.above)}`;
+    case 'funding_zscore': return `zscore(funding_rate, ${n.period}) ${cmp(n.below, n.above)}`;
+    default:           return JSON.stringify(n);
+  }
+}
+function _btlNodeText(n) {
+  if (!n || typeof n !== 'object') return String(n);
+  if (n.op) {
+    const op = String(n.op).toUpperCase();
+    const kids = (n.children || []).map(_btlNodeText);
+    if (op === 'NOT') return `NOT (${kids.join(' AND ')})`;
+    return kids.length > 1 ? `(${kids.join(` ${op} `)})` : (kids[0] || '');
+  }
+  if (n.leaf) return _btlLeafText(n);
+  return JSON.stringify(n);
+}
+function dslToPseudocode(params) {
+  if (!params || typeof params !== 'object') return '(no signal parameters recorded)';
+  const st = params.signal_type;
+  if (st === 'dsl') {
+    const t = params.dsl || {};
+    const lines = [];
+    if (t.entry)       lines.push(`ENTER LONG  WHEN  ${_btlNodeText(t.entry)}`);
+    if (t.short_entry) lines.push(`ENTER SHORT WHEN  ${_btlNodeText(t.short_entry)}`);
+    if (t.exit)        lines.push(`EXIT  LONG  WHEN  ${_btlNodeText(t.exit)}`);
+    if (t.short_exit)  lines.push(`EXIT  SHORT WHEN  ${_btlNodeText(t.short_exit)}`);
+    if (t.entry && !t.exit)
+      lines.push(`  (no long exit rule — hold while entry condition is true)`);
+    return lines.length ? lines.join('\n') : JSON.stringify(t, null, 2);
+  }
+  if (st === 'fundamental_screen') {
+    const f = params.factors_used || {};
+    const used = Object.keys(f).filter(k => f[k]).map(k => k.toUpperCase());
+    const lines = [`FUNDAMENTAL SCREEN${params.long_only ? ' (long-only)' : ''}`];
+    lines.push(`  rank by: ${used.length ? used.join(', ') : '(factors not recorded)'}`);
+    if (params.universe_size != null) lines.push(`  universe: ${params.universe_size} stocks`);
+    if (Array.isArray(params.selected_stocks) && params.selected_stocks.length)
+      lines.push(`  selected: ${params.selected_stocks.join(', ')}`);
+    return lines.join('\n');
+  }
+  if (st === 'cross_sectional') {
+    const fac = params.factor || {};
+    const p = fac.params ? `(${Object.entries(fac.params).map(([k, v]) => `${k}=${v}`).join(', ')})` : '';
+    const lines = [`CROSS-SECTIONAL basket on ${fac.name || '(factor)'}${p}`];
+    lines.push(`  LONG top ${params.top_n ?? '—'}${params.bottom_n ? `, SHORT bottom ${params.bottom_n}` : ''}`);
+    lines.push(`  rebalance every ${params.rebalance_bars ?? '—'} bars${params.interval ? ` (${params.interval})` : ''}`);
+    return lines.join('\n');
+  }
+  // Unknown / future signal_type — pseudocode can't be synthesized, but the raw
+  // JSON block still shows the full truth.
+  return `signal_type "${st || 'unknown'}" — see raw signal tree below.`;
+}
+
 async function loadBtlDetail(rawId) {
   const id = parseInt(rawId);
   const header   = document.getElementById('btl-header');
@@ -2800,7 +2914,7 @@ async function loadBtlDetail(rawId) {
       + '<div style="margin-top:4px;color:var(--muted)">The Sharpe below is <b>expected by construction</b>, not discovered alpha — this row must never count toward a validated strategy.</div>';
     hypEl.style.borderLeftColor = 'var(--yellow)';
   } else {
-    hypEl.textContent = r.hypothesis || '—';
+    hypEl.textContent = ideaDescription(r.hypothesis, r.title, r.factor_formula);
     hypEl.style.borderLeftColor = 'var(--border)';
   }
   const vb = document.getElementById('btl-verdict-badge');
@@ -2972,6 +3086,16 @@ async function loadBtlDetail(rawId) {
 
   // ── 5. Charts ──
   btlRenderCharts(series);
+
+  // ── 10. Signal Logic inspector ──
+  document.getElementById('btl-factor-formula').textContent = r.factor_formula || '—';
+  let params = {};
+  try { params = JSON.parse(bt.params || '{}'); } catch (e) { params = {}; }
+  document.getElementById('btl-pseudocode').textContent =
+    (bt && bt.params) ? dslToPseudocode(params)
+                      : 'No signal parameters recorded — run a backtest to populate.';
+  document.getElementById('btl-params-json').textContent =
+    (bt && bt.params) ? JSON.stringify(params, null, 2) : '—';
 }
 
 function btlTab(tab) {

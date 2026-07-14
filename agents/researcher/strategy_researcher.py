@@ -673,6 +673,13 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
             family = classify_family(
                 f"{title} {idea.get('hypothesis', '')} {idea.get('factor_formula', '')}")
 
+            # Never store an empty description — synthesize from title/formula if
+            # the LLM produced an idea with no hypothesis (the organic path has
+            # its own insert here, separate from the sandbox choke point).
+            from pipeline.idea_text import ensure_description
+            hypothesis = ensure_description(
+                title, idea.get("hypothesis"), idea.get("factor_formula"))
+
             conn.execute("""
                 INSERT OR IGNORE INTO alpha_ideas
                   (slug, title, hypothesis, ticker, timeframe, factor_formula,
@@ -682,7 +689,7 @@ Do NOT score your own ideas — Gate 0 evaluates them independently."""
             """, (
                 slug,
                 title,
-                idea.get("hypothesis", ""),
+                hypothesis,
                 ticker,                               # stored in `ticker` column
                 idea.get("timeframe", "1d"),
                 idea.get("factor_formula", ""),

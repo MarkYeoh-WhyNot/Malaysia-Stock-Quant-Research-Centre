@@ -33,6 +33,22 @@ def test_valid_idea_inserts_at_stage2_pending():
     assert row["screen_source"] == "concierge"
 
 
+def test_empty_hypothesis_is_synthesized_not_stored_blank():
+    """A title-only submission (empty hypothesis) must store a synthesized
+    description, never an empty string — every backtested idea shows a
+    description regardless of source (Factor Sandbox form / Concierge tool)."""
+    r = submit_sandbox_idea({
+        "title": "SBX no hyp", "hypothesis": "   ",
+        "ticker": "1155.KL", "factor_formula": "sma(20) crosses above sma(50)",
+    }, run_backtest=False, source="sandbox")
+    assert r["ok"] is True
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT hypothesis FROM alpha_ideas WHERE id=?", (r["idea_id"],)).fetchone()
+    assert row["hypothesis"].strip()
+    assert row["hypothesis"] == "SBX no hyp — signal: sma(20) crosses above sma(50)"
+
+
 def test_short_selling_is_hard_blocked():
     r = submit_sandbox_idea({
         "title": "SBX short", "hypothesis": "short sell overvalued banks",
