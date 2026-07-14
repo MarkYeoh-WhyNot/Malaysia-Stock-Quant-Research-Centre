@@ -1296,6 +1296,12 @@ class BacktestEngineer(BaseAgent):
         psr_trainval            = gate_result["psr_trainval"]
         gate2_pass               = gate_result["gate2_pass"]
         gate3_pass               = gate_result["gate3_pass"]
+        tier1_pass               = gate_result["tier1_pass"]
+        tier2_flags              = gate_result["tier2_flags"]
+        # Two-tier outcome (2026-07-14): passed the Tier-1 statistical/risk core
+        # but tripped an advisory (Tier-2) shape check → HELD for human review,
+        # neither auto-advanced nor auto-rejected.
+        held_for_review          = bool(tier1_pass and tier2_flags)
         trade_count_pass        = gate_result["trade_count_pass"]
         trade_count_note        = gate_result["trade_count_note"]
         cost_pass               = gate_result["cost_pass"]
@@ -1378,7 +1384,7 @@ class BacktestEngineer(BaseAgent):
                     json.dumps(params),
                     json.dumps({**results, "funding_source": funding_source}),
                     1 if overall_pass else 0,
-                    needs_review, full_note or None,
+                    (1 if (held_for_review or needs_review) else 0), full_note or None,
                     hp_class, actual_trades, actual_trades,
                     test_sharpe_gross, test_sharpe_net, test_sharpe_net, test_sharpe_gross,
                     sharpe_is, sharpe_oos, sharpe_oos, oos_deg,
@@ -1404,7 +1410,7 @@ class BacktestEngineer(BaseAgent):
                         psr_test=?, psr_trainval=?,
                         cagr=?, ulcer_index=?, dd_duration_bars=?,
                         sharpe_net_conservative=?, fill_robustness=?,
-                        capacity_adjusted_sharpe=?
+                        capacity_adjusted_sharpe=?, advisory_flags=?
                     WHERE id=?
                 """, (n_trials, round(deflated_hurdle, 3),
                       round(benchmark_sharpe, 3), round(excess_ann_return, 4),
@@ -1423,6 +1429,7 @@ class BacktestEngineer(BaseAgent):
                       cagr_full, ulcer_full, dd_dur_full,
                       sharpe_net_conservative, fill_robustness,
                       capacity_adjusted_sharpe,
+                      json.dumps(tier2_flags) if tier2_flags else None,
                       run_id))
 
                 # Only update stage/status from stage2 → stage3.
@@ -1434,8 +1441,12 @@ class BacktestEngineer(BaseAgent):
                 cur_stage = cur_idea["stage"] if cur_idea else "stage2"
 
                 if cur_stage == "stage2":
-                    new_stage  = "stage3" if overall_pass else "stage2"
-                    new_status = "active"  if overall_pass else "rejected"
+                    if overall_pass:
+                        new_stage, new_status = "stage3", "active"
+                    elif held_for_review:
+                        new_stage, new_status = "stage2", "needs_review"
+                    else:
+                        new_stage, new_status = "stage2", "rejected"
                     conn.execute("""
                         UPDATE alpha_ideas
                         SET backtest_sharpe=?, backtest_dd=?, stage=?, status=?,
@@ -1451,11 +1462,14 @@ class BacktestEngineer(BaseAgent):
                         WHERE id=?
                     """, (test_sharpe_net, test_r["max_dd"], idea_id))
 
+                _event_type = ("advanced" if overall_pass
+                               else "needs_review" if held_for_review else "rejected")
+                _gate_decision = ("approve" if overall_pass
+                                  else "review" if held_for_review else "reject")
                 conn.execute("""
                     INSERT INTO pipeline_events (idea_id, stage, event_type, agent, notes)
                     VALUES (?, 'stage2', ?, 'BacktestEngineer', ?)
-                """, (idea_id,
-                      "advanced" if overall_pass else "rejected",
+                """, (idea_id, _event_type,
                       f"Train(net)={train_r['sharpe_net']:.2f} Val={val_r['sharpe_net']:.2f} "
                       f"Test(net)={test_sharpe_net:.2f} Test(gross)={test_sharpe_gross:.2f} "
                       f"IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
@@ -1465,15 +1479,19 @@ class BacktestEngineer(BaseAgent):
                 conn.execute("""
                     INSERT INTO gate_decisions (idea_id, gate, decision, decided_by, rationale)
                     VALUES (?, 'gate2_3', ?, 'BacktestEngineer', ?)
-                """, (idea_id,
-                      "approve" if overall_pass else "reject",
+                """, (idea_id, _gate_decision,
+                      f"tier1={'PASS' if tier1_pass else 'FAIL'} "
                       f"G2={'PASS' if gate2_pass else 'FAIL'} "
                       f"G3={'PASS' if gate3_pass else 'FAIL'} "
-                      f"cost={'PASS' if cost_pass else 'FAIL'} "
                       f"oos={'PASS' if oos_pass else 'FAIL'} "
-                      f"regime={'PASS' if regime_pass else 'FAIL'} "
-                      f"gap={train_val_gap:.2f}"))
-            self.log_daemon("INFO", f"Backtest saved for idea {idea_id} — pass={overall_pass}")
+                      + (f"advisory_tripped={[f['flag'] for f in tier2_flags]} "
+                         if tier2_flags else "")
+                      + f"gap={train_val_gap:.2f}"))
+            _outcome = ("PASS" if overall_pass else
+                        "NEEDS_REVIEW" if held_for_review else "REJECT")
+            self.log_daemon("INFO", f"Backtest saved for idea {idea_id} — outcome={_outcome}"
+                            + (f" advisory={[f['flag'] for f in tier2_flags]}"
+                               if held_for_review else ""))
         except Exception as e:
             self.log_daemon("ERROR", f"Backtest save FAILED for idea {idea_id}: {e}")
             raise
@@ -1567,6 +1585,11 @@ class BacktestEngineer(BaseAgent):
             "interval":            interval,
             "gate2_pass":          gate2_pass,
             "gate3_pass":          gate3_pass,
+            "tier1_pass":          tier1_pass,
+            "tier2_flags":         tier2_flags,
+            "held_for_review":     held_for_review,
+            "overall_pass":        overall_pass,
+            "verdict":             verdict,
             "trade_count_pass":    trade_count_pass,
             "cost_pass":           cost_pass,
             "oos_pass":            oos_pass,

@@ -11,6 +11,7 @@ import json
 import pytest
 
 from data.database import db_session, init_db
+from knowledge.graph import store
 from knowledge.ingestion.campaign_findings import (
     MIN_TRIALS_FOR_FALSIFIED, emit_alpha_hunt_findings, record_campaign_finding,
 )
@@ -30,6 +31,9 @@ def _purge():
                          (nid, nid))
             conn.execute("DELETE FROM kb_fts WHERE node_id=?", (nid,))
             conn.execute("DELETE FROM kb_nodes WHERE id=?", (nid,))
+        # detect_triggers() advances a global cursor — reset it so this
+        # test's edge doesn't leak into (or get masked by) other tests.
+        conn.execute("DELETE FROM revisit_state WHERE key='finding_scan:last_node_id'")
 
 
 @pytest.fixture(autouse=True)
@@ -128,6 +132,41 @@ def test_emitter_records_each_survivor_as_confirmed():
     row = _node("finding-campaign-alpha-hunt-2099-01-fund_lvl_1bp-BTCUSDT-1d")
     assert row is not None
     assert "confirmed" in (row["tags"] or "")
+
+
+def test_contradicts_slugs_wires_a_trigger_ready_edge():
+    """2026-07-13 follow-up audit (task 1): `contradicts_slugs` has zero
+    production callers (neither the alpha_hunt emitter nor the campaign
+    backfill script ever passes it) and had zero test coverage of its own —
+    the two halves of the chain (this producer, revisit.py's consumer) were
+    only ever verified in isolation, via store.add_edge directly in
+    test_revisit.py. This proves the actual production entry point wires an
+    edge that revisit.detect_triggers() picks up, end to end."""
+    pattern_id = store.upsert_node(
+        "rejection_pattern", slug=_PREFIX + "pattern", title="test pattern")
+    # record_campaign_finding upserts the finding node itself — the
+    # contradicts target must already exist (missing targets are skipped,
+    # not fabricated), so create the pattern first.
+    finding_id = record_campaign_finding(
+        slug="test-cf-contradicts", title="test contradicting finding",
+        summary="a test verdict that contradicts an old rejection pattern",
+        direction="confirmed",
+        contradicts_slugs=(_PREFIX + "pattern",),
+    )
+
+    contradicts = [e for e in _edges_from(finding_id) if e["relation"] == "contradicts"]
+    assert contradicts == [{"relation": "contradicts", "target_id": pattern_id}]
+
+    import unittest.mock as mock
+    from pipeline import revisit
+    with mock.patch.object(revisit, "_current_vol_tercile", return_value=None), \
+         mock.patch.object(revisit, "_current_macro_regime", return_value=None):
+        triggers = revisit.detect_triggers()
+
+    hits = [t for t in triggers if t["type"] == "contradicting_finding"
+           and t["finding_id"] == finding_id]
+    assert len(hits) == 1
+    assert hits[0]["pattern_slug"] == _PREFIX + "pattern"
 
 
 def test_findings_are_retrievable_as_seeds():

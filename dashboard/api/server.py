@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import Optional
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 from data.database import db_session, init_db
 from config.settings import (
     AI_DAILY_BUDGET_USD, key_health_check,
-    OPENCLAW_API_KEY, DASHBOARD_ORIGIN, PROGRESS_FILE,
+    OPENCLAW_API_KEY, DASHBOARD_ORIGIN, PROGRESS_FILE, MARKET_CURRENCY,
 )
 from governance.managers import summarize_all_departments, DEPARTMENT_AGENT_MAP
 
@@ -48,7 +49,9 @@ async def require_api_key(request: Request, call_next):
         OPENCLAW_API_KEY
         and path.startswith("/api")
         and path != "/api/health"
-        and request.headers.get("x-api-key", "") != OPENCLAW_API_KEY
+        # constant-time compare (2026-07-13 audit) — this is the sole auth
+        # gate for the entire /api surface, not just one write endpoint.
+        and not secrets.compare_digest(request.headers.get("x-api-key", ""), OPENCLAW_API_KEY)
     ):
         return JSONResponse(status_code=401, content={"error": "invalid or missing API key"})
     return await call_next(request)
@@ -398,11 +401,33 @@ def gate_queue():
         pending_g0   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='gate0' AND status='pending' ORDER BY id DESC LIMIT 20").fetchall()
         pending_s1   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='stage1' AND status='active' AND research_score IS NULL ORDER BY id DESC LIMIT 20").fetchall()
         pending_s2   = conn.execute("SELECT * FROM alpha_ideas WHERE stage='stage2' AND status='active' ORDER BY id DESC LIMIT 20").fetchall()
+        # Two-tier gate redesign (2026-07-14): ideas that PASSED the Tier-1
+        # statistical/risk core but tripped an advisory (Tier-2) shape check are
+        # HELD at status='needs_review' for a human decision instead of being
+        # auto-rejected. Surface them with the advisory flags + verdict from
+        # their latest backtest_run so the reviewer sees WHY it's held.
+        pending_review = conn.execute(
+            "SELECT ai.id, ai.title, ai.ticker, ai.timeframe, ai.stage, ai.updated_at, "
+            "       br.advisory_flags, br.verdict_reason, br.sharpe_net, br.psr_test, "
+            "       br.deflated_hurdle, br.holding_period_class, br.trade_count "
+            "FROM alpha_ideas ai "
+            "LEFT JOIN backtest_runs br ON br.id = ("
+            "  SELECT id FROM backtest_runs WHERE idea_id=ai.id ORDER BY id DESC LIMIT 1) "
+            "WHERE ai.status='needs_review' ORDER BY ai.updated_at DESC LIMIT 30"
+        ).fetchall()
         recent_gates = conn.execute("SELECT gd.*, ai.title, ai.ticker FROM gate_decisions gd JOIN alpha_ideas ai ON ai.id=gd.idea_id ORDER BY gd.id DESC LIMIT 30").fetchall()
+    def _review_row(r):
+        d = dict(r)
+        try:
+            d["advisory_flags"] = json.loads(d.get("advisory_flags") or "[]")
+        except Exception:
+            d["advisory_flags"] = []
+        return d
     return {
         "gate0_pending": [dict(r) for r in pending_g0],
         "stage1_pending": [dict(r) for r in pending_s1],
         "stage2_pending": [dict(r) for r in pending_s2],
+        "pending_review": [_review_row(r) for r in pending_review],
         "recent_decisions": [dict(r) for r in recent_gates],
     }
 
@@ -820,7 +845,16 @@ def advance_idea(idea_id: int, body: AdvanceBody):
         if not row:
             raise HTTPException(status_code=404, detail="Idea not found")
         if body.action == "advance":
-            next_stage = stage_map.get(row["stage"], row["stage"])
+            # 2026-07-13 audit: stage_map.get(..., row["stage"]) used to fall
+            # back to the SAME stage for anything not in the map (e.g. an
+            # already-terminal stage5 idea), yet still unconditionally wrote
+            # an 'advanced' pipeline_events row + an 'approve' gate_decisions
+            # row — a fabricated audit-log entry claiming a transition that
+            # never happened. Reject instead of silently faking history.
+            if row["stage"] not in stage_map:
+                raise HTTPException(status_code=400,
+                    detail=f"No next stage defined for '{row['stage']}' — nothing to advance")
+            next_stage = stage_map[row["stage"]]
             conn.execute("UPDATE alpha_ideas SET stage=?, status='active', updated_at=datetime('now') WHERE id=?", (next_stage, idea_id))
             conn.execute("INSERT INTO pipeline_events (idea_id,stage,event_type,agent,notes) VALUES (?,?,'advanced','dashboard',?)",
                          (idea_id, row["stage"], body.notes or "Manual advance via dashboard"))
@@ -1308,13 +1342,31 @@ async def kb_ingest_url(body: KBIngestURLBody):
     return await _in_thread(_run)
 
 
+_MAX_PDF_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB — research PDFs, not video/data dumps
+
+
 @app.post("/api/kb/ingest-pdf")
 async def kb_ingest_pdf(file: UploadFile = File(...)):
     import io
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    pdf_bytes = await file.read()
+    # 2026-07-13 audit: await file.read() had no size cap, buffering the
+    # entire upload into memory before any check — on a t3.small VPS already
+    # running tight on RAM (see vps-outage-playbook memory) this is a real
+    # OOM risk, not just theoretical. Read in bounded chunks instead.
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > _MAX_PDF_UPLOAD_BYTES:
+            raise HTTPException(status_code=413,
+                detail=f"PDF exceeds {_MAX_PDF_UPLOAD_BYTES // (1024*1024)}MB limit")
+        chunks.append(chunk)
+    pdf_bytes = b"".join(chunks)
     if len(pdf_bytes) == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
@@ -1475,15 +1527,26 @@ def system_direction():
         a["coverage_pct"] = min(100, round(a["doc_count"] / a["target"] * 100))
         a["ready"] = a["doc_count"] >= a["target"]
 
+    # Derived live from GATE_CONFIG (not hand-copied) — 2026-07-13 audit found
+    # this dict frozen at pre-2026-07-10 values (fixed Sharpe thresholds that
+    # no longer exist, since replaced by the deflated-PSR principal rule) and
+    # actively misinforming the System Direction page. See docs/audit_log.md.
+    _gc = _settings.GATE_CONFIG
     gate_thresholds = {
-        "gate0":           {"novelty": 0.60, "logic": 0.70, "feasibility": 0.60},
-        "stage2_sharpe":   1.1,
-        "stage2_tv_gap":   0.30,
-        "cross_section_ic": 0.05,
-        "cross_section_tstat": 1.5,
-        "cross_section_stocks": 15,
-        "stage4a_sharpe":  1.0,
-        "stage4a_max_dd":  0.15,
+        "gate0": {
+            "novelty": _gc.gate0_min_novelty_score,   # advisory — never gates
+            "logic": _gc.gate0_min_logic_score,
+            "feasibility": 0.60,                       # deterministic pre-score, strategy_researcher.py
+            "data_quality": _gc.gate0_min_data_quality,
+            "overfitting_risk_max": _gc.gate0_max_overfitting_risk,
+        },
+        "psr_confidence_test": _gc.psr_confidence_test,
+        "train_val_gap_max": _gc.stage3_max_train_val_gap,
+        "cross_section_ic": _gc.xs_min_mean_ic,
+        "cross_section_tstat": _gc.xs_min_ic_tstat,
+        "cross_section_stocks": _gc.xs_min_positive_names,
+        "stage4a_min_sharpe": _gc.stage4a_min_sharpe,
+        "stage4a_max_drawdown": _gc.stage4a_max_drawdown,
     }
 
     min_trades = {
@@ -1896,7 +1959,7 @@ def dept_overview():
             "status": "active" if ex_open > 0 else "idle",
             "kpi1_value": ex_open,    "kpi1_label": "Open Trades",
             "kpi2_value": ex_s4,      "kpi2_label": "Stage 4A",
-            "kpi3_value": f"{ex_pnl:+.2f}", "kpi3_label": "PnL (MYR)",
+            "kpi3_value": f"{ex_pnl:+.2f}", "kpi3_label": f"PnL ({MARKET_CURRENCY})",
             "last_action": f"{ex_open} open trade(s)" if ex_open else "No active trades",
             "last_action_ago": _ago(ex_last["opened_at"] if ex_last else None),
         },
@@ -2147,8 +2210,12 @@ def dept_red_blue(idea_id: int):
             "parse_failed": bool(notes.get("parse_failed", False)),
             "notes":        notes,
         })
-    # Count from debates list (gate_decisions may not record every RB round)
-    advances     = sum(1 for d in debates if d["verdict"] in ("advance", "conditional") and d["event_type"] == "advanced")
+    # Count from debates list (gate_decisions may not record every RB round).
+    # 2026-07-13 audit: "advances" previously included verdict=='conditional'
+    # too, so a conditional-advance was counted in BOTH tallies — the
+    # dashboard renders these four numbers side by side as a breakdown of
+    # total_debates, so they must partition cleanly, not overlap.
+    advances     = sum(1 for d in debates if d["verdict"] == "advance" and d["event_type"] == "advanced")
     conditionals = sum(1 for d in debates if d["verdict"] == "conditional")
     rejections   = sum(1 for d in debates if d["event_type"] == "rejected")
     return {
@@ -2262,10 +2329,16 @@ def _dept_market_intelligence_impl(idea_id: Optional[int]):
     if ticker:
         tickers = [t.strip() for t in (ticker or "").split(",") if t.strip()]
         for e in events:
-            e_tickers = str(e.get("tickers_mentioned") or e.get("ticker") or "")
+            # market_events has affected_tickers (comma-separated) + a single
+            # ticker column — no "tickers_mentioned" column exists (2026-07-13
+            # audit: this was silently always falling through to the single-
+            # ticker field, so multi-ticker events never matched).
+            e_tickers = str(e.get("affected_tickers") or e.get("ticker") or "")
             for t in tickers:
                 if t in e_tickers:
-                    snippet = f"{str(e.get('detected_at',''))[:10]}: {str(e.get('title') or e.get('event_type',''))[:60]}"
+                    # headline is the real column — "title" doesn't exist and
+                    # was always silently falling back to event_type.
+                    snippet = f"{str(e.get('detected_at',''))[:10]}: {str(e.get('headline') or e.get('event_type',''))[:60]}"
                     if snippet not in ticker_overlap:
                         ticker_overlap.append(snippet)
     return {"recent_events": events[:20], "ticker_overlap": ticker_overlap[:10], "upcoming_events": [dict(e) for e in upcoming]}

@@ -95,3 +95,64 @@ includes an "Auto-mechanisms 24h" line — revisit/finding-driven counts,
 today's quota usage against the cap, and LeafSynthesizer attempt/approval/cost
 counts — so this volume is visible on Telegram every day instead of silently
 accumulating.
+
+## contradicting_finding trigger: code-complete but never actually fired (2026-07-13 follow-up)
+
+P2-6 tightened `pipeline/revisit.py::detect_triggers()`'s `contradicting_finding`
+branch to only accept `contradicts` edges from a genuine `finding-campaign-*`
+node with `origin='heuristic'` — i.e. edges written by
+`knowledge/ingestion/campaign_findings.py::record_campaign_finding()`'s own
+`contradicts_slugs` parameter, never the LLM graph extractor. The follow-up
+audit checked whether this branch can ever actually fire in production:
+
+- **Every call site was grepped.** There are exactly two:
+  `scripts/alpha_hunt.py`'s `emit_alpha_hunt_findings()` (runs after every
+  alpha-hunt campaign) and the one-off `scripts/backfill_campaign_findings.py`.
+  **Neither ever passes `contradicts_slugs`** — the emitter only ever wires
+  `leaf_names`, and the backfill script only ever wires `refines_slugs`.
+  `contradicts_slugs` was also uncovered by any test until this audit.
+- **The consumer side works.** `tests/test_revisit.py` already proved
+  `detect_triggers()` correctly picks up a heuristic-origin `finding-campaign-*`
+  contradicts edge and correctly ignores LLM-origin / non-campaign / wrong-type
+  sources — but those tests wired the edge directly via `store.add_edge()`,
+  not through the real production entry point.
+- **The producer side is now proven too.** `test_contradicts_slugs_wires_a_trigger_ready_edge`
+  in `tests/test_campaign_findings.py` calls `record_campaign_finding()` with
+  `contradicts_slugs` set and confirms `detect_triggers()` picks up the
+  resulting edge end to end. The wiring is correct.
+
+**Net status: this trigger is fully functional but currently dormant by
+construction, not by bug.** Nothing in the live pipeline ever produces the
+kind of edge it's looking for. It will only fire if either (a) the alpha-hunt
+emitter is extended to detect when a new campaign verdict contradicts an
+existing `rejection_pattern` and pass its slug via `contradicts_slugs`, or
+(b) a human running a campaign manually calls `record_campaign_finding()`
+with `contradicts_slugs` set (the way `backfill_campaign_findings.py` already
+does for `refines_slugs`). Until one of those happens, "zero live
+`contradicting_finding` triggers" is the expected, honest state — not a sign
+the P2-6 fix needs more work.
+
+## AUTO_IDEAS_DAILY_CAP: confirmed to fire cleanly on a real skip (2026-07-13 follow-up)
+
+Before this check, the cap had never actually fired in production — both
+`auto_submissions_today()` sat at 0/20 in both markets (nowhere near the cap
+naturally), and grepping all retained daemon container logs for
+`AUTO_IDEAS_DAILY_CAP` in both markets returned zero hits. The mechanism was
+tested but never observed live.
+
+Verified live on `daemon-crypto` with Mark's explicit go-ahead: ran a one-off
+script inside the running container that (1) snapshotted the `job_state` rows
+for `revisit_scan`/`finding_driven_candidates`, (2) instantiated
+`ResearchDaemon` and called `_process_revisit_scan()` and
+`_process_finding_driven_candidates()` directly with `AUTO_IDEAS_DAILY_CAP=0`
+env-overridden for that single process only, (3) captured the logger output,
+(4) restored `job_state` to its exact pre-test values. Both jobs logged their
+skip message cleanly with no exception:
+```
+[Revisit] Skipped — AUTO_IDEAS_DAILY_CAP reached for today
+[FindingCandidates] Skipped — AUTO_IDEAS_DAILY_CAP reached for today
+```
+`job_state` was confirmed byte-identical to its pre-test snapshot afterward
+(`revisit_scan` / `finding_driven_candidates` timestamps unchanged) — no
+lasting effect on the live daemon's schedule. **The guard is proven correct
+end to end; it just hasn't had a reason to fire yet at real traffic levels.**

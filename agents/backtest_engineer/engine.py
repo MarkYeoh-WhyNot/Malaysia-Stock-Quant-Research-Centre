@@ -440,6 +440,7 @@ def _compute_performance(engine, df: pd.DataFrame, signals: pd.Series, interval:
         "ulcer_index": 0.0, "avg_drawdown": 0.0, "dd_duration_bars": 0,
         "leverage_used": leverage, "funding_drag_pct": round(funding_drag_pct, 4),
         "n_obs": n, "skew": 0.0, "kurt": 3.0,
+        "sharpe_tstat": 0.0, "calmar": 0.0,
     }
     if n < 20 or np.std(net_returns) < 1e-10:
         return _empty
@@ -488,6 +489,20 @@ def _compute_performance(engine, df: pd.DataFrame, signals: pd.Series, interval:
     profit_factor = gross_win / gross_loss
     total_trades  = int(np.sum(signal_changes > 0))
 
+    # UI-report-only fields (not read by any gate/report path today — see
+    # dashboard/ui/index.html Backtest Lab metric cards):
+    #   sharpe_tstat — per-bar Sharpe t-stat, sqrt(n-1)-scaled the same way
+    #     Newey-West/PSR t-stats are elsewhere in this codebase (nw_tstat,
+    #     ic_tstat). Validated 2026-07-14 against an external tool (QRVF) on
+    #     a BTC weekly strategy: Sharpe 1.1175, n=341, ann=52 -> t~=2.86,
+    #     matching QRVF's reported 2.85.
+    #   calmar — arithmetic ann_return / |max_dd| (NOT cagr, to match QRVF's
+    #     methodology). Validated against the same QRVF run: ann_return
+    #     56.66% / max_dd 47.13% = 1.202, matching QRVF's reported 1.202.
+    ann_return = float(np.mean(net_returns)) * ann
+    sharpe_tstat = sharpe_net / np.sqrt(ann) * np.sqrt(n - 1) if ann > 0 else 0.0
+    calmar = ann_return / abs(max_dd) if max_dd > 1e-9 else 0.0
+
     return {
         "sharpe":        sharpe_net,          # backward-compat: sharpe == net
         "sharpe_gross":  sharpe_gross,
@@ -506,6 +521,8 @@ def _compute_performance(engine, df: pd.DataFrame, signals: pd.Series, interval:
         "n_obs":         n,
         "skew":          round(ret_skew, 3),
         "kurt":          round(ret_kurt, 3),
+        "sharpe_tstat":  round(float(sharpe_tstat), 3),
+        "calmar":        round(float(calmar), 3),
     }
 
 # ── QC2: Walk-forward IS / OOS validation ────────────────────────────────

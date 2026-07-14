@@ -266,6 +266,16 @@ def init_db(db_path: Path = DB_PATH):
             logger.info("Migration applied: backtest_runs.needs_review column added")
         except Exception:
             pass
+        # Two-tier gate redesign (2026-07-14): JSON list of tripped Tier-2
+        # (advisory) checks, e.g. [{"flag":"low_trades","note":"…"}]. Populated
+        # when a backtest passes the Tier-1 statistical/risk core but trips an
+        # advisory shape check → the idea is HELD at status='needs_review' for
+        # human approval instead of auto-rejected. Empty/NULL = nothing tripped.
+        try:
+            conn.execute("ALTER TABLE backtest_runs ADD COLUMN advisory_flags TEXT")
+            logger.info("Migration applied: backtest_runs.advisory_flags column added")
+        except Exception:
+            pass
         try:
             conn.execute("ALTER TABLE backtest_runs ADD COLUMN verification_note TEXT")
             logger.info("Migration applied: backtest_runs.verification_note column added")

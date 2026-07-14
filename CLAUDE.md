@@ -260,7 +260,9 @@ Cost is tracked per model/agent/task in the `ai_usage` table and enforced before
 | GET | `/api/pipeline/ideas/{id}` | Idea detail + events + backtest runs + trades |
 | GET | `/api/pipeline/gate-queue` | Pending Gate 0, Stage 1, Stage 2 + recent decisions |
 
-CORS is open (allow all origins).
+CORS is restricted to a single configurable origin (`DASHBOARD_ORIGIN`,
+default `http://localhost`) — corrected 2026-07-13, this doc previously said
+"open (allow all origins)" which hasn't matched the code for a while.
 
 ---
 

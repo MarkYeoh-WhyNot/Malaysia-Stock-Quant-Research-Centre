@@ -120,6 +120,21 @@ def _zscore_tree(allow_short: bool) -> dict:
     return tree
 
 
+def _zscore_tree_lowfreq(allow_short: bool) -> dict:
+    """A genuine reversion edge, deliberately LONG-ONLY even in a short-capable
+    market. Long-only halves the trade rate (crypto L/S trades ~2x, which would
+    push the count back above the min-trade floor) and avoids the short leg's
+    deep drawdowns — so, run on a SHORT track record (see run_calibration), it
+    yields a real edge with genuinely FEW trades and normal DD: sparse evidence.
+    Under the pre-2026-07-14 gates the hard min-trades veto (+ the fixed OOS
+    floor on the short, noisy OOS slice) would REJECT it; under the two-tier
+    design trade-count is advisory, so it must clear TIER 1 (→ held for review)."""
+    return {
+        "entry": {"leaf": "zscore", "period": 20, "below": -0.5},
+        "exit":  {"leaf": "zscore", "period": 20, "above": 0.0},
+    }
+
+
 # ── Case definition & execution ─────────────────────────────────────────────
 
 @dataclass
@@ -178,24 +193,34 @@ LOSE_PASS_MAX = 0.05  # pure noise should clear them ≤5% of the time
 # they're excluded from the statistical-calibration denominator (and reported
 # separately).
 MODERATE_PASS_MIN = 0.60
+# Two-tier redesign (2026-07-14): a genuine low-frequency edge (few trades) must
+# clear TIER 1 (→ held for review), NOT be hard-rejected for being infrequent.
+# Same bar as the moderate tier; DD-cap rejections excluded from the denominator.
+LOWFREQ_PASS_MIN = 0.60
 
 
 def _which_gate_failed(result: dict) -> str:
     """Name the first failing gate from the result dict's *_pass flags, so a
-    systematic false-negative can be attributed to a specific gate."""
-    if result.get("gate3_pass") or result.get("overall_pass"):
+    systematic false-negative can be attributed to a specific gate.
+
+    Two-tier redesign (2026-07-14): the harness measures TIER 1 (the statistical
+    /anti-overfit/risk core). An idea that passes Tier 1 but only trips an
+    advisory Tier-2 check is HELD for review, not rejected — that is a PASS from
+    the gate stack's perspective, so tier1_pass short-circuits to "no failure"."""
+    # tier1_pass is the authority (it includes OOS/robustness/capacity, not just
+    # gate3) — a run can have gate3_pass True yet fail tier1 on OOS/robustness.
+    _t1 = result.get("tier1_pass")
+    if _t1 if _t1 is not None else (result.get("gate3_pass") or result.get("overall_pass")):
         return ""
-    # gate2 (train/val consistency) has no dedicated flag — infer it when every
-    # named gate3 sub-gate passed but the run still failed.
-    named = ["trade_count_pass", "cost_pass", "oos_pass", "regime_pass",
-             "deflation_pass", "benchmark_pass", "capacity_pass"]
-    for g in named:
-        if g in result and not result[g]:
-            return g.replace("_pass", "")
     if result.get("error"):
         return "data_or_parse"
-    # Distinguish the DD risk cap from the statistical gap check — a
-    # risk-mandate rejection is intentional policy, not calibration noise.
+    # TIER-1 attribution ONLY. Advisory Tier-2 checks (trade_count, cost,
+    # regime, benchmark) never reject an idea, so they can't be the cause of a
+    # tier1 failure — checking them here (as the pre-redesign code did) would
+    # mis-attribute a real DD-cap/PSR rejection to a harmless advisory flag and
+    # wrongly keep it in the statistical denominator. Check the DD risk cap
+    # FIRST (intentional risk policy, excluded from the denominator), then the
+    # remaining statistical Tier-1 gates.
     try:
         from config.settings import GATE_CONFIG
         _cap = GATE_CONFIG.stage3_max_drawdown
@@ -204,7 +229,12 @@ def _which_gate_failed(result: dict) -> str:
                 return "risk_dd_cap"
     except Exception:
         pass
-    return "train_val_gap"
+    # Remaining Tier-1 statistical gates (OOS/capacity carry their own flags;
+    # robustness + gate2 gap are not exposed in the payload → default label).
+    for g in ("oos_pass", "capacity_pass"):
+        if g in result and not result[g]:
+            return g.replace("_pass", "")
+    return "psr_gap_or_robustness"
 
 
 def _run_case(kind: str, tree: dict, seeds: list[int], n_bars: int) -> list[Trial]:
@@ -226,6 +256,11 @@ def _run_case(kind: str, tree: dict, seeds: list[int], n_bars: int) -> list[Tria
             # (measured: L/S kappa 0.07 ≈ long-only kappa 0.13 ≈ SR 1.4).
             close = ou_series(n_bars, seed,
                               kappa=0.07 if _allow_short else 0.13)
+        elif kind == "lowfreq":
+            # Genuine strong reversion (same as the winner). Sparsity comes from
+            # the SHORT track record this case is run on (see run_calibration),
+            # giving normal-DD trades but few of them — sparse evidence.
+            close = ou_series(n_bars, seed)
         else:
             close = random_walk(n_bars, seed)                 # zero true edge
         case_df = _ohlcv(close, index, daily_value)
@@ -253,13 +288,19 @@ def _run_case(kind: str, tree: dict, seeds: list[int], n_bars: int) -> list[Tria
                                 f"{type(exc).__name__}", {}))
             continue
 
-        passed = bool(result.get("gate3_pass") or result.get("overall_pass"))
+        # Two-tier redesign: "passed" = cleared TIER 1 (statistical/risk core).
+        # An idea held for review (tier1 pass, advisory flag) counts as passed —
+        # the stack correctly kept it rather than rejecting it.
+        passed = bool(result.get("tier1_pass")
+                      if result.get("tier1_pass") is not None
+                      else (result.get("gate3_pass") or result.get("overall_pass")))
         trials.append(Trial(
             seed=seed, passed=passed,
             verdict=result.get("verdict") or ("PASS" if passed else "REJECTED"),
             failing_gate=_which_gate_failed(result),
             metrics={k: result.get(k) for k in
-                     ("sharpe_is", "sharpe_oos", "train_val_gap", "actual_trades")
+                     ("sharpe_is", "sharpe_oos", "train_val_gap", "actual_trades",
+                      "held_for_review")
                      if result.get(k) is not None},
         ))
     return trials
@@ -283,6 +324,12 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
     # (kappa 0.07 → true net Sharpe ≈ 1.4 median). Makes the stack's
     # operating point VISIBLE on every run instead of only "strong passes".
     moderate = _run_case("moderate", tree, seeds, n_bars)
+    # Two-tier redesign (2026-07-14): a genuine but LOW-FREQUENCY / sparse-
+    # evidence edge (the normal reversion edge on a SHORT track record, ~25-35
+    # trades, normal DD) — must clear Tier 1 (held for review), proving low-trade
+    # ideas are no longer hard-rejected for being infrequent.
+    lowfreq = _run_case("lowfreq", _zscore_tree_lowfreq(ALLOW_SHORT),
+                        seeds, max(n_bars // 3, 700))
 
     win_rate = sum(t.passed for t in win) / len(win)
     lose_rate = sum(t.passed for t in lose) / len(lose)
@@ -293,6 +340,16 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
     mod_rate = (sum(t.passed for t in _mod_eligible) / len(_mod_eligible)
                 if _mod_eligible else 1.0)
     mod_dd_rejects = sum(1 for t in moderate if t.failing_gate == "risk_dd_cap")
+    # Low-frequency: same DD-cap exclusion. Also report how few trades these
+    # actually had (the point of the case) and how many were held for review.
+    _lf_eligible = [t for t in lowfreq if t.failing_gate != "risk_dd_cap"]
+    lowfreq_rate = (sum(t.passed for t in _lf_eligible) / len(_lf_eligible)
+                    if _lf_eligible else 1.0)
+    _lf_trades = [t.metrics.get("actual_trades") for t in lowfreq
+                  if t.metrics.get("actual_trades") is not None]
+    lowfreq_median_trades = (sorted(_lf_trades)[len(_lf_trades) // 2]
+                             if _lf_trades else None)
+    lowfreq_held = sum(1 for t in lowfreq if t.metrics.get("held_for_review"))
     # Attribute winner rejections to the gate that stopped them.
     gate_hist: dict = {}
     for t in win:
@@ -304,7 +361,8 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
             mod_hist[t.failing_gate] = mod_hist.get(t.failing_gate, 0) + 1
 
     calibrated = (win_rate >= WIN_PASS_MIN and lose_rate <= LOSE_PASS_MAX
-                  and mod_rate >= MODERATE_PASS_MIN)
+                  and mod_rate >= MODERATE_PASS_MIN
+                  and lowfreq_rate >= LOWFREQ_PASS_MIN)
     report = {
         "market_mode": MARKET_MODE,
         "calibrated": calibrated,
@@ -315,11 +373,15 @@ def run_calibration(seeds: Optional[list[int]] = None, n_bars: int = 2000,
         "moderate_pass_rate": round(mod_rate, 3),
         "moderate_dd_cap_rejects": mod_dd_rejects,
         "moderate_reject_by_gate": mod_hist,
+        "lowfreq_pass_rate": round(lowfreq_rate, 3),
+        "lowfreq_median_trades": lowfreq_median_trades,
+        "lowfreq_held_for_review": lowfreq_held,
         "winner_reject_by_gate": gate_hist,
         "diagnosis": _diagnose(win_rate, lose_rate, gate_hist, mod_rate),
         "winner_trials": [t.__dict__ for t in win],
         "loser_trials": [t.__dict__ for t in lose],
         "moderate_trials": [t.__dict__ for t in moderate],
+        "lowfreq_trials": [t.__dict__ for t in lowfreq],
     }
     if verbose:
         _print_report(report)
@@ -369,6 +431,10 @@ def _print_report(report: dict) -> None:
           f"{report['moderate_dd_cap_rejects']} DD-cap risk rejections)")
     print(f"  noise    (SR 0.0) pass rate : {report['loser_pass_rate']:.0%}  "
           f"(target ≤ {LOSE_PASS_MAX:.0%})")
+    print(f"  low-freq (few trades) tier1 : {report['lowfreq_pass_rate']:.0%}  "
+          f"(target ≥ {LOWFREQ_PASS_MIN:.0%}; median "
+          f"{report.get('lowfreq_median_trades')} trades, "
+          f"{report.get('lowfreq_held_for_review')} held for review)")
     if report["winner_reject_by_gate"]:
         print(f"  strong rejections by gate   : {report['winner_reject_by_gate']}")
     if report["moderate_reject_by_gate"]:

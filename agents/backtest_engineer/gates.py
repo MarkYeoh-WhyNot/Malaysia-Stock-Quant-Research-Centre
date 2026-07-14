@@ -37,6 +37,12 @@ from data.market_data import BARS_PER_YEAR
 from agents.backtest_engineer import stats
 from agents.backtest_engineer import engine as engine_mod
 
+# Sigma band for the noise-aware OOS floor — mirrors stats._TVG_SIGMA_K used by
+# the train/val-gap tolerance (2026-07-14 two-tier redesign). A genuine edge's
+# OOS Sharpe on a short slice is noisy; only a SIGNIFICANTLY negative OOS
+# (edge reversed) fails the floor, not a noisy-but-positive one.
+_OOS_SIGMA_K = 2.0
+
 
 def recent_trial_count(conn, window_days: int) -> int:
     """Distinct ideas backtested inside the rolling deflation window.
@@ -263,21 +269,54 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
     if not cost_pass:
         engine.log_daemon("WARN", f"Backtest [{idea_id}] cost gate FAILED: {cost_note}")
 
-    # QC2: OOS degradation gate — relaxed for fundamental screens
+    # QC2: OOS degradation gate.
+    # Fundamental screens keep their own fixed thresholds (byte-identical).
+    # Active DSL signals — 2026-07-14 made NOISE-AWARE (was fixed oos_deg>0.50 /
+    # sharpe_oos<0.30). The 30% OOS slice is the noisiest slice in the pipeline
+    # (SE of its annualized Sharpe ~0.8-1.0 on a few hundred bars), so a fixed
+    # absolute floor + fixed relative-degradation cap rejected genuine
+    # low-frequency edges on pure sampling luck. Mirrors the train_val_gap
+    # tolerance pattern: a real edge still fails if OOS degrades BEYOND what
+    # noise explains, or is significantly negative; a noisy-but-not-collapsed
+    # OOS survives (full-window PSR, a Tier-1 gate, already tests aggregate
+    # significance separately).
     oos_pass = True
     oos_note = ""
     _is_fund_screen = params.get("signal_type") == "fundamental_screen"
-    _max_oos_deg    = (engine.FUNDAMENTAL_SCREEN_THRESHOLDS["max_oos_degradation"]
-                       if _is_fund_screen else 0.50)
-    _min_oos_sharpe = (engine.FUNDAMENTAL_SCREEN_THRESHOLDS["min_oos_sharpe"]
-                       if _is_fund_screen else 0.30)
-    if sharpe_is > 0 and oos_deg > _max_oos_deg:
-        oos_pass = False
-        oos_note = (f"OOS Sharpe degradation: IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
-                    f"deg={oos_deg:.2f} > {_max_oos_deg:.2f} — likely overfitted")
-    if sharpe_oos < _min_oos_sharpe:
-        oos_pass = False
-        oos_note = oos_note or f"OOS Sharpe {sharpe_oos:.2f} < {_min_oos_sharpe:.2f} floor"
+    if _is_fund_screen:
+        _max_oos_deg    = engine.FUNDAMENTAL_SCREEN_THRESHOLDS["max_oos_degradation"]
+        _min_oos_sharpe = engine.FUNDAMENTAL_SCREEN_THRESHOLDS["min_oos_sharpe"]
+        if sharpe_is > 0 and oos_deg > _max_oos_deg:
+            oos_pass = False
+            oos_note = (f"OOS Sharpe degradation: IS={sharpe_is:.2f} OOS={sharpe_oos:.2f} "
+                        f"deg={oos_deg:.2f} > {_max_oos_deg:.2f} — likely overfitted")
+        if sharpe_oos < _min_oos_sharpe:
+            oos_pass = False
+            oos_note = oos_note or f"OOS Sharpe {sharpe_oos:.2f} < {_min_oos_sharpe:.2f} floor"
+    else:
+        # Walk-forward splits the full window 70/30 (engine._compute_walk_forward).
+        _n_is   = int(len(df) * 0.70)
+        _n_oos  = max(len(df) - _n_is, 1)
+        _se_oos = stats.sharpe_stderr(sharpe_oos, _n_oos, _ann_qc6)
+        # Degradation in ABSOLUTE Sharpe terms, tolerated up to the sampling
+        # noise of the IS-vs-OOS gap (never below the stage3 gap floor) — the
+        # same helper the train/val-gap gate uses.
+        _oos_gap     = sharpe_is - sharpe_oos
+        _oos_gap_tol = stats.train_val_gap_tolerance(
+            sharpe_is, sharpe_oos, _n_is, _n_oos, _ann_qc6,
+            GATE_CONFIG.stage3_max_train_val_gap)
+        if sharpe_is > 0 and _oos_gap > _oos_gap_tol:
+            oos_pass = False
+            oos_note = (f"OOS degradation beyond noise: IS={sharpe_is:.2f} "
+                        f"OOS={sharpe_oos:.2f} gap={_oos_gap:.2f} > tol={_oos_gap_tol:.2f} "
+                        f"({_n_oos} OOS bars) — likely overfitted")
+        # Floor: OOS must not be SIGNIFICANTLY negative (edge reversed). A
+        # noisy-but-positive OOS Sharpe on a short slice is not a failure.
+        if sharpe_oos < -_OOS_SIGMA_K * _se_oos:
+            oos_pass = False
+            oos_note = oos_note or (
+                f"OOS Sharpe {sharpe_oos:.2f} significantly negative "
+                f"(< -{_OOS_SIGMA_K:.0f}·SE {_se_oos:.2f}, {_n_oos} bars) — edge reversed")
     if not oos_pass:
         engine.log_daemon("WARN", f"Backtest [{idea_id}] OOS gate FAILED: {oos_note}")
 
@@ -308,12 +347,17 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
 
     # QC7: parameter robustness (DSL signals) — a real edge survives ±20%
     # parameter jitter; a knife-edge fit does not. Pure numpy, no LLM cost.
+    # 2026-07-14: perturbation robustness now runs on the FULL window (df) with
+    # the full-window Sharpe as the reference, not the test slice alone — the
+    # test slice's few bars made the pass fraction itself a noisy small-sample
+    # statistic (same low-N failure mode as the OOS gate above). Larger N →
+    # stabler estimate; the ±20% jitter still catches a genuine knife-edge fit.
     robustness_score = None
     robustness_pass = True
     robustness_note = ""
-    if params.get("signal_type") == "dsl" and test_sharpe_net > 0:
+    if params.get("signal_type") == "dsl" and full_window_sharpe_net > 0:
         robustness_score = stats.robustness_check(
-            engine, test_df, params["dsl"], test_sharpe_net, interval, GATE_CONFIG)
+            engine, df, params["dsl"], full_window_sharpe_net, interval, GATE_CONFIG)
         robustness_pass = robustness_score >= GATE_CONFIG.robustness_min_fraction
         if not robustness_pass:
             robustness_note = (
@@ -388,9 +432,29 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
     for flag in sanity_flags:
         engine.log_daemon("WARN", f"Backtest [{idea_id}] SANITY FLAG: {flag}")
 
-    overall_pass = (gate3_pass and trade_count_pass and cost_pass
-                    and oos_pass and regime_pass
-                    and robustness_pass and benchmark_pass and capacity_pass)
+    # ── Two-tier outcome (2026-07-14 redesign) ────────────────────────────
+    # TIER 1 (hard, auto-reject): the statistical / anti-overfit / risk /
+    # feasibility checks — the ones a human is WORSE at eyeballing (selection
+    # bias, overfitting) plus non-negotiable risk/tradeability mandates. DD
+    # caps live inside gate3_pass (train/val/test) already.
+    tier1_pass = bool(gate3_pass and oos_pass and robustness_pass and capacity_pass)
+    # TIER 2 (advisory → human review): shape/taste checks that, as hard
+    # vetoes, were rejecting genuinely diverse strategies (low-frequency,
+    # concentrated, market-neutral). Tripping one no longer rejects the idea —
+    # it flags it for human review. cost_drag is advisory too: PSR already runs
+    # on NET Sharpe, so a cost-eaten edge mostly fails PSR anyway.
+    _tier2_checks = (
+        ("low_trades",      trade_count_pass, trade_count_note),
+        ("regime_breadth",  regime_pass,      regime_note),
+        ("below_benchmark", benchmark_pass,   benchmark_note),
+        ("cost_drag",       cost_pass,        cost_note),
+    )
+    tier2_flags = [{"flag": name, "note": note}
+                   for name, ok, note in _tier2_checks if not ok]
+    # Back-compat: overall_pass keeps its old meaning (advance iff NOTHING
+    # tripped). Existing readers that advance only on overall_pass are
+    # unchanged; the new "needs_review" branch is (tier1_pass and tier2_flags).
+    overall_pass = bool(tier1_pass and not tier2_flags)
 
     # ── Verdict string ────────────────────────────────────────────────────
     if _is_fund_screen and overall_pass:
@@ -406,6 +470,17 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
             f"Active strategy passes all gates: net Sharpe {test_sharpe_net:.2f} "
             f"(PSR {psr_test:.2f} vs SR* {deflated_hurdle:.2f}, {n_trials} trials), "
             f"OOS={sharpe_oos:.2f}, regimes={regimes_positive}/3"
+        )
+    elif tier1_pass:
+        # Passed the statistical + risk core; only advisory (shape) checks
+        # tripped → held for a human decision, NOT auto-rejected.
+        verdict = "review"
+        _adv = "; ".join((f["note"] or f["flag"]) for f in tier2_flags)
+        verdict_reason = (
+            f"HELD FOR REVIEW — passed statistical + risk gates (PSR "
+            f"{(psr_test if psr_test is not None else 0.0):.2f} vs SR* "
+            f"{deflated_hurdle:.2f}, {n_trials} trials, OOS={sharpe_oos:.2f}), but "
+            f"advisory checks tripped: {_adv}"
         )
     else:
         verdict = "reject"
@@ -448,6 +523,8 @@ def evaluate_gates(engine, *, idea_id, params, hp_class, interval, df, symbol,
         "full_window_sharpe_net": full_window_sharpe_net,
         "gate2_pass": gate2_pass,
         "gate3_pass": gate3_pass,
+        "tier1_pass": tier1_pass,
+        "tier2_flags": tier2_flags,
         "trade_count_pass": trade_count_pass,
         "trade_count_note": trade_count_note,
         "cost_pass": cost_pass,

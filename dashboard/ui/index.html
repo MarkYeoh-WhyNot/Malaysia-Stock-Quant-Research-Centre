@@ -825,6 +825,7 @@ svg text{font-family:var(--font-mono)}
     <div class="tab active" onclick="switchTab('gq','gate0',this)">Gate 0 Pending</div>
     <div class="tab" onclick="switchTab('gq','stage1',this)">Stage 1 Unresearched</div>
     <div class="tab" onclick="switchTab('gq','stage2',this)">Stage 2 Unbacktested</div>
+    <div class="tab" onclick="switchTab('gq','review',this)">⚠ Pending Review</div>
     <div class="tab" onclick="switchTab('gq','history',this)">Decision History</div>
   </div>
 
@@ -858,6 +859,18 @@ svg text{font-family:var(--font-mono)}
       <div class="tbl-wrap"><table>
         <thead><tr><th>ID</th><th>Title</th><th>Pair</th><th>TF</th><th>Research Score</th><th>Actions</th></tr></thead>
         <tbody id="gq-s2-table"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <div id="gq-review" class="tab-content">
+    <div class="panel">
+      <div class="panel-head"><span class="panel-title">Held for Human Review — passed statistical + risk gates, tripped an advisory (shape) check</span>
+        <button class="btn btn-sm btn-cyan" onclick="loadGateQueue()">↻ Refresh</button>
+      </div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>ID</th><th>Title</th><th>Pair</th><th>TF</th><th>Net Sharpe</th><th>PSR</th><th>Advisory flags</th><th>Actions</th></tr></thead>
+        <tbody id="gq-review-table"></tbody>
       </table></div>
     </div>
   </div>
@@ -959,19 +972,21 @@ svg text{font-family:var(--font-mono)}
     </div>
 
     <!-- 3. METRIC CARDS -->
-    <div id="btl-metric-cards" class="stat-grid" style="grid-template-columns:repeat(6,1fr);margin-bottom:10px">
+    <div id="btl-metric-cards" class="stat-grid" style="grid-template-columns:repeat(7,1fr);margin-bottom:10px">
       <div class="stat-card" id="btl-sn-card" data-tip="Sharpe after 0.90% round-trip Bursa cost: brokerage + stamp duty + slippage × 2">
-        <div class="val" id="btl-sn">—</div><div class="lbl">Net Sharpe</div></div>
-      <div class="stat-card" data-tip="Gross Sharpe before transaction costs — compare to Net to see cost drag">
-        <div class="val" id="btl-sg">—</div><div class="lbl">Gross Sharpe</div></div>
-      <div class="stat-card" data-tip="Out-of-sample Sharpe from 70/30 IS/OOS walk-forward split. Must be > 0 to pass.">
-        <div class="val" id="btl-so">—</div><div class="lbl">OOS Sharpe</div></div>
+        <div class="val" id="btl-sn">—</div><div class="lbl">Sharpe</div></div>
+      <div class="stat-card" data-tip="Test-period Sharpe t-stat (per-bar Sharpe scaled by √(n-1)) — how many standard errors the Sharpe is from zero.">
+        <div class="val" id="btl-tstat">—</div><div class="lbl">t-stat</div></div>
+      <div class="stat-card" data-tip="Test-period arithmetic annualised return (mean per-bar net return × bars/year).">
+        <div class="val" id="btl-annret">—</div><div class="lbl">Ann. Return</div></div>
       <div class="stat-card" data-tip="Maximum peak-to-trough drawdown in the test period. Gate: < 25%.">
         <div class="val" id="btl-dd">—</div><div class="lbl">Max Drawdown</div></div>
-      <div class="stat-card" data-tip="Total trade signals in the test period. Minimum 30 required for statistical validity.">
-        <div class="val" id="btl-tc">—</div><div class="lbl">Trades</div></div>
       <div class="stat-card" data-tip="Fraction of closed trades with positive return.">
         <div class="val" id="btl-wr">—</div><div class="lbl">Win Rate</div></div>
+      <div class="stat-card" data-tip="Count of winning trades (net_pct > 0) across the FULL backtest window — train+val+test, same scope as the Trades count in Fidelity & Execution. NOT scoped to the test period alone like Sharpe/t-stat/Max Drawdown/Win Rate/Calmar above.">
+        <div class="val" id="btl-wintrades">—</div><div class="lbl">Win Trades</div></div>
+      <div class="stat-card" data-tip="Test-period arithmetic Ann. Return ÷ |Max Drawdown|. Reward per unit of worst peak-to-trough pain.">
+        <div class="val" id="btl-calmar">—</div><div class="lbl">Calmar</div></div>
     </div>
 
     <!-- 3b. FIDELITY & EXECUTION (reports — the gated numbers above are unchanged) -->
@@ -979,9 +994,15 @@ svg text{font-family:var(--font-mono)}
       <div class="panel-head"><span class="panel-title">Fidelity &amp; Execution</span>
         <span style="font-size:11px;color:var(--muted)">how the edge holds up under realistic execution — reports, not gates</span>
       </div>
-      <div class="stat-grid" style="grid-template-columns:repeat(6,1fr);gap:8px">
+      <div class="stat-grid" style="grid-template-columns:repeat(5,1fr);gap:8px">
         <div class="stat-card" data-tip="Compounded (geometric) annual return — what an investor actually realizes. Differs from the arithmetic annualised return.">
           <div class="val" id="btl-cagr" style="font-size:20px">—</div><div class="lbl">CAGR</div></div>
+        <div class="stat-card" data-tip="Gross Sharpe before transaction costs — compare to Net (Sharpe card above) to see cost drag">
+          <div class="val" id="btl-sg" style="font-size:20px">—</div><div class="lbl">Gross Sharpe</div></div>
+        <div class="stat-card" data-tip="Out-of-sample Sharpe from 70/30 IS/OOS walk-forward split. Must be > 0 to pass.">
+          <div class="val" id="btl-so" style="font-size:20px">—</div><div class="lbl">OOS Sharpe</div></div>
+        <div class="stat-card" data-tip="Total trade signals in the test period. Minimum 30 required for statistical validity.">
+          <div class="val" id="btl-tc" style="font-size:20px">—</div><div class="lbl">Trades</div></div>
         <div class="stat-card" data-tip="Net Sharpe under a conservative 2-bar-delayed fill ÷ research Sharpe. Near 1.0 = robust; low = the edge lived on the signal bar's own move.">
           <div class="val" id="btl-fillrob" style="font-size:20px">—</div><div class="lbl">Fill Robustness</div></div>
         <div class="stat-card" data-tip="Net Sharpe after a size-aware market-impact haircut (0.10 × ADV participation per side). Shows whether the edge survives at deployable size.">
@@ -2547,6 +2568,28 @@ async function loadGateQueue() {
      </tr>`
   ).join('') || '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:16px">No ideas awaiting backtest</td></tr>';
 
+  // Pending Review: passed Tier-1 (statistical + risk) but tripped an advisory
+  // (Tier-2 shape) check → held for a human approve/reject decision.
+  const reviewBtn = (id) =>
+    `<button class="btn btn-sm btn-green" onclick="manualAdvance(${id})">✔ Approve</button>
+     <button class="btn btn-sm btn-red" style="margin-left:4px" onclick="manualReject(${id})">✗ Reject</button>`;
+  const flagChip = (f) =>
+    `<span style="display:inline-block;background:rgba(245,158,11,.15);color:#f59e0b;border-radius:4px;padding:1px 6px;margin:1px;font-size:11px;cursor:help"
+           data-tt-title="${escAttr(f.flag)}" data-tt-body="${escAttr(f.note||f.flag)}">⚠ ${esc(f.flag)}</span>`;
+  const reviewEl = document.getElementById('gq-review-table');
+  reviewEl.innerHTML = (d.pending_review||[]).map(r =>
+    `<tr>
+       <td><a onclick="viewInBtLab(${r.id})" style="color:var(--cyan);cursor:pointer" title="View equity curve + trades">${r.id}</a></td>
+       <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</td>
+       <td>${r.ticker||'—'}</td><td>${r.timeframe||'—'}</td>
+       <td>${fmt2(r.sharpe_net)}</td>
+       <td>${r.psr_test!=null?fmt2(r.psr_test):'—'}</td>
+       <td style="max-width:260px">${(r.advisory_flags||[]).map(flagChip).join('')||'—'}</td>
+       <td>${reviewBtn(r.id)}</td>
+     </tr>`
+  ).join('') || '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:16px">Nothing held for review</td></tr>';
+  wireTooltips(reviewEl);
+
   const histEl = document.getElementById('gq-history-table');
   histEl.innerHTML = d.recent_decisions.map(r =>
     `<tr>
@@ -2807,6 +2850,26 @@ async function loadBtlDetail(rawId) {
   document.getElementById('btl-tc').textContent = tc != null ? tc : '—';
   document.getElementById('btl-tc').style.color = tc >= 30 ? 'var(--green)' : 'var(--red)';
   document.getElementById('btl-wr').textContent = wr != null ? (wr*100).toFixed(1)+'%' : '—';
+
+  // t-stat / Ann. Return / Calmar come from result_data.test (the full
+  // _compute_performance() dict for the test slice) — not their own
+  // backtest_runs columns, see engine.py::_compute_performance().
+  let rd = {};
+  try { rd = JSON.parse(bt.result_data || '{}'); } catch (e) { rd = {}; }
+  const testPerf = rd.test || {};
+  document.getElementById('btl-tstat').textContent =
+    testPerf.sharpe_tstat != null ? testPerf.sharpe_tstat.toFixed(2) : '—';
+  document.getElementById('btl-annret').textContent =
+    testPerf.ann_return != null ? (testPerf.ann_return*100).toFixed(1)+'%' : '—';
+  document.getElementById('btl-calmar').textContent =
+    testPerf.calmar != null ? testPerf.calmar.toFixed(2) : '—';
+
+  // Win Trades — count across the FULL backtest window (train+val+test),
+  // same scope as the Trades total in Fidelity & Execution, NOT scoped to
+  // the test slice like Sharpe/Max DD/Win Rate/Ann.Return/Calmar above
+  // (see the data-tip on the card for the disclosure).
+  const winTrades = (d.trades || []).filter(t => t.net_pct > 0).length;
+  document.getElementById('btl-wintrades').textContent = (d.trades && d.trades.length) ? winTrades : '—';
 
   // ── 4. IS/OOS split ──
   const si = bt.sharpe_is; const deg = bt.oos_degradation;
@@ -4506,7 +4569,7 @@ async function loadDirection() {
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Gate 0 Logic</div>
-      <div class="dir-threshold-value">&ge; ${g0.logic||0.70}</div>
+      <div class="dir-threshold-value">&ge; ${g0.logic||0.65}</div>
       <div class="dir-threshold-note">Economic mechanism soundness</div>
     </div>
     <div class="dir-threshold-item">
@@ -4515,13 +4578,13 @@ async function loadDirection() {
       <div class="dir-threshold-note">Implementability</div>
     </div>
     <div class="dir-threshold-item">
-      <div class="dir-threshold-label">Stage 2 Sharpe</div>
-      <div class="dir-threshold-value">&ge; ${gt.stage2_sharpe||1.1}</div>
-      <div class="dir-threshold-note">Medium-term backtest</div>
+      <div class="dir-threshold-label">Deflated PSR (Test)</div>
+      <div class="dir-threshold-value">&ge; ${gt.psr_confidence_test||0.70}</div>
+      <div class="dir-threshold-note">Principal pass rule — replaces fixed Sharpe thresholds</div>
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Train/Val Gap</div>
-      <div class="dir-threshold-value">&le; ${Math.round((gt.stage2_tv_gap||0.30)*100)}%</div>
+      <div class="dir-threshold-value">&le; ${Math.round((gt.train_val_gap_max||0.35)*100)}%</div>
       <div class="dir-threshold-note">Overfitting guard</div>
     </div>
     <div class="dir-threshold-item">
@@ -4541,12 +4604,12 @@ async function loadDirection() {
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Stage 4A Sharpe</div>
-      <div class="dir-threshold-value">&ge; ${gt.stage4a_sharpe||1.0}</div>
+      <div class="dir-threshold-value">&ge; ${gt.stage4a_min_sharpe||0.8}</div>
       <div class="dir-threshold-note">Live paper trading</div>
     </div>
     <div class="dir-threshold-item">
       <div class="dir-threshold-label">Stage 4A Max DD</div>
-      <div class="dir-threshold-value">&le; ${Math.round((gt.stage4a_max_dd||0.15)*100)}%</div>
+      <div class="dir-threshold-value">&le; ${Math.round((gt.stage4a_max_drawdown||0.20)*100)}%</div>
       <div class="dir-threshold-note">Paper trade drawdown</div>
     </div>`;
 
